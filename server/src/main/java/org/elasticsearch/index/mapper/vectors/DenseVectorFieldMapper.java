@@ -223,6 +223,240 @@ public class DenseVectorFieldMapper extends FieldMapper {
 
     public enum ElementType {
 
+        BINARY(1) {
+
+            @Override
+            public String toString() {
+                return "binary";
+            }
+
+            @Override
+            public void writeValue(ByteBuffer byteBuffer, float value) {
+                byteBuffer.put((byte) value);
+            }
+
+            @Override
+            public void readAndWriteValue(ByteBuffer byteBuffer, XContentBuilder b) throws IOException {
+                b.value(byteBuffer.get());
+            }
+
+            @Override
+            KnnByteVectorField createKnnVectorField(String name, byte[] vector, VectorSimilarityFunction function) {
+                if (vector == null) {
+                    throw new IllegalArgumentException("vector value must not be null");
+                }
+                FieldType denseVectorFieldType = new FieldType();
+                denseVectorFieldType.setVectorAttributes(vector.length, VectorEncoding.BYTE, function);
+                denseVectorFieldType.freeze();
+                return new KnnByteVectorField(name, vector, denseVectorFieldType);
+            }
+
+            @Override
+            KnnFloatVectorField createKnnVectorField(String name, float[] vector, VectorSimilarityFunction function) {
+                throw new IllegalArgumentException("cannot create a float vector field from binary");
+            }
+
+            @Override
+            IndexFieldData.Builder fielddataBuilder(DenseVectorFieldType denseVectorFieldType, FieldDataContext fieldDataContext) {
+                return new VectorIndexFieldData.Builder(
+                    denseVectorFieldType.name(),
+                    CoreValuesSourceType.KEYWORD,
+                    denseVectorFieldType.indexVersionCreated,
+                    this,
+                    denseVectorFieldType.dims,
+                    denseVectorFieldType.indexed,
+                    r -> r
+                );
+            }
+
+            @Override
+            public void checkVectorBounds(float[] vector) {
+                checkNanAndInfinite(vector);
+
+                StringBuilder errorBuilder = null;
+
+                for (int index = 0; index < vector.length; ++index) {
+                    float value = vector[index];
+
+                    if (value % 1.0f != 0.0f) {
+                        errorBuilder = new StringBuilder(
+                            "element_type ["
+                                + this
+                                + "] vectors only support non-decimal values but found decimal value ["
+                                + value
+                                + "] at dim ["
+                                + index
+                                + "];"
+                        );
+                        break;
+                    }
+
+                    if (value < 0 || value > 1) {
+                        errorBuilder = new StringBuilder(
+                            "element_type ["
+                                + this
+                                + "] vectors only support integers between ["
+                                + 0
+                                + ", "
+                                + 1
+                                + "] but found ["
+                                + value
+                                + "] at dim ["
+                                + index
+                                + "];"
+                        );
+                        break;
+                    }
+                }
+
+                if (errorBuilder != null) {
+                    throw new IllegalArgumentException(appendErrorElements(errorBuilder, vector).toString());
+                }
+            }
+
+            @Override
+            void checkVectorMagnitude(
+                VectorSimilarity similarity,
+                Function<StringBuilder, StringBuilder> appender,
+                float squaredMagnitude
+            ) {
+                StringBuilder errorBuilder = null;
+
+                if (similarity == VectorSimilarity.COSINE && Math.sqrt(squaredMagnitude) == 0.0f) {
+                    errorBuilder = new StringBuilder(
+                        "The [" + VectorSimilarity.COSINE + "] similarity does not support vectors with zero magnitude."
+                    );
+                }
+
+                if (errorBuilder != null) {
+                    throw new IllegalArgumentException(appender.apply(errorBuilder).toString());
+                }
+            }
+
+            @Override
+            public void parseKnnVectorAndIndex(DocumentParserContext context, DenseVectorFieldMapper fieldMapper) throws IOException {
+                int index = 0;
+                int tokensParsed = 0;
+                int dimensions = fieldMapper.fieldType().dims;
+                dimensions = dimensions % Byte.SIZE == 0 ? (dimensions / Byte.SIZE) : (dimensions / Byte.SIZE) + 1;
+                byte[] vector = new byte[dimensions];
+                int bitsParsed = 0;
+                int val = 0;
+                for (Token token = context.parser().nextToken(); token != Token.END_ARRAY; token = context.parser().nextToken()) {
+                    fieldMapper.checkDimensionExceeded(index, context);
+                    ensureExpectedToken(Token.VALUE_NUMBER, token, context.parser());
+                    final int value;
+                    if (context.parser().numberType() != XContentParser.NumberType.INT) {
+                        float floatValue = context.parser().floatValue(true);
+                        if (floatValue % 1.0f != 0.0f) {
+                            throw new IllegalArgumentException(
+                                "element_type ["
+                                    + this
+                                    + "] vectors only support non-decimal values but found decimal value ["
+                                    + floatValue
+                                    + "] at dim ["
+                                    + index
+                                    + "];"
+                            );
+                        }
+                        value = (int) floatValue;
+                    } else {
+                        value = context.parser().intValue(true);
+                    }
+                    if (value < 0 || value > 1) {
+                        throw new IllegalArgumentException(
+                            "element_type ["
+                                + this
+                                + "] vectors only support integers between ["
+                                + 0
+                                + ", "
+                                + 1
+                                + "] but found ["
+                                + value
+                                + "] at dim ["
+                                + index
+                                + "];"
+                        );
+                    }
+                    ++tokensParsed;
+                    val <<= 1;
+                    val |= value;
+                    if(++bitsParsed == Byte.SIZE){
+                        vector[index++] = (byte) val;
+                        bitsParsed = 0;
+                        val = 0;
+                    }
+                }
+                if(bitsParsed > 0){
+                    val <<= (Byte.SIZE - bitsParsed);
+                    vector[index] = (byte) val;
+                    if(index == 0) ++index;
+                }
+                fieldMapper.checkDimensionMatches(tokensParsed, context);
+                Field field = createKnnVectorField(
+                    fieldMapper.fieldType().name(),
+                    vector,
+                    fieldMapper.fieldType().similarity.vectorSimilarityFunction(fieldMapper.indexCreatedVersion, this)
+                );
+                context.doc().addWithKey(fieldMapper.fieldType().name(), field);
+            }
+
+            @Override
+            double parseKnnVectorToByteBuffer(DocumentParserContext context, DenseVectorFieldMapper fieldMapper, ByteBuffer byteBuffer)
+                throws IOException {
+                double dotProduct = 0f;
+                int index = 0;
+                int bitsParsed = 0;
+                int val = 0;
+                for (Token token = context.parser().nextToken(); token != Token.END_ARRAY; token = context.parser().nextToken()) {
+                    fieldMapper.checkDimensionExceeded(index, context);
+                    ensureExpectedToken(Token.VALUE_NUMBER, token, context.parser());
+                    int value = context.parser().intValue(true);
+                    if (value < 0 || value > 1) {
+                        throw new IllegalArgumentException(
+                            "element_type ["
+                                + this
+                                + "] vectors only support integers between ["
+                                + 0
+                                + ", "
+                                + 1
+                                + "] but found ["
+                                + value
+                                + "] at dim ["
+                                + index
+                                + "];"
+                        );
+                    }
+                    dotProduct += value;
+                    val <<= 1;
+                    val |= value;
+                    ++index;
+                    if (++bitsParsed == Byte.SIZE) {
+                        byteBuffer.put((byte) val);
+                        bitsParsed = 0;
+                        val = 0;
+                    }
+                }
+                if (bitsParsed > 0) {
+                    val <<= (Byte.SIZE - bitsParsed);
+                    byteBuffer.put((byte) val);
+                }
+                fieldMapper.checkDimensionMatches(index, context);
+                return dotProduct;
+            }
+
+            @Override
+            int getNumBytes(int dimensions) {
+                int totalBytes = dimensions / Byte.SIZE;
+                if (dimensions % Byte.SIZE > 0) ++totalBytes;
+                return totalBytes * elementBytes;
+            }
+
+            @Override
+            ByteBuffer createByteBuffer(IndexVersion indexVersion, int numBytes) {
+                return ByteBuffer.wrap(new byte[numBytes]);
+            }
+        },
         BYTE(1) {
 
             @Override
@@ -420,6 +654,11 @@ public class DenseVectorFieldMapper extends FieldMapper {
             }
 
             @Override
+            int getNumBytes(int dimensions) {
+                return dimensions * elementBytes;
+            }
+
+            @Override
             ByteBuffer createByteBuffer(IndexVersion indexVersion, int numBytes) {
                 return ByteBuffer.wrap(new byte[numBytes]);
             }
@@ -588,6 +827,11 @@ public class DenseVectorFieldMapper extends FieldMapper {
             }
 
             @Override
+            int getNumBytes(int dimensions) {
+                return dimensions * elementBytes;
+            }
+
+            @Override
             ByteBuffer createByteBuffer(IndexVersion indexVersion, int numBytes) {
                 return indexVersion.onOrAfter(LITTLE_ENDIAN_FLOAT_STORED_INDEX_VERSION)
                     ? ByteBuffer.wrap(new byte[numBytes]).order(ByteOrder.LITTLE_ENDIAN)
@@ -615,6 +859,8 @@ public class DenseVectorFieldMapper extends FieldMapper {
 
         abstract double parseKnnVectorToByteBuffer(DocumentParserContext context, DenseVectorFieldMapper fieldMapper, ByteBuffer byteBuffer)
             throws IOException;
+
+        abstract int getNumBytes(int dimensions);
 
         abstract ByteBuffer createByteBuffer(IndexVersion indexVersion, int numBytes);
 
@@ -711,7 +957,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
         ElementType.BYTE.toString(),
         ElementType.BYTE,
         ElementType.FLOAT.toString(),
-        ElementType.FLOAT
+        ElementType.FLOAT,
+        ElementType.BINARY.toString(),
+        ElementType.BINARY
     );
 
     enum VectorSimilarity {
@@ -719,7 +967,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             float score(float similarity, ElementType elementType, int dim) {
                 return switch (elementType) {
-                    case BYTE, FLOAT -> 1f / (1f + similarity * similarity);
+                    case BINARY, BYTE, FLOAT -> 1f / (1f + similarity * similarity);
                 };
             }
 
@@ -732,7 +980,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             float score(float similarity, ElementType elementType, int dim) {
                 return switch (elementType) {
-                    case BYTE, FLOAT -> (1 + similarity) / 2f;
+                    case BINARY, BYTE, FLOAT -> (1 + similarity) / 2f;
                 };
             }
 
@@ -747,7 +995,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             float score(float similarity, ElementType elementType, int dim) {
                 return switch (elementType) {
-                    case BYTE -> 0.5f + similarity / (float) (dim * (1 << 15));
+                    case BINARY, BYTE -> 0.5f + similarity / (float) (dim * (1 << 15));
                     case FLOAT -> (1 + similarity) / 2f;
                 };
             }
@@ -761,13 +1009,26 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             float score(float similarity, ElementType elementType, int dim) {
                 return switch (elementType) {
-                    case BYTE, FLOAT -> similarity < 0 ? 1 / (1 + -1 * similarity) : similarity + 1;
+                    case BINARY, BYTE, FLOAT -> similarity < 0 ? 1 / (1 + -1 * similarity) : similarity + 1;
                 };
             }
 
             @Override
             public VectorSimilarityFunction vectorSimilarityFunction(IndexVersion indexVersion, ElementType elementType) {
                 return VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT;
+            }
+        },
+        HAMMING_DISTANCE {
+            @Override
+            float score(float similarity, ElementType elementType, int dim) {
+                return switch (elementType) {
+                    case BINARY, BYTE, FLOAT -> similarity;
+                };
+            }
+
+            @Override
+            public VectorSimilarityFunction vectorSimilarityFunction(IndexVersion indexVersion, ElementType elementType) {
+                return VectorSimilarityFunction.HAMMING_DISTANCE;
             }
         };
 
@@ -1109,6 +1370,30 @@ public class DenseVectorFieldMapper extends FieldMapper {
                 case FLOAT -> parentFilter != null
                     ? new ProfilingDiversifyingChildrenFloatKnnVectorQuery(name(), queryVector, filter, numCands, parentFilter)
                     : new ProfilingKnnFloatVectorQuery(name(), queryVector, numCands, filter);
+                case BINARY -> {
+                    int dimensions = dims;
+                    dimensions = dimensions % Byte.SIZE == 0 ? (dimensions / Byte.SIZE) : (dimensions / Byte.SIZE) + 1;
+                    byte[] bytes = new byte[dimensions];
+                    int bitsParsed = 0;
+                    int val = 0;
+                    int index = 0;
+                    for (int i = 0; i < queryVector.length; i++) {
+                        val <<= 1;
+                        val |= (int) queryVector[i];
+                        if(++bitsParsed == Byte.SIZE) {
+                            bytes[index++] = (byte) val;
+                            val = 0;
+                            bitsParsed = 0;
+                        }
+                    }
+                    if(bitsParsed > 0){
+                        val <<= (Byte.SIZE - bitsParsed);
+                        bytes[index] = (byte) val;
+                    }
+                    yield parentFilter != null
+                        ? new ProfilingDiversifyingChildrenByteKnnVectorQuery(name(), bytes, filter, numCands, parentFilter)
+                        : new ProfilingKnnByteVectorQuery(name(), bytes, numCands, filter);
+                }
             };
 
             if (similarityThreshold != null) {
@@ -1198,8 +1483,8 @@ public class DenseVectorFieldMapper extends FieldMapper {
         int dims = fieldType().dims;
         ElementType elementType = fieldType().elementType;
         int numBytes = indexCreatedVersion.onOrAfter(MAGNITUDE_STORED_INDEX_VERSION)
-            ? dims * elementType.elementBytes + MAGNITUDE_BYTES
-            : dims * elementType.elementBytes;
+            ? elementType.getNumBytes(dims) + MAGNITUDE_BYTES
+            : elementType.getNumBytes(dims);
 
         ByteBuffer byteBuffer = elementType.createByteBuffer(indexCreatedVersion, numBytes);
         double dotProduct = elementType.parseKnnVectorToByteBuffer(context, this, byteBuffer);

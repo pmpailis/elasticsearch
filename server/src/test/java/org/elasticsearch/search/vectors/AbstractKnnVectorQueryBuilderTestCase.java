@@ -100,12 +100,12 @@ abstract class AbstractKnnVectorQueryBuilderTestCase extends AbstractQueryTestCa
             assertThat(((VectorSimilarityQuery) query).getSimilarity(), equalTo(queryBuilder.getVectorSimilarity()));
             switch (elementType()) {
                 case FLOAT -> assertTrue(knnQuery instanceof ProfilingKnnFloatVectorQuery);
-                case BYTE -> assertTrue(knnQuery instanceof ProfilingKnnByteVectorQuery);
+                case BINARY, BYTE -> assertTrue(knnQuery instanceof ProfilingKnnByteVectorQuery);
             }
         } else {
             switch (elementType()) {
                 case FLOAT -> assertTrue(query instanceof ProfilingKnnFloatVectorQuery);
-                case BYTE -> assertTrue(query instanceof ProfilingKnnByteVectorQuery);
+                case BINARY, BYTE -> assertTrue(query instanceof ProfilingKnnByteVectorQuery);
             }
         }
 
@@ -117,7 +117,7 @@ abstract class AbstractKnnVectorQueryBuilderTestCase extends AbstractQueryTestCa
         Query filterQuery = booleanQuery.clauses().isEmpty() ? null : booleanQuery;
         // The field should always be resolved to the concrete field
         Query knnVectorQueryBuilt = switch (elementType()) {
-            case BYTE -> new ProfilingKnnByteVectorQuery(
+            case BINARY, BYTE -> new ProfilingKnnByteVectorQuery(
                 VECTOR_FIELD,
                 getByteQueryVector(queryBuilder.queryVector()),
                 queryBuilder.numCands(),

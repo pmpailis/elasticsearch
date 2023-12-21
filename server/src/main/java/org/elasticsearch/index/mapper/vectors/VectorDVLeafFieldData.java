@@ -56,13 +56,13 @@ final class VectorDVLeafFieldData implements LeafFieldData {
         try {
             if (indexed) {
                 return switch (elementType) {
-                    case BYTE -> new ByteKnnDenseVectorDocValuesField(reader.getByteVectorValues(field), name, dims);
+                    case BINARY, BYTE -> new ByteKnnDenseVectorDocValuesField(reader.getByteVectorValues(field), name, dims);
                     case FLOAT -> new KnnDenseVectorDocValuesField(reader.getFloatVectorValues(field), name, dims);
                 };
             } else {
                 BinaryDocValues values = DocValues.getBinary(reader, field);
                 return switch (elementType) {
-                    case BYTE -> new ByteBinaryDenseVectorDocValuesField(values, name, elementType, dims);
+                    case BINARY, BYTE -> new ByteBinaryDenseVectorDocValuesField(values, name, elementType, dims);
                     case FLOAT -> new BinaryDenseVectorDocValuesField(values, name, elementType, dims, indexVersion);
                 };
             }

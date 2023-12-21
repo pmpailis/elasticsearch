@@ -859,7 +859,7 @@ public class DenseVectorFieldMapperTests extends MapperTestCase {
             List<Object> fromNative = nativeFetcher.fetchValues(s, 0, new ArrayList<>());
             DenseVectorFieldType denseVectorFieldType = (DenseVectorFieldType) ft;
             switch (denseVectorFieldType.getElementType()) {
-                case BYTE -> {
+                case BINARY, BYTE -> {
                     assumeFalse("byte element type testing not currently added", false);
                 }
                 case FLOAT -> {
@@ -888,7 +888,7 @@ public class DenseVectorFieldMapperTests extends MapperTestCase {
     protected Object generateRandomInputValue(MappedFieldType ft) {
         DenseVectorFieldType vectorFieldType = (DenseVectorFieldType) ft;
         return switch (vectorFieldType.getElementType()) {
-            case BYTE -> randomByteArrayOfLength(vectorFieldType.getVectorDimensions());
+            case BINARY, BYTE -> randomByteArrayOfLength(vectorFieldType.getVectorDimensions());
             case FLOAT -> {
                 float[] floats = new float[vectorFieldType.getVectorDimensions()];
                 float magnitude = 0;

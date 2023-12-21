@@ -247,7 +247,7 @@ public class VectorScoreScriptUtilsTests extends ESTestCase {
             assertEquals(field.getName(), dotProductExpected, field.get().dotProduct(listFloatVector), 0.001);
             assertEquals(field.getName(), dotProductExpected, field.get().dotProduct(listByteVector), 0.001);
             switch (field.getElementType()) {
-                case BYTE -> {
+                case BINARY, BYTE -> {
                     assertEquals(field.getName(), dotProductExpected, field.get().dotProduct(byteVector));
                     UnsupportedOperationException e = expectThrows(
                         UnsupportedOperationException.class,
@@ -274,7 +274,7 @@ public class VectorScoreScriptUtilsTests extends ESTestCase {
             assertEquals(field.getName(), l1NormExpected, field.get().l1Norm(listFloatVector), 0.001);
             assertEquals(field.getName(), l1NormExpected, field.get().l1Norm(listByteVector), 0.001);
             switch (field.getElementType()) {
-                case BYTE -> {
+                case BINARY, BYTE -> {
                     assertEquals(field.getName(), l1NormExpected, field.get().l1Norm(byteVector));
                     UnsupportedOperationException e = expectThrows(
                         UnsupportedOperationException.class,
@@ -301,7 +301,7 @@ public class VectorScoreScriptUtilsTests extends ESTestCase {
             assertEquals(field.getName(), l2NormExpected, field.get().l2Norm(listFloatVector), 0.001);
             assertEquals(field.getName(), l2NormExpected, field.get().l2Norm(listByteVector), 0.001);
             switch (field.getElementType()) {
-                case BYTE -> {
+                case BINARY, BYTE -> {
                     assertEquals(field.getName(), l2NormExpected, field.get().l2Norm(byteVector), 0.001);
                     UnsupportedOperationException e = expectThrows(
                         UnsupportedOperationException.class,
@@ -328,7 +328,7 @@ public class VectorScoreScriptUtilsTests extends ESTestCase {
             assertEquals(field.getName(), cosineSimilarityExpected, field.get().cosineSimilarity(listFloatVector), 0.001);
             assertEquals(field.getName(), cosineSimilarityExpected, field.get().cosineSimilarity(listByteVector), 0.001);
             switch (field.getElementType()) {
-                case BYTE -> {
+                case BINARY, BYTE -> {
                     assertEquals(field.getName(), cosineSimilarityExpected, field.get().cosineSimilarity(byteVector), 0.001);
                     UnsupportedOperationException e = expectThrows(
                         UnsupportedOperationException.class,
