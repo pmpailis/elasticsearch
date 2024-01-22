@@ -141,7 +141,7 @@ public class VectorScoreScriptUtils {
         public L1Norm(ScoreScript scoreScript, List<Number> queryVector, String fieldName) {
             DenseVectorDocValuesField field = (DenseVectorDocValuesField) scoreScript.field(fieldName);
             function = switch (field.getElementType()) {
-                case BINARY, BYTE -> new ByteL1Norm(scoreScript, field, queryVector);
+                case BYTE -> new ByteL1Norm(scoreScript, field, queryVector);
                 case FLOAT -> new FloatL1Norm(scoreScript, field, queryVector);
             };
         }
@@ -187,7 +187,7 @@ public class VectorScoreScriptUtils {
         public L2Norm(ScoreScript scoreScript, List<Number> queryVector, String fieldName) {
             DenseVectorDocValuesField field = (DenseVectorDocValuesField) scoreScript.field(fieldName);
             function = switch (field.getElementType()) {
-                case BINARY, BYTE -> new ByteL2Norm(scoreScript, field, queryVector);
+                case BYTE -> new ByteL2Norm(scoreScript, field, queryVector);
                 case FLOAT -> new FloatL2Norm(scoreScript, field, queryVector);
             };
         }
@@ -233,7 +233,7 @@ public class VectorScoreScriptUtils {
         public DotProduct(ScoreScript scoreScript, List<Number> queryVector, String fieldName) {
             DenseVectorDocValuesField field = (DenseVectorDocValuesField) scoreScript.field(fieldName);
             function = switch (field.getElementType()) {
-                case BINARY, BYTE -> new ByteDotProduct(scoreScript, field, queryVector);
+                case BYTE -> new ByteDotProduct(scoreScript, field, queryVector);
                 case FLOAT -> new FloatDotProduct(scoreScript, field, queryVector);
             };
         }
@@ -279,7 +279,7 @@ public class VectorScoreScriptUtils {
         public CosineSimilarity(ScoreScript scoreScript, List<Number> queryVector, String fieldName) {
             DenseVectorDocValuesField field = (DenseVectorDocValuesField) scoreScript.field(fieldName);
             function = switch (field.getElementType()) {
-                case BINARY, BYTE -> new ByteCosineSimilarity(scoreScript, field, queryVector);
+                case BYTE -> new ByteCosineSimilarity(scoreScript, field, queryVector);
                 case FLOAT -> new FloatCosineSimilarity(scoreScript, field, queryVector);
             };
         }

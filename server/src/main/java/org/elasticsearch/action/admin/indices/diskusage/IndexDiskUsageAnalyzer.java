@@ -64,8 +64,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.ElementType.BINARY;
-
 /**
  * Analyze the disk usage of each field in the index.
  */
