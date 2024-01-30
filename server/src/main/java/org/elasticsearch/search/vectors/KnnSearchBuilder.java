@@ -99,7 +99,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     }
 
     private static float[] parseHexEncodedVector(XContentParser parser) throws IOException {
-        // TODO: optimize this as the array returned will be recomputed later on again as a byte array
+        // TODO optimize this as the array returned will be recomputed later again as a byte array
         byte[] decodedByteQueryVector = HexFormat.of().parseHex(parser.text());
         float[] floatVector = new float[decodedByteQueryVector.length];
         for (int i = 0; i < decodedByteQueryVector.length; i++) {
