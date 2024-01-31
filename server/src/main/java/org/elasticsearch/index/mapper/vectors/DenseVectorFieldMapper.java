@@ -82,6 +82,7 @@ import java.util.stream.Stream;
 
 import static org.elasticsearch.common.Strings.format;
 import static org.elasticsearch.common.xcontent.XContentParserUtils.ensureExpectedToken;
+import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.VectorSimilarity.HAMMING_DISTANCE;
 
 /**
  * A {@link FieldMapper} for indexing a dense vector of floats.
@@ -1056,6 +1057,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
             Map<String, String> meta
         ) {
             super(name, indexed, false, indexed == false, TextSearchInfo.NONE, meta);
+            if (similarity == HAMMING_DISTANCE && elementType == ElementType.FLOAT) {
+                throw new IllegalArgumentException("[" + HAMMING_DISTANCE.name() + "] is not supported for float vectors");
+            }
             this.elementType = elementType;
             this.dims = dims;
             this.indexed = indexed;

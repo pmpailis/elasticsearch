@@ -456,6 +456,14 @@ setup:
                 index: true
                 element_type: byte
                 similarity: hamming_distance
+
+  - do:
+      catch: /\[HAMMING_DISTANCE\] is not supported for float vectors/
+      indices.create:
+        index: hamming_distance_index_should_fail
+        body:
+          mappings:
+            properties:
               vector_destined_to_fail:
                 type: dense_vector
                 dims: 3
@@ -483,14 +491,6 @@ setup:
         id: "3"
         body:
           vector: [3, 12, -10]
-
-  - do:
-      catch: /\[HAMMING_DISTANCE\] is not supported for float vectors/
-      index:
-        index: hamming_distance_index
-        id: "4"
-        body:
-          vector_destined_to_fail: [3, 12, -10]
 
   - do:
       indices.refresh: {}
