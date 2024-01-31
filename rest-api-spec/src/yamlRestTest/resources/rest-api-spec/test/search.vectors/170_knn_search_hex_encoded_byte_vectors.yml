@@ -1,7 +1,7 @@
 setup:
   - skip:
       version: ' - 8.12.99'
-      reason: 'hex encoded byte vectors for knn search was added in 8.13'
+      reason: 'hex encoding for byte vectors was added in 8.13'
 
   - do:
       indices.create:
@@ -34,7 +34,7 @@ setup:
           my_vector_byte: "807f0a"
 
 
-  # [0, 1, 0] - is encoded as '807f0a'
+  # [0, 1, 0] - is encoded as '000100'
   - do:
       index:
         index: knn_hex_vector_index
@@ -42,7 +42,7 @@ setup:
         body:
           my_vector_byte: "000100"
 
-  # [64, -10, -30] - is encoded as '807f0a'
+  # [64, -10, -30] - is encoded as '40f6e2'
   - do:
       index:
         index: knn_hex_vector_index
