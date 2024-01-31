@@ -852,7 +852,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
             public VectorSimilarityFunction vectorSimilarityFunction(IndexVersion indexVersion, ElementType elementType) {
                 return switch (elementType) {
                     case BYTE -> VectorSimilarityFunction.HAMMING_DISTANCE;
-                    case FLOAT -> throw new IllegalArgumentException(
+                    case FLOAT -> throw new UnsupportedOperationException(
                         "[" + HAMMING_DISTANCE.name() + "] is not supported for float vectors"
                     );
                 };
