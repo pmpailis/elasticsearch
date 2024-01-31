@@ -105,6 +105,10 @@ public class DenseVectorFieldMapper extends FieldMapper {
     public static short MIN_DIMS_FOR_DYNAMIC_FLOAT_MAPPING = 128; // minimum number of dims for floats to be dynamically mapped to vector
     public static final int MAGNITUDE_BYTES = 4;
 
+    interface VectorByteDataConsumer {
+        void accept(byte value, int index);
+    }
+
     private static DenseVectorFieldMapper toType(FieldMapper in) {
         return (DenseVectorFieldMapper) in;
     }
@@ -336,85 +340,60 @@ public class DenseVectorFieldMapper extends FieldMapper {
                 }
             }
 
-            @Override
-            public void parseKnnVectorAndIndex(DocumentParserContext context, DenseVectorFieldMapper fieldMapper) throws IOException {
+            private float parseNumberVector(
+                DocumentParserContext context,
+                DenseVectorFieldMapper fieldMapper,
+                VectorByteDataConsumer consumer
+            ) throws IOException {
+                fieldMapper.checkDimensionMatches(1, context);
+                final int value = context.parser().intValue(true);
+                if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {
+                    throw new IllegalArgumentException(
+                        "element_type ["
+                            + this
+                            + "] vectors only support integers between ["
+                            + Byte.MIN_VALUE
+                            + ", "
+                            + Byte.MAX_VALUE
+                            + "] but found ["
+                            + value
+                            + "] at dim [0]"
+                    );
+                }
+                consumer.accept((byte) value, 0);
+                return value * value;
+            }
+
+            private float parseVectorArray(
+                DocumentParserContext context,
+                DenseVectorFieldMapper fieldMapper,
+                VectorByteDataConsumer consumer
+            ) throws IOException {
                 int index = 0;
                 byte[] vector = new byte[fieldMapper.fieldType().dims];
-                XContentParser.Token token = context.parser().currentToken();
-                if (token == XContentParser.Token.START_ARRAY) {
-                    float squaredMagnitude = 0;
-                    for (token = context.parser().nextToken(); token != Token.END_ARRAY; token = context.parser().nextToken()) {
-                        fieldMapper.checkDimensionExceeded(index, context);
-                        ensureExpectedToken(Token.VALUE_NUMBER, token, context.parser());
-                        final int value;
-                        if (context.parser().numberType() != XContentParser.NumberType.INT) {
-                            float floatValue = context.parser().floatValue(true);
-                            if (floatValue % 1.0f != 0.0f) {
-                                throw new IllegalArgumentException(
-                                    "element_type ["
-                                        + this
-                                        + "] vectors only support non-decimal values but found decimal value ["
-                                        + floatValue
-                                        + "] at dim ["
-                                        + index
-                                        + "];"
-                                );
-                            }
-                            value = (int) floatValue;
-                        } else {
-                            value = context.parser().intValue(true);
-                        }
-                        if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {
+                float squaredMagnitude = 0;
+                for (XContentParser.Token token = context.parser().nextToken(); token != Token.END_ARRAY; token = context.parser()
+                    .nextToken()) {
+                    fieldMapper.checkDimensionExceeded(index, context);
+                    ensureExpectedToken(Token.VALUE_NUMBER, token, context.parser());
+                    final int value;
+                    if (context.parser().numberType() != XContentParser.NumberType.INT) {
+                        float floatValue = context.parser().floatValue(true);
+                        if (floatValue % 1.0f != 0.0f) {
                             throw new IllegalArgumentException(
                                 "element_type ["
                                     + this
-                                    + "] vectors only support integers between ["
-                                    + Byte.MIN_VALUE
-                                    + ", "
-                                    + Byte.MAX_VALUE
-                                    + "] but found ["
-                                    + value
+                                    + "] vectors only support non-decimal values but found decimal value ["
+                                    + floatValue
                                     + "] at dim ["
                                     + index
                                     + "];"
                             );
                         }
-                        vector[index++] = (byte) value;
-                        squaredMagnitude += value * value;
+                        value = (int) floatValue;
+                    } else {
+                        value = context.parser().intValue(true);
                     }
-                    fieldMapper.checkDimensionMatches(index, context);
-                    checkVectorMagnitude(fieldMapper.fieldType().similarity, errorByteElementsAppender(vector), squaredMagnitude);
-                } else if (token == XContentParser.Token.VALUE_STRING) {
-                    byte[] decodedVector = HexFormat.of().parseHex(context.parser().text());
-                    if (decodedVector.length != vector.length) {
-                        throw new IllegalArgumentException(
-                            "Dimensions mismatch for field ['"
-                                + fieldMapper.fieldType().name()
-                                + "']."
-                                + "Expected ["
-                                + fieldMapper.fieldType().dims
-                                + ") but got ["
-                                + decodedVector.length
-                                + "] instead."
-                        );
-                    }
-                    float squaredMagnitude = 0;
-                    for (byte b : vector) {
-                        squaredMagnitude += b * b;
-                    }
-                    checkVectorMagnitude(fieldMapper.fieldType().similarity, errorByteElementsAppender(vector), squaredMagnitude);
-                } else if (token == XContentParser.Token.VALUE_NUMBER) {
-                    if (fieldMapper.fieldType().dims != 1) {
-                        throw new IllegalArgumentException(
-                            "Dimensions mismatch for field ['"
-                                + fieldMapper.fieldType().name()
-                                + "']."
-                                + "Expected ["
-                                + fieldMapper.fieldType().dims
-                                + ") but got 1 instead."
-                        );
-                    }
-                    final int value = context.parser().intValue(true);
                     if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {
                         throw new IllegalArgumentException(
                             "element_type ["
@@ -430,7 +409,42 @@ public class DenseVectorFieldMapper extends FieldMapper {
                                 + "];"
                         );
                     }
-                    vector[0] = (byte) value;
+                    consumer.accept((byte) value, index++);
+                    squaredMagnitude += value * value;
+                }
+                fieldMapper.checkDimensionMatches(index, context);
+                checkVectorMagnitude(fieldMapper.fieldType().similarity, errorByteElementsAppender(vector), squaredMagnitude);
+                return squaredMagnitude;
+            }
+
+            private float parseHexEncodedVector(
+                DocumentParserContext context,
+                DenseVectorFieldMapper fieldMapper,
+                VectorByteDataConsumer consumer
+            ) throws IOException {
+                byte[] decodedVector = HexFormat.of().parseHex(context.parser().text());
+                fieldMapper.checkDimensionMatches(decodedVector.length, context);
+
+                byte[] vector = new byte[fieldMapper.fieldType().dims];
+                float squaredMagnitude = 0;
+                for (int i = 0; i < vector.length; i++) {
+                    consumer.accept(decodedVector[i], i);
+                    squaredMagnitude += vector[i] * vector[i];
+                }
+                checkVectorMagnitude(fieldMapper.fieldType().similarity, errorByteElementsAppender(vector), squaredMagnitude);
+                return squaredMagnitude;
+            }
+
+            @Override
+            public void parseKnnVectorAndIndex(DocumentParserContext context, DenseVectorFieldMapper fieldMapper) throws IOException {
+                final byte[] vector = new byte[fieldMapper.fieldType().vectorDimensions()];
+                XContentParser.Token token = context.parser().currentToken();
+                if (token == XContentParser.Token.START_ARRAY) {
+                    parseVectorArray(context, fieldMapper, (val, idx) -> vector[idx] = val);
+                } else if (token == XContentParser.Token.VALUE_STRING) {
+                    parseHexEncodedVector(context, fieldMapper, (val, idx) -> vector[idx] = val);
+                } else if (token == XContentParser.Token.VALUE_NUMBER) {
+                    parseNumberVector(context, fieldMapper, (val, idx) -> vector[idx] = val);
                 } else {
                     throw new ParsingException(
                         context.parser().getTokenLocation(),
@@ -448,85 +462,13 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             double parseKnnVectorToByteBuffer(DocumentParserContext context, DenseVectorFieldMapper fieldMapper, ByteBuffer byteBuffer)
                 throws IOException {
-                double dotProduct = 0f;
-                int index = 0;
                 XContentParser.Token token = context.parser().currentToken();
                 if (token == XContentParser.Token.START_ARRAY) {
-                    for (token = context.parser().nextToken(); token != Token.END_ARRAY; token = context.parser().nextToken()) {
-                        fieldMapper.checkDimensionExceeded(index, context);
-                        ensureExpectedToken(Token.VALUE_NUMBER, token, context.parser());
-                        int value = context.parser().intValue(true);
-                        if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {
-                            throw new IllegalArgumentException(
-                                "element_type ["
-                                    + this
-                                    + "] vectors only support integers between ["
-                                    + Byte.MIN_VALUE
-                                    + ", "
-                                    + Byte.MAX_VALUE
-                                    + "] but found ["
-                                    + value
-                                    + "] at dim ["
-                                    + index
-                                    + "];"
-                            );
-                        }
-                        byteBuffer.put((byte) value);
-                        dotProduct += value * value;
-                        index++;
-                    }
-                    fieldMapper.checkDimensionMatches(index, context);
-                    return dotProduct;
+                    return parseVectorArray(context, fieldMapper, (val, idx) -> byteBuffer.put(val));
                 } else if (token == XContentParser.Token.VALUE_STRING) {
-                    byte[] decodedVector = HexFormat.of().parseHex(context.parser().text());
-                    if (decodedVector.length != fieldMapper.fieldType().dims) {
-                        throw new IllegalArgumentException(
-                            "Dimensions mismatch for field ['"
-                                + fieldMapper.fieldType().name()
-                                + "']."
-                                + "Expected ["
-                                + fieldMapper.fieldType().dims
-                                + ") but got ["
-                                + decodedVector.length
-                                + "] instead."
-                        );
-                    }
-                    for (byte b : decodedVector) {
-                        byteBuffer.put(b);
-                        dotProduct += b * b;
-                        index++;
-                    }
-                    fieldMapper.checkDimensionMatches(index, context);
-                    return dotProduct;
+                    return parseHexEncodedVector(context, fieldMapper, (val, idx) -> byteBuffer.put(val));
                 } else if (token == XContentParser.Token.VALUE_NUMBER) {
-                    if (fieldMapper.fieldType().dims != 1) {
-                        throw new IllegalArgumentException(
-                            "Dimensions mismatch for field ['"
-                                + fieldMapper.fieldType().name()
-                                + "']."
-                                + "Expected ["
-                                + fieldMapper.fieldType().dims
-                                + ") but got 1 instead."
-                        );
-                    }
-                    final int value = context.parser().intValue(true);
-                    if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {
-                        throw new IllegalArgumentException(
-                            "element_type ["
-                                + this
-                                + "] vectors only support integers between ["
-                                + Byte.MIN_VALUE
-                                + ", "
-                                + Byte.MAX_VALUE
-                                + "] but found ["
-                                + value
-                                + "] at dim ["
-                                + index
-                                + "];"
-                        );
-                    }
-                    byteBuffer.put((byte) value);
-                    return value * value;
+                    return parseNumberVector(context, fieldMapper, (val, idx) -> byteBuffer.put(val));
                 } else {
                     throw new ParsingException(
                         context.parser().getTokenLocation(),
@@ -908,7 +850,12 @@ public class DenseVectorFieldMapper extends FieldMapper {
 
             @Override
             public VectorSimilarityFunction vectorSimilarityFunction(IndexVersion indexVersion, ElementType elementType) {
-                return VectorSimilarityFunction.HAMMING_DISTANCE;
+                return switch (elementType) {
+                    case BYTE -> VectorSimilarityFunction.HAMMING_DISTANCE;
+                    case FLOAT -> throw new IllegalArgumentException(
+                        "[" + HAMMING_DISTANCE.name() + "] is not supported for float vectors"
+                    );
+                };
             }
         };
 
@@ -1119,6 +1066,10 @@ public class DenseVectorFieldMapper extends FieldMapper {
         @Override
         public String typeName() {
             return CONTENT_TYPE;
+        }
+
+        public Integer vectorDimensions() {
+            return this.dims;
         }
 
         @Override

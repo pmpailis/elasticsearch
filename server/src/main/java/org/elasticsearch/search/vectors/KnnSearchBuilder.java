@@ -27,7 +27,11 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 import static org.elasticsearch.TransportVersions.NESTED_KNN_VECTOR_QUERY_V;
