@@ -216,6 +216,13 @@ can significantly effect the score. The document `_score` is adjusted to prevent
 values. For `max_inner_product` values `< 0`, the `_score` is
 `1 / (1 + -1 * max_inner_product(query, vector))`. For non-negative `max_inner_product` results
 the `_score` is calculated `max_inner_product(query, vector) + 1`.
+
+`hamming_distance`:::
+Computes a similarity score based on the hamming distance of two vectors. This is only available for byte vectors,
+and should throw for floating point values. The `hamming distance` of two bytes is defined as the population count of
+their `XOR` results, i.e. how many bits are different in the binary representation of all bytes.
+In order to convert this distance to a similiraty score, we normalize it as `1 / (1 + hammingDistance)`
+
 ====
 
 NOTE: Although they are conceptually related, the `similarity` parameter is

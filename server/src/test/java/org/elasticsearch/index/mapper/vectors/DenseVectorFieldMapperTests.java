@@ -437,6 +437,39 @@ public class DenseVectorFieldMapperTests extends MapperTestCase {
         mapper.parse(source(b -> b.array("field", vector)));
     }
 
+    public void testHammingDistanceSimilarityForByteVectors() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(
+            fieldMapping(
+                b -> b.field("type", "dense_vector")
+                    .field("dims", 3)
+                    .field("index", true)
+                    .field("similarity", VectorSimilarity.HAMMING_DISTANCE)
+                    .field("element_type", "byte")
+            )
+        );
+        byte[] vector = { -128, 127, 10 };
+        mapper.parse(source(b -> b.array("field", vector)));
+    }
+
+    public void testHammingDistanceShouldThrowForFloatVectors() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(
+            fieldMapping(
+                b -> b.field("type", "dense_vector")
+                    .field("dims", 3)
+                    .field("index", true)
+                    .field("similarity", VectorSimilarity.HAMMING_DISTANCE)
+                    .field("element_type", "float")
+            )
+        );
+        float[] vector = new float[] { -128f, 127f, 10f };
+        DocumentParsingException e = expectThrows(
+            DocumentParsingException.class,
+            () -> mapper.parse(source(b -> b.array("field", vector)))
+        );
+        assertNotNull(e.getCause());
+        assertThat(e.getCause().getMessage(), containsString("[HAMMING_DISTANCE] is not supported for float vectors"));
+    }
+
     public void testWithExtremeFloatVector() throws Exception {
         for (VectorSimilarity vs : List.of(VectorSimilarity.COSINE, VectorSimilarity.DOT_PRODUCT, VectorSimilarity.COSINE)) {
             DocumentMapper mapper = createDocumentMapper(

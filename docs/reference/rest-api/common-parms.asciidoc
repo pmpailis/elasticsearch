@@ -611,8 +611,8 @@ The `similarity` parameter is the direct vector similarity calculation.
 
 * `l2_norm`: also known as Euclidean, will include documents where the vector is within
 the `dims` dimensional hypersphere with radius `similarity` with origin at `query_vector`.
-* `cosine`, `dot_product`, and `max_inner_product`: Only return vectors where the cosine similarity or dot-product are at least the provided
-`similarity`.
+* `cosine`, `dot_product`, `max_inner_product`, and `hamming_distance`: Only return vectors where the specified
+similarity is at least equal to the provided `similarity`.
 --
 Read more here: <<knn-similarity-search, knn similarity search>>
 end::knn-similarity[]

@@ -167,7 +167,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
      * @param numCands    the number of nearest neighbor candidates to consider per shard
      */
     public KnnSearchBuilder(String field, float[] queryVector, int k, int numCands, Float similarity) {
-        this(field,  Objects.requireNonNull(queryVector, format("[%s] cannot be null", QUERY_VECTOR_FIELD)), null, k, numCands, similarity);
+        this(field, Objects.requireNonNull(queryVector, format("[%s] cannot be null", QUERY_VECTOR_FIELD)), null, k, numCands, similarity);
     }
 
     /**
