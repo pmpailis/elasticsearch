@@ -73,7 +73,7 @@ setup:
 "Knn search with hex string for float field" :
   # [64, 10, -30] - is encoded as '400ae2'
   # this will be properly decoded but only because:
-  # (i) the provided input is compatible
+  # (i) the provided input is compatible as the values are within [Byte.MIN_VALUE, Byte.MAX_VALUE] range
   # (ii) we do not differentiate between byte and float fields when initially parsing a query
   - do:
       search:
