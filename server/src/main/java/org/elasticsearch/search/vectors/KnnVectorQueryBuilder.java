@@ -64,7 +64,10 @@ public class KnnVectorQueryBuilder extends AbstractQueryBuilder<KnnVectorQueryBu
     public static final ParseField FILTER_FIELD = new ParseField("filter");
 
     @SuppressWarnings("unchecked")
-    public static final ConstructingObjectParser<KnnVectorQueryBuilder, Void> PARSER = new ConstructingObjectParser<>("knn", args -> new KnnVectorQueryBuilder((String) args[0], (float[]) args[1], (Integer) args[2], (Float) args[3]));
+    public static final ConstructingObjectParser<KnnVectorQueryBuilder, Void> PARSER = new ConstructingObjectParser<>(
+        "knn",
+        args -> new KnnVectorQueryBuilder((String) args[0], (float[]) args[1], (Integer) args[2], (Float) args[3])
+    );
 
     private static float[] parseQueryVector(XContentParser parser) throws IOException {
         XContentParser.Token token = parser.currentToken();

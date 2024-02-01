@@ -61,7 +61,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     private static final ConstructingObjectParser<KnnSearchBuilder.Builder, Void> PARSER = new ConstructingObjectParser<>("knn", args -> {
         // TODO optimize parsing for when BYTE values are provided
         return new Builder().field((String) args[0])
-            .queryVector( (float[]) args[1])
+            .queryVector((float[]) args[1])
             .queryVectorBuilder((QueryVectorBuilder) args[4])
             .k((Integer) args[2])
             .numCandidates((Integer) args[3])

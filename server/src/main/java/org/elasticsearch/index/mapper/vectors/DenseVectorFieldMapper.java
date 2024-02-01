@@ -853,7 +853,10 @@ public class DenseVectorFieldMapper extends FieldMapper {
             @Override
             float score(float similarity, ElementType elementType, int dim) {
                 return switch (elementType) {
-                    case BYTE, FLOAT -> similarity;
+                    case BYTE -> similarity;
+                    case FLOAT -> throw new IllegalArgumentException(
+                        "[" + HAMMING_DISTANCE.name() + "] is not supported for float vectors"
+                    );
                 };
             }
 
