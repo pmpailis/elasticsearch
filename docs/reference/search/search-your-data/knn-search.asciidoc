@@ -574,7 +574,7 @@ For each configured <<dense-vector-similarity, similarity>>, here is the corresp
  - `max_inner_product`:
     - `_score < 1`: `1 - (1 / _score)`
     - `_score >= 1`: `_score - 1`
- - `hamming_distance`: `(1 - score) / score`
+ - `hamming_distance`: ``
 --
 
 Here is an example. In this example we search for the given `query_vector` for `k` nearest neighbors. However, with
