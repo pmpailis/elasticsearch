@@ -215,7 +215,7 @@ public class DfsPhase {
     static DfsKnnResults singleKnnSearch(Query knnQuery, int k, Profilers profilers, ContextIndexSearcher searcher, String nestedPath)
         throws IOException {
         CollectorManager<? extends Collector, TopDocs> topDocsCollectorManager = TopScoreDocCollector.createSharedManager(
-            Math.min(1_000, k * 2),
+            Math.max(k, 100),
             null,
             Integer.MAX_VALUE
         );
