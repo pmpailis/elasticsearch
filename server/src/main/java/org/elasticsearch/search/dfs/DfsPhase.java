@@ -251,7 +251,9 @@ public class DfsPhase {
             float prevVal = 0f;
             for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
                 if (Math.abs(curDiff) > e1) break;
-                String id = Uid.decodeId(searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes);
+                String id = Uid.decodeId(
+                    searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes
+                );
                 nearestCentroids.add(id);
                 if (prevVal > 0) {
                     curDiff = scoreDoc.score - prevVal;
@@ -260,9 +262,15 @@ public class DfsPhase {
             }
             Query filter = KeywordField.newSetQuery(
                 field + DenseVectorFieldMapper.NEAREST_CENTROIDS_SUFFIX,
-                nearestCentroids.stream().map(x-> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new));
-            Query exactKnn = new ExactSearchKnnByteVectorQuery(field + DenseVectorFieldMapper
-                .FLAT_VECTOR_SUFFIX, vector, k, filter, VectorSimilarityFunction.COSINE);
+                nearestCentroids.stream().map(x -> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new)
+            );
+            Query exactKnn = new ExactSearchKnnByteVectorQuery(
+                field + DenseVectorFieldMapper.FLAT_VECTOR_SUFFIX,
+                vector,
+                k,
+                filter,
+                VectorSimilarityFunction.COSINE
+            );
             exactKnn = exactKnn.rewrite(searcher);
             secondPhaseResults = searcher.search(exactKnn, topDocsCollectorManager);
             if (profilers != null) {
@@ -277,7 +285,9 @@ public class DfsPhase {
             float prevVal = 0f;
             for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
                 if (Math.abs(curDiff) > e1) break;
-                String id = Uid.decodeId(searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes);
+                String id = Uid.decodeId(
+                    searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes
+                );
                 nearestCentroids.add(id);
                 if (prevVal > 0) {
                     curDiff = scoreDoc.score - prevVal;
@@ -286,9 +296,15 @@ public class DfsPhase {
             }
             Query filter = KeywordField.newSetQuery(
                 field + DenseVectorFieldMapper.NEAREST_CENTROIDS_SUFFIX,
-                nearestCentroids.stream().map(x-> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new));
-            Query exactKnn = new ExactSearchKnnFloatVectorQuery(field + DenseVectorFieldMapper
-                .FLAT_VECTOR_SUFFIX, vector, k, filter, VectorSimilarityFunction.COSINE);
+                nearestCentroids.stream().map(x -> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new)
+            );
+            Query exactKnn = new ExactSearchKnnFloatVectorQuery(
+                field + DenseVectorFieldMapper.FLAT_VECTOR_SUFFIX,
+                vector,
+                k,
+                filter,
+                VectorSimilarityFunction.COSINE
+            );
             exactKnn = exactKnn.rewrite(searcher);
             secondPhaseResults = searcher.search(exactKnn, topDocsCollectorManager);
             if (profilers != null) {
