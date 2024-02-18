@@ -70,7 +70,6 @@ public class ExactSearchKnnByteVectorQuery extends ESKnnByteVectorQuery {
             }
         }
 
-        // Remove any remaining sentinel values
         while (queue.size() > 0 && queue.top().score < 0) {
             queue.pop();
         }

@@ -72,7 +72,6 @@ public class ExactSearchKnnFloatVectorQuery extends ESKnnFloatVectorQuery {
             }
         }
 
-        // Remove any remaining sentinel values
         while (queue.size() > 0 && queue.top().score < 0) {
             queue.pop();
         }
