@@ -21,7 +21,7 @@ import java.io.IOException;
 public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements ProfilingQuery {
     private static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
     private long vectorOpsCount;
-    private final float[] target;
+    protected final float[] target;
 
     public ESKnnFloatVectorQuery(String field, float[] target, int k, Query filter) {
         super(field, target, k, filter);

@@ -8,16 +8,22 @@
 
 package org.elasticsearch.search.dfs;
 
+import org.apache.lucene.document.KeywordField;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.CollectorManager;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TermStatistics;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopScoreDocCollector;
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.query.ParsedQuery;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
@@ -31,12 +37,17 @@ import org.elasticsearch.search.profile.query.CollectorResult;
 import org.elasticsearch.search.profile.query.ProfileCollectorManager;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 import org.elasticsearch.search.rescore.RescoreContext;
+import org.elasticsearch.search.vectors.ESKnnByteVectorQuery;
+import org.elasticsearch.search.vectors.ESKnnFloatVectorQuery;
+import org.elasticsearch.search.vectors.ExactSearchKnnByteVectorQuery;
+import org.elasticsearch.search.vectors.ExactSearchKnnFloatVectorQuery;
 import org.elasticsearch.search.vectors.KnnSearchBuilder;
 import org.elasticsearch.search.vectors.KnnVectorQueryBuilder;
 import org.elasticsearch.search.vectors.ProfilingQuery;
 import org.elasticsearch.tasks.TaskCancelledException;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -204,7 +215,7 @@ public class DfsPhase {
     static DfsKnnResults singleKnnSearch(Query knnQuery, int k, Profilers profilers, ContextIndexSearcher searcher, String nestedPath)
         throws IOException {
         CollectorManager<? extends Collector, TopDocs> topDocsCollectorManager = TopScoreDocCollector.createSharedManager(
-            k,
+            Math.min(1_000, k * 2),
             null,
             Integer.MAX_VALUE
         );
@@ -227,10 +238,64 @@ public class DfsPhase {
 
             knnProfiler.setCollectorResult(ipcm.getCollectorTree());
         }
-        // Set profiler back after running KNN searches
-        if (profilers != null) {
-            searcher.setProfiler(profilers.getCurrentQueryProfiler());
+
+        // SPANN
+        TopDocs secondPhaseResults = null;
+        if (knnQuery instanceof ESKnnByteVectorQuery) {
+            String field = ((ESKnnByteVectorQuery) knnQuery).getField();
+            byte[] vector = ((ESKnnByteVectorQuery) knnQuery).getTargetCopy();
+
+            List<String> nearestCentroids = new ArrayList<>();
+            final float e1 = .05f;
+            float curDiff = 0f;
+            float prevVal = 0f;
+            for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
+                if (Math.abs(curDiff) > e1) break;
+                String id = Uid.decodeId(searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes);
+                nearestCentroids.add(id);
+                if (prevVal > 0) {
+                    curDiff = scoreDoc.score - prevVal;
+                }
+                prevVal = scoreDoc.score;
+            }
+            Query filter = KeywordField.newSetQuery(
+                field + DenseVectorFieldMapper.NEAREST_CENTROIDS_SUFFIX,
+                nearestCentroids.stream().map(x-> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new));
+            Query exactKnn = new ExactSearchKnnByteVectorQuery(field + DenseVectorFieldMapper
+                .FLAT_VECTOR_SUFFIX, vector, k, filter, VectorSimilarityFunction.COSINE);
+            exactKnn = exactKnn.rewrite(searcher);
+            secondPhaseResults = searcher.search(exactKnn, topDocsCollectorManager);
+            if (profilers != null) {
+                searcher.setProfiler(profilers.getCurrentQueryProfiler());
+            }
+        } else if (knnQuery instanceof ESKnnFloatVectorQuery) {
+            String field = ((ESKnnFloatVectorQuery) knnQuery).getField();
+            float[] vector = ((ESKnnFloatVectorQuery) knnQuery).getTargetCopy();
+            List<String> nearestCentroids = new ArrayList<>();
+            final float e1 = .05f;
+            float curDiff = 0f;
+            float prevVal = 0f;
+            for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
+                if (Math.abs(curDiff) > e1) break;
+                String id = Uid.decodeId(searcher.getIndexReader().storedFields().document(scoreDoc.doc).getField("_id").binaryValue().bytes);
+                nearestCentroids.add(id);
+                if (prevVal > 0) {
+                    curDiff = scoreDoc.score - prevVal;
+                }
+                prevVal = scoreDoc.score;
+            }
+            Query filter = KeywordField.newSetQuery(
+                field + DenseVectorFieldMapper.NEAREST_CENTROIDS_SUFFIX,
+                nearestCentroids.stream().map(x-> new BytesRef(x.getBytes(StandardCharsets.UTF_8))).toArray(BytesRef[]::new));
+            Query exactKnn = new ExactSearchKnnFloatVectorQuery(field + DenseVectorFieldMapper
+                .FLAT_VECTOR_SUFFIX, vector, k, filter, VectorSimilarityFunction.COSINE);
+            exactKnn = exactKnn.rewrite(searcher);
+            secondPhaseResults = searcher.search(exactKnn, topDocsCollectorManager);
+            if (profilers != null) {
+                searcher.setProfiler(profilers.getCurrentQueryProfiler());
+            }
         }
-        return new DfsKnnResults(nestedPath, topDocs.scoreDocs);
+        assert secondPhaseResults != null;
+        return new DfsKnnResults(nestedPath, secondPhaseResults.scoreDocs);
     }
 }

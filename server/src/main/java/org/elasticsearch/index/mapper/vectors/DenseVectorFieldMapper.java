@@ -95,6 +95,9 @@ import static org.elasticsearch.common.xcontent.XContentParserUtils.ensureExpect
  */
 public class DenseVectorFieldMapper extends FieldMapper {
     public static final String COSINE_MAGNITUDE_FIELD_SUFFIX = "._magnitude";
+
+    public static final String FLAT_VECTOR_SUFFIX = "_flat_vector";
+    public static final String NEAREST_CENTROIDS_SUFFIX = "_centroids";
     private static final float EPS = 1e-4f;
 
     static boolean isNotUnitVector(float magnitude) {

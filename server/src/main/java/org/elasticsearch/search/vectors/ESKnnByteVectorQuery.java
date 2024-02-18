@@ -22,7 +22,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements Profilin
     private static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
 
     private long vectorOpsCount;
-    private final byte[] target;
+    protected final byte[] target;
 
     public ESKnnByteVectorQuery(String field, byte[] target, int k, Query filter) {
         super(field, target, k, filter);
