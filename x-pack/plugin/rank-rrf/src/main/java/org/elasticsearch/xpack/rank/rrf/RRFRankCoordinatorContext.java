@@ -39,7 +39,12 @@ public class RRFRankCoordinatorContext extends RankCoordinatorContext {
     }
 
     @Override
-    public SortedTopDocs rank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats) {
+    public SortedTopDocs rank(SortedTopDocs topDocs, TopDocsStats topDocStats) {
+        return topDocs;
+    }
+
+    @Override
+    public SortedTopDocs firstPhaseRank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats) {
         // for each shard we check to see if it timed out to skip
         // if it didn't time out then we need to split the results into
         // a priority queue per query, so we can do global ranking

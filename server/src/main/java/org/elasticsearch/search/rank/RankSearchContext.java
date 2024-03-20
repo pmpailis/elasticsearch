@@ -27,6 +27,7 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchDocValuesContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
@@ -514,6 +515,11 @@ public class RankSearchContext extends SearchContext {
 
     @Override
     public FetchSearchResult fetchResult() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public RankSearchResult rankSearchResult() {
         throw new UnsupportedOperationException();
     }
 

@@ -38,5 +38,7 @@ public abstract class RankCoordinatorContext {
      * appropriate stats may be updated based on rank results. This is called at the end
      * of the query phase prior to the fetch phase.
      */
-    public abstract SortedTopDocs rank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocStats);
+    public abstract SortedTopDocs rank(SortedTopDocs querySearchResults, TopDocsStats topDocStats);
+
+    public abstract SortedTopDocs firstPhaseRank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats);
 }

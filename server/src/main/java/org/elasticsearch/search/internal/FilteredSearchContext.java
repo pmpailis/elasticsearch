@@ -27,6 +27,7 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import org.elasticsearch.search.fetch.subphase.InnerHitsContext;
@@ -392,6 +393,11 @@ public abstract class FilteredSearchContext extends SearchContext {
     @Override
     public FetchSearchResult fetchResult() {
         return in.fetchResult();
+    }
+
+    @Override
+    public RankSearchResult rankSearchResult() {
+        return in.rankSearchResult();
     }
 
     @Override

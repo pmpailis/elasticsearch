@@ -34,11 +34,13 @@ import org.elasticsearch.search.fetch.ScrollQueryFetchSearchResult;
 import org.elasticsearch.search.fetch.ShardFetchRequest;
 import org.elasticsearch.search.fetch.ShardFetchSearchRequest;
 import org.elasticsearch.search.internal.InternalScrollSearchRequest;
+import org.elasticsearch.search.internal.ShardRankRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
+import org.elasticsearch.search.rank.twophase.TwoPhaseRankSearchResult;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.RemoteClusterService;
@@ -70,6 +72,7 @@ import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_CA
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_FETCH_SCROLL_ACTION_METRIC;
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_ID_ACTION_METRIC;
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_SCROLL_ACTION_METRIC;
+import static org.elasticsearch.action.search.SearchTransportAPMMetrics.RANK_ACTION_METRIC;
 
 /**
  * An encapsulation of {@link org.elasticsearch.search.SearchService} operations exposed through
@@ -92,6 +95,7 @@ public class SearchTransportService {
      */
     public static final String QUERY_ID_ACTION_NAME = "indices:data/read/search[phase/query/id]";
     public static final String QUERY_SCROLL_ACTION_NAME = "indices:data/read/search[phase/query/scroll]";
+    public static final String RANK_ACTION_NAME = "indices:data/read/search[phase/rank]";
     public static final String QUERY_FETCH_SCROLL_ACTION_NAME = "indices:data/read/search[phase/query+fetch/scroll]";
     public static final String FETCH_ID_SCROLL_ACTION_NAME = "indices:data/read/search[phase/fetch/id/scroll]";
     public static final String FETCH_ID_ACTION_NAME = "indices:data/read/search[phase/fetch/id]";
@@ -325,6 +329,23 @@ public class SearchTransportService {
         return new HashMap<>(clientConnections);
     }
 
+    public void sendExecuteRank(
+        Transport.Connection connection,
+        final ShardRankRequest request,
+        SearchTask task,
+        final SearchActionListener<? super SearchPhaseResult> listener
+    ) {
+        Writeable.Reader<SearchPhaseResult> reader = TwoPhaseRankSearchResult::new;
+        final ActionListener<? super SearchPhaseResult> handler = responseWrapper.apply(connection, listener);
+        transportService.sendChildRequest(
+            connection,
+            RANK_ACTION_NAME,
+            request,
+            task,
+            new ConnectionCountingHandler<>(handler, reader, connection)
+        );
+    }
+
     static class ScrollFreeContextRequest extends TransportRequest {
         private final ShardSearchContextId contextId;
 
@@ -504,6 +525,23 @@ public class SearchTransportService {
             )
         );
         TransportActionProxy.registerProxyAction(transportService, QUERY_ID_ACTION_NAME, true, QuerySearchResult::new);
+
+        transportService.registerRequestHandler(
+            RANK_ACTION_NAME,
+            EsExecutors.DIRECT_EXECUTOR_SERVICE,
+            ShardRankRequest::new,
+            instrumentedHandler(
+                RANK_ACTION_METRIC,
+                transportService,
+                searchTransportMetrics,
+                (request, channel, task) -> searchService.executeRankPhase(
+                    request,
+                    (SearchShardTask) task,
+                    new ChannelActionListener<>(channel)
+                )
+            )
+        );
+        TransportActionProxy.registerProxyAction(transportService, RANK_ACTION_NAME, true, TwoPhaseRankSearchResult::new);
 
         transportService.registerRequestHandler(
             QUERY_SCROLL_ACTION_NAME,

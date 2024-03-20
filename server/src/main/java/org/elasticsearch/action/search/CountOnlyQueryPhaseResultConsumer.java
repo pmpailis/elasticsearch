@@ -70,12 +70,13 @@ class CountOnlyQueryPhaseResultConsumer extends SearchPhaseResults<SearchPhaseRe
 
     @Override
     public SearchPhaseController.ReducedQueryPhase reduce() throws Exception {
+        SearchPhaseController.TopDocsStats topDocsStats = new SearchPhaseController.TopDocsStats(0);
+        topDocsStats.setMaxScore(Float.NaN);
+        topDocsStats.timedOut = timedOut.get();
+        topDocsStats.terminatedEarly = terminatedEarly.get();
         SearchPhaseController.ReducedQueryPhase reducePhase = new SearchPhaseController.ReducedQueryPhase(
             new TotalHits(totalHits.sum(), relationAtomicReference.get()),
-            0,
-            Float.NaN,
-            timedOut.get(),
-            terminatedEarly.get(),
+            topDocsStats,
             null,
             null,
             null,

@@ -21,6 +21,7 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRunnable;
 import org.elasticsearch.action.search.CanMatchNodeRequest;
 import org.elasticsearch.action.search.CanMatchNodeResponse;
+import org.elasticsearch.action.search.RankSearchPhase;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchShardTask;
 import org.elasticsearch.action.search.SearchType;
@@ -100,6 +101,7 @@ import org.elasticsearch.search.internal.InternalScrollSearchRequest;
 import org.elasticsearch.search.internal.LegacyReaderContext;
 import org.elasticsearch.search.internal.ReaderContext;
 import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.internal.ShardRankRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.internal.SubSearchContext;
@@ -1541,6 +1543,19 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     public ResponseCollectorService getResponseCollectorService() {
         return this.responseCollectorService;
+    }
+
+    public void executeRankPhase(ShardRankRequest request, SearchShardTask task, ActionListener<SearchPhaseResult> listener)
+        throws IOException {
+        System.out.println("here");
+        final ReaderContext readerContext = findReaderContext(request.contextId(), request);
+        final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
+        try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.FETCH, false)) {
+            RankSearchPhase.execute(searchContext, request.getDocIds());
+        } catch (Exception e) {
+            assert TransportActions.isShardNotAvailableException(e) == false : new AssertionError(e);
+            throw e;
+        }
     }
 
     /**

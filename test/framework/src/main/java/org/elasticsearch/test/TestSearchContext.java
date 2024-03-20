@@ -28,6 +28,7 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchDocValuesContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
@@ -484,6 +485,11 @@ public class TestSearchContext extends SearchContext {
 
     @Override
     public FetchSearchResult fetchResult() {
+        return null;
+    }
+
+    @Override
+    public RankSearchResult rankSearchResult() {
         return null;
     }
 

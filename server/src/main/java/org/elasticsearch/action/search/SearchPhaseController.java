@@ -184,7 +184,7 @@ public final class SearchPhaseController {
      * @param from the offset into the search results top docs
      * @param size the number of hits to return from the merged top docs
      */
-    static SortedTopDocs sortDocs(
+    public static SortedTopDocs sortDocs(
         boolean ignoreFrom,
         final Collection<TopDocs> topDocs,
         int from,
@@ -229,7 +229,7 @@ public final class SearchPhaseController {
         return new SortedTopDocs(scoreDocs, isSortedByField, sortFields, groupField, groupValues, numSuggestDocs);
     }
 
-    static TopDocs mergeTopDocs(Collection<TopDocs> results, int topN, int from) {
+    public static TopDocs mergeTopDocs(Collection<TopDocs> results, int topN, int from) {
         if (results.isEmpty()) {
             return null;
         }
@@ -323,7 +323,7 @@ public final class SearchPhaseController {
         if (reducedQueryPhase.isEmptyResult == false) {
             final ScoreDoc[] sortedScoreDocs = reducedQueryPhase.sortedTopDocs.scoreDocs;
             // from is always zero as when we use scroll, we ignore from
-            long size = Math.min(reducedQueryPhase.fetchHits, reducedQueryPhase.size);
+            long size = Math.min(reducedQueryPhase.topDocsStats.fetchHits, reducedQueryPhase.size);
             // with collapsing we can have more hits than sorted docs
             size = Math.min(sortedScoreDocs.length, size);
             for (int sortedDocsIndex = 0; sortedDocsIndex < size; sortedDocsIndex++) {
@@ -433,7 +433,7 @@ public final class SearchPhaseController {
             entry.fetchResult().initCounter();
         }
         int from = ignoreFrom ? 0 : reducedQueryPhase.from;
-        int numSearchHits = (int) Math.min(reducedQueryPhase.fetchHits - from, reducedQueryPhase.size);
+        int numSearchHits = (int) Math.min(reducedQueryPhase.topDocsStats.fetchHits - from, reducedQueryPhase.size);
         // with collapsing we can have more fetch hits than sorted docs
         // also we need to take into account that we potentially have completion suggestions stored in the scoreDocs array
         numSearchHits = Math.min(sortedTopDocs.scoreDocs.length - sortedTopDocs.numberOfCompletionsSuggestions, numSearchHits);
@@ -475,7 +475,7 @@ public final class SearchPhaseController {
         return new SearchHits(
             hits.toArray(SearchHits.EMPTY),
             reducedQueryPhase.totalHits,
-            reducedQueryPhase.maxScore,
+            reducedQueryPhase.topDocsStats.getMaxScore(),
             sortedTopDocs.sortFields,
             sortedTopDocs.collapseField,
             sortedTopDocs.collapseValues
@@ -550,10 +550,7 @@ public final class SearchPhaseController {
             final TotalHits totalHits = topDocsStats.getTotalHits();
             return new ReducedQueryPhase(
                 totalHits,
-                topDocsStats.fetchHits,
-                topDocsStats.getMaxScore(),
-                false,
-                null,
+                topDocsStats,
                 null,
                 null,
                 null,
@@ -635,17 +632,17 @@ public final class SearchPhaseController {
             : new SearchProfileResultsBuilder(profileShardResults);
         final SortedTopDocs sortedTopDocs = rankCoordinatorContext == null
             ? sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions)
-            : rankCoordinatorContext.rank(queryResults.stream().map(SearchPhaseResult::queryResult).toList(), topDocsStats);
+            : rankCoordinatorContext.firstPhaseRank(queryResults.stream().map(SearchPhaseResult::queryResult).toList(), topDocsStats);
         if (rankCoordinatorContext != null) {
+            // pagination & handling of from & size params has already taken place within the RankCoordinatorContext#rank method
+            // so, we reset their values as no further doc pruning is needed
             size = sortedTopDocs.scoreDocs.length;
+            from = 0;
         }
         final TotalHits totalHits = topDocsStats.getTotalHits();
         return new ReducedQueryPhase(
             totalHits,
-            topDocsStats.fetchHits,
-            topDocsStats.getMaxScore(),
-            topDocsStats.timedOut,
-            topDocsStats.terminatedEarly,
+            topDocsStats,
             reducedSuggest,
             aggregations,
             profileBuilder,
@@ -719,14 +716,7 @@ public final class SearchPhaseController {
         // the sum of all hits across all reduces shards
         TotalHits totalHits,
         // the number of returned hits (doc IDs) across all reduces shards
-        long fetchHits,
-        // the max score across all reduces hits or {@link Float#NaN} if no hits returned
-        float maxScore,
-        // <code>true</code> if at least one reduced result timed out
-        boolean timedOut,
-        // non null and true if at least one reduced result was terminated early
-        Boolean terminatedEarly,
-        // the reduced suggest results
+        TopDocsStats topDocsStats,
         Suggest suggest,
         // the reduced internal aggregations
         InternalAggregations aggregations,
@@ -763,8 +753,8 @@ public final class SearchPhaseController {
                 hits,
                 aggregations,
                 suggest,
-                timedOut,
-                terminatedEarly,
+                topDocsStats.timedOut,
+                topDocsStats.terminatedEarly,
                 buildSearchProfileResults(fetchResults),
                 numReducePhases
             );
@@ -839,6 +829,10 @@ public final class SearchPhaseController {
 
         float getMaxScore() {
             return Float.isInfinite(maxScore) ? Float.NaN : maxScore;
+        }
+
+        void setMaxScore(float maxScore) {
+            this.maxScore = maxScore;
         }
 
         TotalHits getTotalHits() {

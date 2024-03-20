@@ -72,4 +72,8 @@ public abstract class RankDoc extends ScoreDoc implements Writeable {
     public String toString() {
         return "RankDoc{" + "score=" + score + ", doc=" + doc + ", shardIndex=" + shardIndex + '}';
     }
+
+    public float getScore() {
+        return score;
+    }
 }

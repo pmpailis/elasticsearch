@@ -16,6 +16,8 @@ import org.elasticsearch.license.LicenseUtils;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankCoordinatorContext;
 import org.elasticsearch.search.rank.RankShardContext;
+import org.elasticsearch.search.rank.twophase.RandomInferenceRankShardContext;
+import org.elasticsearch.search.rank.twophase.TwoPhaseRankCoordinatorContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -96,12 +98,12 @@ public class RRFRankBuilder extends RankBuilder {
 
     @Override
     public RankShardContext buildRankShardContext(List<Query> queries, int from) {
-        return new RRFRankShardContext(queries, from, windowSize(), rankConstant);
+        return new RandomInferenceRankShardContext(queries, from, windowSize(), rankConstant, "body", "model");
     }
 
     @Override
     public RankCoordinatorContext buildRankCoordinatorContext(int size, int from) {
-        return new RRFRankCoordinatorContext(size, from, windowSize(), rankConstant);
+        return new TwoPhaseRankCoordinatorContext(size, from, windowSize());
     }
 
     @Override

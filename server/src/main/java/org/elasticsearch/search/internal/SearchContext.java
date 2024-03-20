@@ -32,6 +32,7 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchDocValuesContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
@@ -345,6 +346,8 @@ public abstract class SearchContext implements Releasable {
     public abstract FetchPhase fetchPhase();
 
     public abstract FetchSearchResult fetchResult();
+
+    public abstract RankSearchResult rankSearchResult();
 
     /**
      * Indicates that the caller will be using, and thus owning, a {@link FetchSearchResult} object.  It is the caller's responsibility

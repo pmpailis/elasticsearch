@@ -51,6 +51,7 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchDocValuesContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
@@ -99,6 +100,7 @@ final class DefaultSearchContext extends SearchContext {
     private DfsSearchResult dfsResult;
     private QuerySearchResult queryResult;
     private FetchSearchResult fetchResult;
+    private RankSearchResult rankSearchResult;
     private final float queryBoost;
     private final boolean lowLevelCancellation;
     private TimeValue timeout;
@@ -213,6 +215,7 @@ final class DefaultSearchContext extends SearchContext {
                 request.source() == null ? null : request.source().size()
             );
             queryBoost = request.indexBoost();
+            this.rankSearchResult = new RankSearchResult(readerContext.id(), shardTarget);
             this.lowLevelCancellation = lowLevelCancellation;
             success = true;
         } finally {
@@ -849,6 +852,11 @@ final class DefaultSearchContext extends SearchContext {
     @Override
     public FetchSearchResult fetchResult() {
         return fetchResult;
+    }
+
+    @Override
+    public RankSearchResult rankSearchResult() {
+        return rankSearchResult;
     }
 
     @Override

@@ -370,8 +370,17 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     true,
                     InternalAggregationTestCase.emptyReduceContextBuilder(),
                     new RankCoordinatorContext(randomIntBetween(1, 10), 0, randomIntBetween(11, 100)) {
+
                         @Override
                         public SearchPhaseController.SortedTopDocs rank(
+                            SearchPhaseController.SortedTopDocs querySearchResults,
+                            TopDocsStats topDocStats
+                        ) {
+                            return querySearchResults;
+                        }
+
+                        @Override
+                        public SearchPhaseController.SortedTopDocs firstPhaseRank(
                             List<QuerySearchResult> querySearchResults,
                             TopDocsStats topDocStats
                         ) {
@@ -793,7 +802,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
             Max internalMax = (Max) reduce.aggregations().asList().get(0);
             assertEquals(max.get(), internalMax.value(), 0.0D);
             assertEquals(1, reduce.sortedTopDocs().scoreDocs().length);
-            assertEquals(max.get(), reduce.maxScore(), 0.0f);
+            assertEquals(max.get(), reduce.topDocsStats().getMaxScore(), 0.0f);
             assertEquals(expectedNumResults, reduce.totalHits().value);
             assertEquals(max.get(), reduce.sortedTopDocs().scoreDocs()[0].score, 0.0f);
             assertFalse(reduce.sortedTopDocs().isSortedByField());
@@ -853,7 +862,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
             Max internalMax = (Max) reduce.aggregations().asList().get(0);
             assertEquals(max.get(), internalMax.value(), 0.0D);
             assertEquals(0, reduce.sortedTopDocs().scoreDocs().length);
-            assertEquals(max.get(), reduce.maxScore(), 0.0f);
+            assertEquals(max.get(), reduce.topDocsStats().getMaxScore(), 0.0f);
             assertEquals(expectedNumResults, reduce.totalHits().value);
             assertFalse(reduce.sortedTopDocs().isSortedByField());
             assertNull(reduce.sortedTopDocs().sortFields());
@@ -911,7 +920,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
             SearchPhaseController.ReducedQueryPhase reduce = consumer.reduce();
             assertAggReduction(request);
             assertEquals(1, reduce.sortedTopDocs().scoreDocs().length);
-            assertEquals(max.get(), reduce.maxScore(), 0.0f);
+            assertEquals(max.get(), reduce.topDocsStats().getMaxScore(), 0.0f);
             assertEquals(expectedNumResults, reduce.totalHits().value);
             assertEquals(max.get(), reduce.sortedTopDocs().scoreDocs()[0].score, 0.0f);
             assertFalse(reduce.sortedTopDocs().isSortedByField());
@@ -978,7 +987,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
             SearchPhaseController.ReducedQueryPhase reduce = consumer.reduce();
             ScoreDoc[] scoreDocs = reduce.sortedTopDocs().scoreDocs();
             assertEquals(5, scoreDocs.length);
-            assertEquals(100.f, reduce.maxScore(), 0.0f);
+            assertEquals(100.f, reduce.topDocsStats().getMaxScore(), 0.0f);
             assertEquals(12, reduce.totalHits().value);
             assertEquals(95.0f, scoreDocs[0].score, 0.0f);
             assertEquals(94.0f, scoreDocs[1].score, 0.0f);
@@ -1307,7 +1316,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 Max internalMax = (Max) reduce.aggregations().asList().get(0);
                 assertEquals(max.get(), internalMax.value(), 0.0D);
                 assertEquals(1, reduce.sortedTopDocs().scoreDocs().length);
-                assertEquals(max.get(), reduce.maxScore(), 0.0f);
+                assertEquals(max.get(), reduce.topDocsStats().getMaxScore(), 0.0f);
                 assertEquals(expectedNumResults, reduce.totalHits().value);
                 assertEquals(max.get(), reduce.sortedTopDocs().scoreDocs()[0].score, 0.0f);
                 assertFalse(reduce.sortedTopDocs().isSortedByField());
