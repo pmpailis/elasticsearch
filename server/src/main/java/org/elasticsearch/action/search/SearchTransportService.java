@@ -40,6 +40,7 @@ import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
+import org.elasticsearch.search.rank.RankSearchResult;
 import org.elasticsearch.search.rank.twophase.TwoPhaseRankSearchResult;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -333,16 +334,14 @@ public class SearchTransportService {
         Transport.Connection connection,
         final ShardRankRequest request,
         SearchTask task,
-        final SearchActionListener<? super SearchPhaseResult> listener
+        final SearchActionListener<RankSearchResult> listener
     ) {
-        Writeable.Reader<SearchPhaseResult> reader = TwoPhaseRankSearchResult::new;
-        final ActionListener<? super SearchPhaseResult> handler = responseWrapper.apply(connection, listener);
         transportService.sendChildRequest(
             connection,
             RANK_ACTION_NAME,
             request,
             task,
-            new ConnectionCountingHandler<>(handler, reader, connection)
+            new ConnectionCountingHandler<>(listener, RankSearchResult::new, connection)
         );
     }
 

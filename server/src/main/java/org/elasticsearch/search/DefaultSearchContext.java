@@ -51,7 +51,6 @@ import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
-import org.elasticsearch.search.fetch.RankSearchResult;
 import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchDocValuesContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
@@ -66,6 +65,7 @@ import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.rank.RankSearchResult;
 import org.elasticsearch.search.rank.RankShardContext;
 import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.slice.SliceBuilder;
@@ -215,7 +215,6 @@ final class DefaultSearchContext extends SearchContext {
                 request.source() == null ? null : request.source().size()
             );
             queryBoost = request.indexBoost();
-            this.rankSearchResult = new RankSearchResult(readerContext.id(), shardTarget);
             this.lowLevelCancellation = lowLevelCancellation;
             success = true;
         } finally {
@@ -295,6 +294,12 @@ final class DefaultSearchContext extends SearchContext {
     public void addQueryResult() {
         this.queryResult = new QuerySearchResult(this.readerContext.id(), this.shardTarget, this.request);
         addReleasable(queryResult::decRef);
+    }
+
+    @Override
+    public void addRankSearchResult() {
+        this.rankSearchResult = new RankSearchResult(this.readerContext.id(), this.shardTarget, this.request());
+        addReleasable(rankSearchResult::decRef);
     }
 
     @Override

@@ -10,6 +10,7 @@ package org.elasticsearch.search.rank;
 
 import org.elasticsearch.action.search.SearchPhaseController.SortedTopDocs;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
+import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.query.QuerySearchResult;
 
 import java.util.List;
@@ -38,7 +39,7 @@ public abstract class RankCoordinatorContext {
      * appropriate stats may be updated based on rank results. This is called at the end
      * of the query phase prior to the fetch phase.
      */
-    public abstract SortedTopDocs rank(SortedTopDocs querySearchResults, TopDocsStats topDocStats);
+    public abstract SortedTopDocs rank(SearchPhaseResult[] shardRankResults, SortedTopDocs topDocs, TopDocsStats topDocsStats);
 
     public abstract SortedTopDocs firstPhaseRank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats);
 }

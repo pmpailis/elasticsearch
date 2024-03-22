@@ -6,7 +6,7 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.fetch;
+package org.elasticsearch.search.rank;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -15,7 +15,7 @@ import org.elasticsearch.core.SimpleRefCounted;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.internal.ShardSearchContextId;
-import org.elasticsearch.search.rank.RankShardResult;
+import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.rank.twophase.TwoPhaseRankShardResult;
 import org.elasticsearch.transport.LeakTracker;
 
@@ -30,15 +30,18 @@ public final class RankSearchResult extends SearchPhaseResult {
 
     public RankSearchResult() {}
 
-    public RankSearchResult(ShardSearchContextId id, SearchShardTarget shardTarget) {
+    public RankSearchResult(ShardSearchContextId id, SearchShardTarget shardTarget, ShardSearchRequest request) {
         this.contextId = id;
         setSearchShardTarget(shardTarget);
+        setShardSearchRequest(request);
     }
 
     public RankSearchResult(StreamInput in) throws IOException {
         super(in);
         contextId = new ShardSearchContextId(in);
         rankShardResult = in.readOptionalWriteable(TwoPhaseRankShardResult::new);
+        setShardSearchRequest(in.readOptionalWriteable(ShardSearchRequest::new));
+        setSearchShardTarget(in.readOptionalWriteable(SearchShardTarget::new));
     }
 
     @Override
@@ -46,6 +49,8 @@ public final class RankSearchResult extends SearchPhaseResult {
         assert hasReferences();
         contextId.writeTo(out);
         out.writeOptionalWriteable(rankShardResult);
+        out.writeOptionalWriteable(getShardSearchRequest());
+        out.writeOptionalWriteable(getSearchShardTarget());
     }
 
     @Override

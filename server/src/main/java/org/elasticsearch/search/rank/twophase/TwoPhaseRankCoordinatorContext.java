@@ -10,12 +10,14 @@ package org.elasticsearch.search.rank.twophase;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.action.search.SearchPhaseController.SortedTopDocs;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
+import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankCoordinatorContext;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.RankShardResult;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
@@ -32,18 +34,27 @@ public class TwoPhaseRankCoordinatorContext extends RankCoordinatorContext {
     protected record RankKey(int doc, int shardIndex) {}
 
     @Override
-    public SortedTopDocs rank(SortedTopDocs topDocs, TopDocsStats topDocsStats) {
-        // this won't be abstracted - we only need to abstract the shard - level calls where we'll make the calls to the external service
+    public SortedTopDocs rank(SearchPhaseResult[] shardRankResults, SortedTopDocs topDocs, TopDocsStats topDocsStats) {
+        List<TwoPhaseRankDoc> rankDocs = new ArrayList<>();
+        for (SearchPhaseResult result : shardRankResults) {
+            RankShardResult rsr = result.rankSearchResult().shardResult();
+            assert rsr instanceof TwoPhaseRankShardResult;
+            Collections.addAll(rankDocs, ((TwoPhaseRankShardResult) rsr).reRankedDocs);
+        }
+        rankDocs.sort(Comparator.comparing(TwoPhaseRankDoc::getSecondPhaseScore).reversed());
 
-        TwoPhaseRankDoc[] topResults = new TwoPhaseRankDoc[Math.min(size, topDocs.scoreDocs().length - from)];
+        TwoPhaseRankDoc[] topResults = new TwoPhaseRankDoc[Math.min(size, rankDocs.size() - from)];
         for (int rank = 0; rank < topResults.length; ++rank) {
-            ScoreDoc scoreDoc = topDocs.scoreDocs()[from + rank];
-            topResults[rank] = new TwoPhaseRankDoc(scoreDoc.doc, 0, scoreDoc.shardIndex, scoreDoc.score);
+            TwoPhaseRankDoc scoreDoc = rankDocs.get(from + rank);
+            topResults[rank] = new TwoPhaseRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex, scoreDoc.secondPhaseScore);
+            topResults[rank].rank = from + rank;
+            topResults[rank].score = scoreDoc.secondPhaseScore;
         }
         // update fetch hits for the fetch phase, so we gather any additional
         // information required just like a standard query
         assert topDocsStats.fetchHits == 0;
         topDocsStats.fetchHits = topResults.length;
+        topDocsStats.setMaxScore(topResults[0].score);
 
         // return the top results where sort, collapse fields,
         // and completion suggesters are not allowed

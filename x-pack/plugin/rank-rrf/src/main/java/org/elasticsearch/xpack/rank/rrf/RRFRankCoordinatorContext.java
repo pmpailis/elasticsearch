@@ -11,6 +11,7 @@ import org.apache.lucene.util.PriorityQueue;
 import org.elasticsearch.action.search.SearchPhaseController.SortedTopDocs;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
 import org.elasticsearch.common.util.Maps;
+import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankCoordinatorContext;
 
@@ -39,7 +40,7 @@ public class RRFRankCoordinatorContext extends RankCoordinatorContext {
     }
 
     @Override
-    public SortedTopDocs rank(SortedTopDocs topDocs, TopDocsStats topDocStats) {
+    public SortedTopDocs rank(SearchPhaseResult[] shardRankResults, SortedTopDocs topDocs, TopDocsStats topDocsStats) {
         return topDocs;
     }
 

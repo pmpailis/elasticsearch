@@ -17,8 +17,12 @@ import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.fetch.ShardFetchSearchRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.rank.RankSearchResult;
+import org.elasticsearch.search.rank.twophase.TwoPhaseRankDoc;
+import org.elasticsearch.search.rank.twophase.TwoPhaseRankShardResult;
 import org.elasticsearch.transport.Transport;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -121,12 +125,19 @@ final class FetchSearchPhase extends SearchPhase {
                             // if we got some hits from this shard we have to release the context there
                             // we do this as we go since it will free up resources and passing on the request on the
                             // transport layer is cheap.
-                            releaseIrrelevantSearchContext(queryResult.queryResult());
+                            if (queryResult.queryResult() != null) {
+                                releaseIrrelevantSearchContext(queryResult.queryResult());
+                            } else if (queryResult.rankSearchResult() != null) {
+                                releaseIrrelevantSearchContext(queryResult.rankSearchResult());
+                            }
                             progressListener.notifyFetchResult(i);
                         }
                         // in any case we count down this result since we don't talk to this shard anymore
                         counter.countDown();
                     } else {
+                        List<Float> scores = Arrays.stream(
+                            ((TwoPhaseRankShardResult) queryResults.get(i).rankSearchResult().shardResult()).reRankedDocs
+                        ).limit(entry.size()).map(TwoPhaseRankDoc::getSecondPhaseScore).toList();
                         executeFetch(queryResult, counter, entry, (lastEmittedDocPerShard != null) ? lastEmittedDocPerShard[i] : null);
                     }
                 }
@@ -149,7 +160,9 @@ final class FetchSearchPhase extends SearchPhase {
     ) {
         final SearchShardTarget shardTarget = queryResult.getSearchShardTarget();
         final int shardIndex = queryResult.getShardIndex();
-        final ShardSearchContextId contextId = queryResult.queryResult().getContextId();
+        final ShardSearchContextId contextId = queryResult.queryResult() != null
+            ? queryResult.queryResult().getContextId()
+            : queryResult.rankSearchResult().getContextId();
         context.getSearchTransport()
             .sendExecuteFetch(
                 context.getConnection(shardTarget.getClusterAlias(), shardTarget.getNodeId()),
@@ -168,6 +181,10 @@ final class FetchSearchPhase extends SearchPhase {
                     public void innerOnResponse(FetchSearchResult result) {
                         try {
                             progressListener.notifyFetchResult(shardIndex);
+                            // SearchHits hits = result.hits();
+                            // for(int i=0;i<hits.getHits().length;i++) {
+                            // hits.getHits()[i].score(scores.get(i));
+                            // }
                             counter.onResult(result);
                         } catch (Exception e) {
                             context.onPhaseFailure(FetchSearchPhase.this, "", e);
@@ -184,11 +201,31 @@ final class FetchSearchPhase extends SearchPhase {
                             // the search context might not be cleared on the node where the fetch was executed for example
                             // because the action was rejected by the thread pool. in this case we need to send a dedicated
                             // request to clear the search context.
-                            releaseIrrelevantSearchContext(queryResult.queryResult());
+                            if (queryResult.queryResult() != null) {
+                                releaseIrrelevantSearchContext(queryResult.queryResult());
+                            } else if (queryResult.rankSearchResult() != null) {
+                                releaseIrrelevantSearchContext(queryResult.rankSearchResult());
+                            }
                         }
                     }
                 }
             );
+    }
+
+    private void releaseIrrelevantSearchContext(RankSearchResult rankSearchResult) {
+        if (context.getRequest().scroll() == null && (context.isPartOfPointInTime(rankSearchResult.getContextId()) == false)) {
+            try {
+                SearchShardTarget shardTarget = rankSearchResult.getSearchShardTarget();
+                Transport.Connection connection = context.getConnection(shardTarget.getClusterAlias(), shardTarget.getNodeId());
+                context.sendReleaseSearchContext(
+                    rankSearchResult.getContextId(),
+                    connection,
+                    context.getOriginalIndices(rankSearchResult.getShardIndex())
+                );
+            } catch (Exception e) {
+                context.getLogger().trace("failed to release context", e);
+            }
+        }
     }
 
     /**

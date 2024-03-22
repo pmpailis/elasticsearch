@@ -12,14 +12,9 @@ import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.dfs.AggregatedDfs;
-import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardRankRequest;
-import org.elasticsearch.search.rank.RankShardContext;
-import org.elasticsearch.search.rank.twophase.TwoPhaseRankDoc;
-import org.elasticsearch.search.rank.twophase.TwoPhaseRankShardContext;
-import org.elasticsearch.search.rank.twophase.TwoPhaseRankShardResult;
+import org.elasticsearch.search.rank.RankSearchResult;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -29,6 +24,8 @@ import java.util.List;
 public final class RankSearchPhase extends SearchPhase {
     private final SearchPhaseContext context;
     private final SearchPhaseResults<SearchPhaseResult> resultConsumer;
+    private final SearchPhaseResults<SearchPhaseResult> rankResults;
+
     private final AggregatedDfs aggregatedDfs;
 
     RankSearchPhase(SearchPhaseResults<SearchPhaseResult> resultConsumer, AggregatedDfs aggregatedDfs, SearchPhaseContext context) {
@@ -44,20 +41,8 @@ public final class RankSearchPhase extends SearchPhase {
         this.context = context;
         this.resultConsumer = resultConsumer;
         this.aggregatedDfs = aggregatedDfs;
-    }
-
-    public static void execute(SearchContext searchContext, int[] docIds) {
-        if (searchContext.rankShardContext() != null) {
-            RankShardContext rankShardContext = searchContext.rankShardContext();
-            if (rankShardContext instanceof TwoPhaseRankShardContext) {
-                TwoPhaseRankShardResult updatedRanks = ((TwoPhaseRankShardContext) rankShardContext).computeUpdatedScores(
-                    searchContext,
-                    docIds,
-                    new float[0]
-                );
-                searchContext.rankSearchResult().shardResult(updatedRanks);
-            }
-        }
+        this.rankResults = new ArraySearchPhaseResults<>(context.getNumShards());
+        context.addReleasable(rankResults);
     }
 
     @Override
@@ -75,6 +60,30 @@ public final class RankSearchPhase extends SearchPhase {
         });
     }
 
+    private void executeNextPhase(SearchPhaseController.ReducedQueryPhase reducedQueryPhase) {
+        SearchPhaseController.SortedTopDocs rerankedTopDocs = reducedQueryPhase.rankCoordinatorContext()
+            .rank(
+                rankResults.getAtomicArray().toArray(new RankSearchResult[context.getNumShards()]),
+                reducedQueryPhase.sortedTopDocs(),
+                reducedQueryPhase.topDocsStats()
+            );
+        reducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
+            reducedQueryPhase.totalHits(),
+            reducedQueryPhase.topDocsStats(),
+            reducedQueryPhase.suggest(),
+            reducedQueryPhase.aggregations(),
+            reducedQueryPhase.profileBuilder(),
+            rerankedTopDocs,
+            reducedQueryPhase.sortValueFormats(),
+            reducedQueryPhase.rankCoordinatorContext(),
+            reducedQueryPhase.numReducePhases(),
+            reducedQueryPhase.size(),
+            reducedQueryPhase.from(),
+            reducedQueryPhase.isEmptyResult()
+        );
+        context.executeNextPhase(this, new FetchSearchPhase(rankResults, aggregatedDfs, context, reducedQueryPhase));
+    }
+
     private void innerRun() throws Exception {
         // we call firstPhaseResults within reduce
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase = resultConsumer.reduce();
@@ -83,12 +92,16 @@ public final class RankSearchPhase extends SearchPhase {
             ScoreDoc[] firstPhaseResults = reducedQueryPhase.sortedTopDocs().scoreDocs();
             final List<Integer>[] docIdsToLoad = SearchPhaseController.fillDocIdsToLoad(context.getNumShards(), firstPhaseResults);
 
-            // reuse rankdoc?
-            final List<TwoPhaseRankDoc[]> reRankedDocs = new ArrayList<>();
             final CountedCollector<SearchPhaseResult> counter = new CountedCollector<>(
-                resultConsumer,
+                rankResults,
                 docIdsToLoad.length, // we count down every shard in the result no matter if we got any results or not
-                () -> System.out.println("done"),
+                () -> {
+                    try {
+                        executeNextPhase(reducedQueryPhase);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }, // we execute the next phase when all shards have been processed
                 context
             );
 
@@ -102,24 +115,7 @@ public final class RankSearchPhase extends SearchPhase {
                 SearchPhaseResult queryResult = resultConsumer.getAtomicArray().get(i);
                 executeRankPhase(queryResult, counter, entry);
             }
-            SearchPhaseController.SortedTopDocs rerankedTopDocs = reducedQueryPhase.rankCoordinatorContext()
-                .rank(reducedQueryPhase.sortedTopDocs(), reducedQueryPhase.topDocsStats());
-            reducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
-                reducedQueryPhase.totalHits(),
-                reducedQueryPhase.topDocsStats(),
-                reducedQueryPhase.suggest(),
-                reducedQueryPhase.aggregations(),
-                reducedQueryPhase.profileBuilder(),
-                rerankedTopDocs,
-                reducedQueryPhase.sortValueFormats(),
-                reducedQueryPhase.rankCoordinatorContext(),
-                reducedQueryPhase.numReducePhases(),
-                reducedQueryPhase.size(),
-                reducedQueryPhase.from(),
-                reducedQueryPhase.isEmptyResult()
-            );
         }
-        context.executeNextPhase(this, new FetchSearchPhase(resultConsumer, aggregatedDfs, context, reducedQueryPhase));
     }
 
     private void executeRankPhase(
@@ -142,10 +138,13 @@ public final class RankSearchPhase extends SearchPhase {
                 context.getTask(),
                 new SearchActionListener<>(shardTarget, shardIndex) {
                     @Override
-                    protected void innerOnResponse(SearchPhaseResult response) {
+                    protected void innerOnResponse(RankSearchResult response) {
                         try {
-                            // progressListener.notifyFetchResult(shardIndex);
-                            counter.onResult(response);
+                            if (response != null) {
+                                counter.onResult(response);
+                            } else {
+                                counter.countDown();
+                            }
                         } catch (Exception e) {
                             context.onPhaseFailure(RankSearchPhase.this, "", e);
                         }
@@ -156,6 +155,7 @@ public final class RankSearchPhase extends SearchPhase {
                         try {
                             // logger.debug(() -> "[" + contextId + "] Failed to execute fetch phase", e);
                             // progressListener.notifyFetchFailure(shardIndex, shardTarget, e);
+
                             counter.onFailure(shardIndex, shardTarget, e);
                         } finally {
                             // the search context might not be cleared on the node where the fetch was executed for example

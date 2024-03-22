@@ -21,7 +21,7 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRunnable;
 import org.elasticsearch.action.search.CanMatchNodeRequest;
 import org.elasticsearch.action.search.CanMatchNodeResponse;
-import org.elasticsearch.action.search.RankSearchPhase;
+import org.elasticsearch.action.search.RankShardPhase;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchShardTask;
 import org.elasticsearch.action.search.SearchType;
@@ -111,6 +111,7 @@ import org.elasticsearch.search.query.QueryPhase;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
+import org.elasticsearch.search.rank.RankSearchResult;
 import org.elasticsearch.search.rescore.RescorerBuilder;
 import org.elasticsearch.search.searchafter.SearchAfterBuilder;
 import org.elasticsearch.search.sort.FieldSortBuilder;
@@ -1545,18 +1546,20 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         return this.responseCollectorService;
     }
 
-    public void executeRankPhase(ShardRankRequest request, SearchShardTask task, ActionListener<SearchPhaseResult> listener)
-        throws IOException {
-        System.out.println("here");
+    public void executeRankPhase(ShardRankRequest request, SearchShardTask task, ActionListener<RankSearchResult> listener) {
         final ReaderContext readerContext = findReaderContext(request.contextId(), request);
-        final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
-        try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.FETCH, false)) {
-            RankSearchPhase.execute(searchContext, request.getDocIds());
-        } catch (Exception e) {
-            assert TransportActions.isShardNotAvailableException(e) == false : new AssertionError(e);
-            throw e;
-        }
-    }
+        runAsync(getExecutor(readerContext.indexShard()), () -> {
+            final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
+            try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.RANK, false);) {
+                RankShardPhase.execute(searchContext, request.getDocIds());
+                searchContext.rankSearchResult().incRef();
+                return searchContext.rankSearchResult();
+            } catch (Exception e) {
+                assert TransportActions.isShardNotAvailableException(e) == false : new AssertionError(e);
+                throw e;
+            }
+        }, wrapFailureListener(listener, readerContext, null));
+    };
 
     /**
      * Used to indicate which result object should be instantiated when creating a search context
@@ -1572,6 +1575,12 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             @Override
             void addResultsObject(SearchContext context) {
                 context.addQueryResult();
+            }
+        },
+        RANK {
+            @Override
+            void addResultsObject(SearchContext context) {
+                context.addRankSearchResult();
             }
         },
         FETCH {

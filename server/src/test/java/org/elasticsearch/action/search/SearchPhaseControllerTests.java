@@ -373,10 +373,11 @@ public class SearchPhaseControllerTests extends ESTestCase {
 
                         @Override
                         public SearchPhaseController.SortedTopDocs rank(
-                            SearchPhaseController.SortedTopDocs querySearchResults,
-                            TopDocsStats topDocStats
+                            SearchPhaseResult[] querySearchResults,
+                            SearchPhaseController.SortedTopDocs topDocs,
+                            TopDocsStats topDocsStats
                         ) {
-                            return querySearchResults;
+                            return new SearchPhaseController.SortedTopDocs(new ScoreDoc[0], false, null, null, null, 0);
                         }
 
                         @Override

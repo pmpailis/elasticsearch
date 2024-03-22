@@ -22,6 +22,6 @@ public class RandomInferenceRankShardContext extends InferenceRankShardContext {
 
     @Override
     public float computeScore(String fieldData) {
-        return (float) Math.random();
+        return 100 + (float) Math.random();
     }
 }

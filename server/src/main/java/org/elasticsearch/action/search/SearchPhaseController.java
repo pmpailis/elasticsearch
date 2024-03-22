@@ -459,6 +459,7 @@ public final class SearchPhaseController {
                 if (reducedQueryPhase.rankCoordinatorContext != null) {
                     assert shardDoc instanceof RankDoc;
                     searchHit.setRank(((RankDoc) shardDoc).rank);
+                    searchHit.score(shardDoc.score);
                 } else if (sortedTopDocs.isSortedByField) {
                     FieldDoc fieldDoc = (FieldDoc) shardDoc;
                     searchHit.sortValues(fieldDoc.fields, reducedQueryPhase.sortValueFormats);
@@ -831,7 +832,7 @@ public final class SearchPhaseController {
             return Float.isInfinite(maxScore) ? Float.NaN : maxScore;
         }
 
-        void setMaxScore(float maxScore) {
+        public void setMaxScore(float maxScore) {
             this.maxScore = maxScore;
         }
 
