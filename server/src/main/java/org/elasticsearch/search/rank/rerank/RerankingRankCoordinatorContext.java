@@ -86,7 +86,7 @@ public abstract class RerankingRankCoordinatorContext extends RankCoordinatorCon
                 FeatureRankDoc[] sortedResults = rankMap.values().toArray(FeatureRankDoc[]::new);
                 Arrays.sort(sortedResults, Comparator.comparing((FeatureRankDoc doc) -> doc.score).reversed());
                 FeatureRankDoc[] topResults = new FeatureRankDoc[Math.min(size, sortedResults.length - from)];
-                for (int rank = 0; rank < topResults.length; ++rank) {
+                for (int rank = from; rank < topResults.length; ++rank) {
                     topResults[rank] = sortedResults[rank];
                     topResults[rank].rank = rank + 1 + from;
                 }
