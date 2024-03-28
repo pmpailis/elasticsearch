@@ -100,7 +100,7 @@ final class SearchDfsQueryThenFetchAsyncAction extends AbstractSearchAsyncAction
             aggregatedDfs,
             mergedKnnResults,
             queryPhaseResultConsumer,
-            (queryResults) -> new FetchSearchPhase(queryResults, aggregatedDfs, context),
+            (queryResults) -> new RankSearchPhase(queryResults, aggregatedDfs, context),
             context
         );
     }

@@ -44,6 +44,7 @@ import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankShardContext;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.suggest.SuggestionSearchContext;
@@ -480,6 +481,16 @@ public class TestSearchContext extends SearchContext {
     @Override
     public float getMaxScore() {
         return queryResult.getMaxScore();
+    }
+
+    @Override
+    public void addRankFeatureResult() {
+        // none
+    }
+
+    @Override
+    public RankFeatureResult rankFeatureResult() {
+        return null;
     }
 
     @Override

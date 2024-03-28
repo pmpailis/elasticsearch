@@ -9,6 +9,7 @@
 package org.elasticsearch.search.rank;
 
 import org.apache.lucene.search.Query;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -75,7 +76,7 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
     /**
      * Generates a context used to perform global ranking on the coordinator.
      */
-    public abstract RankCoordinatorContext buildRankCoordinatorContext(int size, int from);
+    public abstract RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client);
 
     @Override
     public final boolean equals(Object obj) {

@@ -75,7 +75,9 @@ public final class FetchPhase {
         Profiler profiler = context.getProfilers() == null ? Profiler.NOOP : Profilers.startProfilingFetchPhase();
         SearchHits hits = null;
         try {
-            hits = buildSearchHits(context, docIdsToLoad, profiler);
+            FetchContext fetchContext = new FetchContext(context);
+            List<FetchSubPhaseProcessor> processors = getProcessors(context.shardTarget(), fetchContext, profiler);
+            hits = buildSearchHits(context, docIdsToLoad, profiler, processors);
         } finally {
             // Always finish profiling
             ProfileResult profileResult = profiler.finish();
@@ -97,16 +99,17 @@ public final class FetchPhase {
         }
     }
 
-    private SearchHits buildSearchHits(SearchContext context, int[] docIdsToLoad, Profiler profiler) {
-
-        FetchContext fetchContext = new FetchContext(context);
+    public static SearchHits buildSearchHits(
+        SearchContext context,
+        int[] docIdsToLoad,
+        Profiler profiler,
+        List<FetchSubPhaseProcessor> processors
+    ) {
         SourceLoader sourceLoader = context.newSourceLoader();
 
         PreloadedSourceProvider sourceProvider = new PreloadedSourceProvider();
         PreloadedFieldLookupProvider fieldLookupProvider = new PreloadedFieldLookupProvider();
         context.getSearchExecutionContext().setLookupProviders(sourceProvider, ctx -> fieldLookupProvider);
-
-        List<FetchSubPhaseProcessor> processors = getProcessors(context.shardTarget(), fetchContext, profiler);
 
         StoredFieldsSpec storedFieldsSpec = StoredFieldsSpec.build(processors, FetchSubPhaseProcessor::storedFieldsSpec);
         storedFieldsSpec = storedFieldsSpec.merge(new StoredFieldsSpec(false, false, sourceLoader.requiredStoredFields()));
@@ -334,7 +337,7 @@ public final class FetchPhase {
         return new HitContext(hit, subReaderContext, nestedInfo.doc(), childFieldLoader.storedFields(), nestedSource);
     }
 
-    interface Profiler {
+    public interface Profiler {
         ProfileResult finish();
 
         FetchSubPhaseProcessor profile(String type, String description, FetchSubPhaseProcessor processor);

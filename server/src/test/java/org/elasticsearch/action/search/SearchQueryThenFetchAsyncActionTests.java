@@ -196,7 +196,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
                 task::isCancelled,
                 task.getProgressListener(),
                 shardsIter.size(),
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(
@@ -346,7 +347,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {}
+            exc -> {},
+            null
         );
         final List<Object> responses = new ArrayList<>();
         SearchQueryThenFetchAsyncAction newSearchAsyncAction = new SearchQueryThenFetchAsyncAction(
@@ -495,7 +497,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {}
+            exc -> {},
+            null
         );
         CountDownLatch latch = new CountDownLatch(1);
         SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(
@@ -645,7 +648,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {}
+            exc -> {},
+            null
         );
         CountDownLatch latch = new CountDownLatch(1);
         SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(

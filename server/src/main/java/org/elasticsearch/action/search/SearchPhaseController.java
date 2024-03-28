@@ -22,6 +22,7 @@ import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.TotalHits.Relation;
 import org.apache.lucene.util.SetOnce;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.io.stream.DelayableWriteable;
 import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
@@ -635,7 +636,7 @@ public final class SearchPhaseController {
             : new SearchProfileResultsBuilder(profileShardResults);
         final SortedTopDocs sortedTopDocs = rankCoordinatorContext == null
             ? sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions)
-            : rankCoordinatorContext.rank(queryResults.stream().map(SearchPhaseResult::queryResult).toList(), topDocsStats);
+            : rankCoordinatorContext.postQueryRank(queryResults.stream().map(SearchPhaseResult::queryResult).toList(), topDocsStats);
         if (rankCoordinatorContext != null) {
             size = sortedTopDocs.scoreDocs.length;
         }
@@ -795,7 +796,8 @@ public final class SearchPhaseController {
         SearchProgressListener listener,
         SearchRequest request,
         int numShards,
-        Consumer<Exception> onPartialMergeFailure
+        Consumer<Exception> onPartialMergeFailure,
+        Client client
     ) {
         final int size = request.source() == null || request.source().size() == -1 ? SearchService.DEFAULT_SIZE : request.source().size();
         // Use CountOnlyQueryPhaseResultConsumer for requests without aggs, suggest, etc. things only wanting a total count and
@@ -818,7 +820,8 @@ public final class SearchPhaseController {
             isCanceled,
             listener,
             numShards,
-            onPartialMergeFailure
+            onPartialMergeFailure,
+            client
         );
     }
 

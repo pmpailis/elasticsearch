@@ -225,7 +225,7 @@ public class RRFRankContextTests extends ESTestCase {
         qsr1.setRankShardResult(new RRFRankShardResult(2, new RRFRankDoc[] { rd21, rd22, rd23, rd24, rd25 }));
 
         TopDocsStats tds = new TopDocsStats(0);
-        SortedTopDocs std = context.rank(List.of(qsr0, qsr1), tds);
+        SortedTopDocs std = context.postQueryRank(List.of(qsr0, qsr1), tds);
 
         assertEquals(4, tds.fetchHits);
         assertEquals(4, std.scoreDocs().length);
@@ -410,7 +410,7 @@ public class RRFRankContextTests extends ESTestCase {
         qsr1.setRankShardResult(new RRFRankShardResult(2, new RRFRankDoc[] { rd21 }));
 
         TopDocsStats tds = new TopDocsStats(0);
-        SortedTopDocs std = context.rank(List.of(qsr0, qsr1), tds);
+        SortedTopDocs std = context.postQueryRank(List.of(qsr0, qsr1), tds);
 
         assertEquals(2, tds.fetchHits);
         assertEquals(2, std.scoreDocs().length);
@@ -462,7 +462,7 @@ public class RRFRankContextTests extends ESTestCase {
         qsr1.setRankShardResult(new RRFRankShardResult(2, new RRFRankDoc[] { rd21, rd22 }));
 
         tds = new TopDocsStats(0);
-        std = context.rank(List.of(qsr0, qsr1), tds);
+        std = context.postQueryRank(List.of(qsr0, qsr1), tds);
 
         assertEquals(4, tds.fetchHits);
         assertEquals(4, std.scoreDocs().length);
@@ -532,7 +532,7 @@ public class RRFRankContextTests extends ESTestCase {
         qsr1.setRankShardResult(new RRFRankShardResult(2, new RRFRankDoc[] { rd21, rd22 }));
 
         tds = new TopDocsStats(0);
-        std = context.rank(List.of(qsr0, qsr1), tds);
+        std = context.postQueryRank(List.of(qsr0, qsr1), tds);
 
         assertEquals(4, tds.fetchHits);
         assertEquals(4, std.scoreDocs().length);

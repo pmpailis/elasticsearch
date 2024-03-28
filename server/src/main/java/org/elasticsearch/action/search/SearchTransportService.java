@@ -39,6 +39,8 @@ import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
+import org.elasticsearch.search.rank.rerank.RankShardFeatureRequest;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.RemoteClusterService;
@@ -70,6 +72,7 @@ import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_CA
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_FETCH_SCROLL_ACTION_METRIC;
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_ID_ACTION_METRIC;
 import static org.elasticsearch.action.search.SearchTransportAPMMetrics.QUERY_SCROLL_ACTION_METRIC;
+import static org.elasticsearch.action.search.SearchTransportAPMMetrics.RANK_SHARD_FEATURE_ACTION_METRIC;
 
 /**
  * An encapsulation of {@link org.elasticsearch.search.SearchService} operations exposed through
@@ -93,6 +96,7 @@ public class SearchTransportService {
     public static final String QUERY_ID_ACTION_NAME = "indices:data/read/search[phase/query/id]";
     public static final String QUERY_SCROLL_ACTION_NAME = "indices:data/read/search[phase/query/scroll]";
     public static final String QUERY_FETCH_SCROLL_ACTION_NAME = "indices:data/read/search[phase/query+fetch/scroll]";
+    public static final String RANK_FEATURE_SHARD_ACTION_NAME = "indices:data/read/search[phase/rank/feature]";
     public static final String FETCH_ID_SCROLL_ACTION_NAME = "indices:data/read/search[phase/fetch/id/scroll]";
     public static final String FETCH_ID_ACTION_NAME = "indices:data/read/search[phase/fetch/id]";
 
@@ -262,6 +266,21 @@ public class SearchTransportService {
             request,
             task,
             new ConnectionCountingHandler<>(listener, ScrollQueryFetchSearchResult::new, connection)
+        );
+    }
+
+    public void sendExecuteRankFeature(
+        Transport.Connection connection,
+        RankShardFeatureRequest request,
+        SearchTask task,
+        SearchActionListener<RankFeatureResult> listener
+    ) {
+        transportService.sendChildRequest(
+            connection,
+            RANK_FEATURE_SHARD_ACTION_NAME,
+            request,
+            task,
+            new ConnectionCountingHandler<>(listener, RankFeatureResult::new, connection)
         );
     }
 
@@ -538,6 +557,16 @@ public class SearchTransportService {
             )
         );
         TransportActionProxy.registerProxyAction(transportService, QUERY_FETCH_SCROLL_ACTION_NAME, true, ScrollQueryFetchSearchResult::new);
+
+        final TransportRequestHandler<RankShardFeatureRequest> rankShardFeatureRequest = (request, channel, task) -> searchService
+            .executeRankFeaturePhase(request, (SearchShardTask) task, new ChannelActionListener<>(channel));
+        transportService.registerRequestHandler(
+            RANK_FEATURE_SHARD_ACTION_NAME,
+            EsExecutors.DIRECT_EXECUTOR_SERVICE,
+            RankShardFeatureRequest::new,
+            instrumentedHandler(RANK_SHARD_FEATURE_ACTION_METRIC, transportService, searchTransportMetrics, rankShardFeatureRequest)
+        );
+        TransportActionProxy.registerProxyAction(transportService, RANK_FEATURE_SHARD_ACTION_NAME, true, RankFeatureResult::new);
 
         final TransportRequestHandler<ShardFetchRequest> shardFetchRequestHandler = (request, channel, task) -> searchService
             .executeFetchPhase(request, (SearchShardTask) task, new ChannelActionListener<>(channel));

@@ -61,6 +61,7 @@ import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.TestRankDoc;
 import org.elasticsearch.search.rank.TestRankShardResult;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 import org.elasticsearch.search.suggest.SortBy;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
@@ -86,6 +87,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
@@ -369,9 +371,9 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     0,
                     true,
                     InternalAggregationTestCase.emptyReduceContextBuilder(),
-                    new RankCoordinatorContext(randomIntBetween(1, 10), 0, randomIntBetween(11, 100)) {
+                    new RankCoordinatorContext(randomIntBetween(1, 10), 0, randomIntBetween(11, 100), null) {
                         @Override
-                        public SearchPhaseController.SortedTopDocs rank(
+                        public SearchPhaseController.SortedTopDocs postQueryRank(
                             List<QuerySearchResult> querySearchResults,
                             TopDocsStats topDocStats
                         ) {
@@ -397,6 +399,11 @@ public class SearchPhaseControllerTests extends ESTestCase {
                             }
                             topDocStats.fetchHits = topResults.length;
                             return new SearchPhaseController.SortedTopDocs(topResults, false, null, null, null, 0);
+                        }
+
+                        @Override
+                        public void reRank(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
+                            // no op;
                         }
                     },
                     true
@@ -621,7 +628,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 3 + numEmptyResponses,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             if (numEmptyResponses == 0) {
@@ -745,7 +753,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -817,7 +826,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -879,7 +889,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -945,7 +956,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 4,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             int score = 100;
@@ -1002,7 +1014,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -1057,7 +1070,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             SortField[] sortFields = { new SortField("field", SortField.Type.STRING) };
@@ -1115,7 +1129,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {}
+                exc -> {},
+                null
             )
         ) {
             int maxScoreTerm = -1;
@@ -1261,7 +1276,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     progressListener,
                     request,
                     expectedNumResults,
-                    exc -> {}
+                    exc -> {},
+                    null
                 )
             ) {
                 AtomicInteger max = new AtomicInteger();
@@ -1351,7 +1367,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 numShards,
-                exc -> hasConsumedFailure.set(true)
+                exc -> hasConsumedFailure.set(true),
+                null
             )
         ) {
             CountDownLatch latch = new CountDownLatch(numShards);
@@ -1422,7 +1439,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> hasConsumedFailure.set(true)
+                exc -> hasConsumedFailure.set(true),
+                null
             )
         ) {
             for (int i = 0; i < expectedNumResults; i++) {

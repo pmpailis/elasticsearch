@@ -226,6 +226,10 @@ import org.elasticsearch.search.fetch.subphase.highlight.HighlightPhase;
 import org.elasticsearch.search.fetch.subphase.highlight.Highlighter;
 import org.elasticsearch.search.fetch.subphase.highlight.PlainHighlighter;
 import org.elasticsearch.search.internal.ShardSearchRequest;
+import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.RankShardResult;
+import org.elasticsearch.search.rank.rerank.RankShardFeatureResult;
+import org.elasticsearch.search.rank.rerank.RerankingRankBuilder;
 import org.elasticsearch.search.rescore.QueryRescorerBuilder;
 import org.elasticsearch.search.rescore.RescorerBuilder;
 import org.elasticsearch.search.retriever.KnnRetrieverBuilder;
@@ -1153,6 +1157,7 @@ public class SearchModule {
         if (RestApiVersion.minimumSupported() == RestApiVersion.V_7) {
             registerQuery(new QuerySpec<>(TypeQueryV7Builder.NAME_V7, TypeQueryV7Builder::new, TypeQueryV7Builder::fromXContent));
         }
+        registerRank();
     }
 
     private void registerIntervalsSourceProviders() {
@@ -1232,6 +1237,11 @@ public class SearchModule {
                 spec.getName().getForRestApiVersion()
             )
         );
+    }
+
+    private void registerRank() {
+        namedWriteables.add(new NamedWriteableRegistry.Entry(RankBuilder.class, "rerank", RerankingRankBuilder::new));
+        namedWriteables.add(new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-shard-feature", RankShardFeatureResult::new));
     }
 
     public FetchPhase getFetchPhase() {

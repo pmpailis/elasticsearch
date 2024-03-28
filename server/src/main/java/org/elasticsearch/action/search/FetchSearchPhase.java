@@ -9,7 +9,6 @@ package org.elasticsearch.action.search;
 
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.ScoreDoc;
-import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.AtomicArray;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
@@ -18,6 +17,7 @@ import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.fetch.ShardFetchSearchRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 import org.elasticsearch.transport.Transport;
 
 import java.util.List;
@@ -36,12 +36,19 @@ final class FetchSearchPhase extends SearchPhase {
     private final SearchPhaseResults<SearchPhaseResult> resultConsumer;
     private final SearchProgressListener progressListener;
     private final AggregatedDfs aggregatedDfs;
+    private final SearchPhaseController.ReducedQueryPhase reducedQueryPhase;
 
-    FetchSearchPhase(SearchPhaseResults<SearchPhaseResult> resultConsumer, AggregatedDfs aggregatedDfs, SearchPhaseContext context) {
+    FetchSearchPhase(
+        SearchPhaseResults<SearchPhaseResult> resultConsumer,
+        AggregatedDfs aggregatedDfs,
+        SearchPhaseContext context,
+        SearchPhaseController.ReducedQueryPhase reducedQueryPhase
+    ) {
         this(
             resultConsumer,
             aggregatedDfs,
             context,
+            reducedQueryPhase,
             (response, queryPhaseResults) -> new ExpandSearchPhase(
                 context,
                 response.hits,
@@ -54,6 +61,7 @@ final class FetchSearchPhase extends SearchPhase {
         SearchPhaseResults<SearchPhaseResult> resultConsumer,
         AggregatedDfs aggregatedDfs,
         SearchPhaseContext context,
+        SearchPhaseController.ReducedQueryPhase reducedQueryPhase,
         BiFunction<SearchResponseSections, AtomicArray<SearchPhaseResult>, SearchPhase> nextPhaseFactory
     ) {
         super("fetch");
@@ -74,29 +82,12 @@ final class FetchSearchPhase extends SearchPhase {
         this.logger = context.getLogger();
         this.resultConsumer = resultConsumer;
         this.progressListener = context.getTask().getProgressListener();
+        this.reducedQueryPhase = reducedQueryPhase;
     }
 
     @Override
     public void run() {
-        context.execute(new AbstractRunnable() {
-            @Override
-            protected void doRun() throws Exception {
-                // we do the heavy lifting in this inner run method where we reduce aggs etc. that's why we fork this phase
-                // off immediately instead of forking when we send back the response to the user since there we only need
-                // to merge together the fetched results which is a linear operation.
-                innerRun();
-            }
-
-            @Override
-            public void onFailure(Exception e) {
-                context.onPhaseFailure(FetchSearchPhase.this, "", e);
-            }
-        });
-    }
-
-    private void innerRun() throws Exception {
         final int numShards = context.getNumShards();
-        final SearchPhaseController.ReducedQueryPhase reducedQueryPhase = resultConsumer.reduce();
         // Usually when there is a single shard, we force the search type QUERY_THEN_FETCH. But when there's kNN, we might
         // still use DFS_QUERY_THEN_FETCH, which does not perform the "query and fetch" optimization during the query phase.
         final boolean queryAndFetchOptimization = queryResults.length() == 1
@@ -160,7 +151,9 @@ final class FetchSearchPhase extends SearchPhase {
     ) {
         final SearchShardTarget shardTarget = queryResult.getSearchShardTarget();
         final int shardIndex = queryResult.getShardIndex();
-        final ShardSearchContextId contextId = queryResult.queryResult().getContextId();
+        final ShardSearchContextId contextId = queryResult.queryResult() != null
+            ? queryResult.queryResult().getContextId()
+            : queryResult.rankFeatureResult().getContextId();
         context.getSearchTransport()
             .sendExecuteFetch(
                 context.getConnection(shardTarget.getClusterAlias(), shardTarget.getNodeId()),
@@ -195,6 +188,7 @@ final class FetchSearchPhase extends SearchPhase {
                             // the search context might not be cleared on the node where the fetch was executed for example
                             // because the action was rejected by the thread pool. in this case we need to send a dedicated
                             // request to clear the search context.
+                            releaseIrrelevantSearchContext(queryResult.rankFeatureResult());
                             releaseIrrelevantSearchContext(queryResult.queryResult());
                         }
                     }
@@ -208,7 +202,28 @@ final class FetchSearchPhase extends SearchPhase {
     private void releaseIrrelevantSearchContext(QuerySearchResult queryResult) {
         // we only release search context that we did not fetch from, if we are not scrolling
         // or using a PIT and if it has at least one hit that didn't make it to the global topDocs
-        if (queryResult.hasSearchContext()
+        if (queryResult != null
+            && queryResult.hasSearchContext()
+            && context.getRequest().scroll() == null
+            && (context.isPartOfPointInTime(queryResult.getContextId()) == false)) {
+            try {
+                SearchShardTarget shardTarget = queryResult.getSearchShardTarget();
+                Transport.Connection connection = context.getConnection(shardTarget.getClusterAlias(), shardTarget.getNodeId());
+                context.sendReleaseSearchContext(
+                    queryResult.getContextId(),
+                    connection,
+                    context.getOriginalIndices(queryResult.getShardIndex())
+                );
+            } catch (Exception e) {
+                context.getLogger().trace("failed to release context", e);
+            }
+        }
+    }
+
+    private void releaseIrrelevantSearchContext(RankFeatureResult queryResult) {
+        // we only release search context that we did not fetch from, if we are not scrolling
+        // or using a PIT and if it has at least one hit that didn't make it to the global topDocs
+        if (queryResult != null
             && context.getRequest().scroll() == null
             && (context.isPartOfPointInTime(queryResult.getContextId()) == false)) {
             try {

@@ -15,6 +15,7 @@ import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 import org.elasticsearch.transport.TransportResponse;
 
 import java.io.IOException;
@@ -78,6 +79,10 @@ public abstract class SearchPhaseResult extends TransportResponse {
      * Returns the query result iff it's included in this response otherwise <code>null</code>
      */
     public QuerySearchResult queryResult() {
+        return null;
+    }
+
+    public RankFeatureResult rankFeatureResult() {
         return null;
     }
 

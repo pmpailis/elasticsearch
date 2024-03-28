@@ -138,7 +138,6 @@ final class DfsQueryPhase extends SearchPhase {
         if (source == null || source.knnSearch().isEmpty()) {
             return request;
         }
-
         List<SubSearchSourceBuilder> subSearchSourceBuilders = new ArrayList<>(source.subSearches());
 
         int i = 0;

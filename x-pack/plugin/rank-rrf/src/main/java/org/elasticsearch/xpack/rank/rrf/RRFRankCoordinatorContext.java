@@ -7,17 +7,20 @@
 
 package org.elasticsearch.xpack.rank.rrf;
 
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.util.PriorityQueue;
 import org.elasticsearch.action.search.SearchPhaseController.SortedTopDocs;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankCoordinatorContext;
+import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.xpack.rank.rrf.RRFRankDoc.NO_RANK;
 
@@ -29,17 +32,12 @@ public class RRFRankCoordinatorContext extends RankCoordinatorContext {
     private final int rankConstant;
 
     public RRFRankCoordinatorContext(int size, int from, int windowSize, int rankConstant) {
-        super(size, from, windowSize);
+        super(size, from, windowSize, null);
         this.rankConstant = rankConstant;
     }
 
-    // used for faster hash lookup in a map of ranked documents
-    protected record RankKey(int doc, int shardIndex) {
-
-    }
-
     @Override
-    public SortedTopDocs rank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats) {
+    public SortedTopDocs postQueryRank(List<QuerySearchResult> querySearchResults, TopDocsStats topDocsStats) {
         // for each shard we check to see if it timed out to skip
         // if it didn't time out then we need to split the results into
         // a priority queue per query, so we can do global ranking
@@ -164,5 +162,10 @@ public class RRFRankCoordinatorContext extends RankCoordinatorContext {
         // return the top results where sort, collapse fields,
         // and completion suggesters are not allowed
         return new SortedTopDocs(topResults, false, null, null, null, 0);
+    }
+
+    @Override
+    public void reRank(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
+        // no-op
     }
 }
