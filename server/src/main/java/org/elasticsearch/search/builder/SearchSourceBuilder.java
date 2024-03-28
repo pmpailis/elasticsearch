@@ -1392,7 +1392,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                             "expected a rank name, but found token [" + token + "] for [" + RANK_FIELD.getPreferredName() + "]"
                         );
                     }
-                    // rankBuilder = parser.namedObject(RankBuilder.class, parser.currentName(), null);
+//                     rankBuilder = parser.namedObject(RankBuilder.class, parser.currentName(), null);
                     rankBuilder = RerankingRankBuilder.fromXContent(parser);
                     if (parser.currentToken() != XContentParser.Token.END_OBJECT) {
                         throw new ParsingException(

@@ -17,11 +17,13 @@ import org.elasticsearch.license.LicenseUtils;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankCoordinatorContext;
 import org.elasticsearch.search.rank.RankShardContext;
+import org.elasticsearch.search.rank.rerank.FeatureRankShardContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xpack.core.XPackPlugin;
+import org.elasticsearch.xpack.core.ml.reranking.CrossEncoderRankCoordinatorContext;
 
 import java.io.IOException;
 import java.util.List;
@@ -97,12 +99,12 @@ public class RRFRankBuilder extends RankBuilder {
 
     @Override
     public RankShardContext buildRankShardContext(List<Query> queries, int from) {
-        return new RRFRankShardContext(queries, from, windowSize(), rankConstant);
+        return new FeatureRankShardContext(queries, from, windowSize());
     }
 
     @Override
     public RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client) {
-        return new RRFRankCoordinatorContext(size, from, windowSize(), rankConstant);
+        return new CrossEncoderRankCoordinatorContext(size, from, windowSize(), client);
     }
 
     @Override

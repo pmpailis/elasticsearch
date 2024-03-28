@@ -79,28 +79,26 @@ public final class RankSearchPhase extends SearchPhase {
 
     private void onPhaseDone(SearchPhaseController.ReducedQueryPhase reducedQueryPhase) {
         reducedQueryPhase.rankCoordinatorContext()
-            .reRank(
-                rankPhaseResults.getAtomicArray().asList().stream().map(SearchPhaseResult::rankFeatureResult).toList(),
-                (scoreDocs) -> {
-                    SearchPhaseController.ReducedQueryPhase rerankedReducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
-                        reducedQueryPhase.totalHits(),
-                        reducedQueryPhase.fetchHits(),
-                        Arrays.stream(scoreDocs).map(x -> x.score).max(Comparator.comparingDouble(x -> x)).orElse(Float.NaN),
-                        reducedQueryPhase.timedOut(),
-                        reducedQueryPhase.terminatedEarly(),
-                        reducedQueryPhase.suggest(),
-                        reducedQueryPhase.aggregations(),
-                        reducedQueryPhase.profileBuilder(),
-                        new SearchPhaseController.SortedTopDocs(scoreDocs, false, null, null, null, 0),
-                        reducedQueryPhase.sortValueFormats(),
-                        reducedQueryPhase.rankCoordinatorContext(),
-                        reducedQueryPhase.numReducePhases(),
-                        reducedQueryPhase.size(),
-                        reducedQueryPhase.from(),
-                        reducedQueryPhase.isEmptyResult()
-                    );
-                    moveToNextPhase(rankPhaseResults, rerankedReducedQueryPhase);
-                });
+            .reRank(rankPhaseResults.getAtomicArray().asList().stream().map(SearchPhaseResult::rankFeatureResult).toList(), (scoreDocs) -> {
+                SearchPhaseController.ReducedQueryPhase rerankedReducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
+                    reducedQueryPhase.totalHits(),
+                    reducedQueryPhase.fetchHits(),
+                    Arrays.stream(scoreDocs).map(x -> x.score).max(Comparator.comparingDouble(x -> x)).orElse(Float.NaN),
+                    reducedQueryPhase.timedOut(),
+                    reducedQueryPhase.terminatedEarly(),
+                    reducedQueryPhase.suggest(),
+                    reducedQueryPhase.aggregations(),
+                    reducedQueryPhase.profileBuilder(),
+                    new SearchPhaseController.SortedTopDocs(scoreDocs, false, null, null, null, 0),
+                    reducedQueryPhase.sortValueFormats(),
+                    reducedQueryPhase.rankCoordinatorContext(),
+                    reducedQueryPhase.numReducePhases(),
+                    reducedQueryPhase.size(),
+                    reducedQueryPhase.from(),
+                    reducedQueryPhase.isEmptyResult()
+                );
+                moveToNextPhase(rankPhaseResults, rerankedReducedQueryPhase);
+            });
     }
 
     private void moveToNextPhase(
@@ -112,8 +110,8 @@ public final class RankSearchPhase extends SearchPhase {
 
     private void innerRun() throws Exception {
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase = queryPhaseResults.reduce();
-        boolean isRankSearch = reducedQueryPhase.rankCoordinatorContext() != null && reducedQueryPhase.rankCoordinatorContext().isRerank();
-        if (isRankSearch) {
+        boolean isRerankSearch = reducedQueryPhase.rankCoordinatorContext() != null && reducedQueryPhase.rankCoordinatorContext().isRerank();
+        if (isRerankSearch) {
             SearchPhaseController.SortedTopDocs firstPhaseResults = reducedQueryPhase.sortedTopDocs();
             final List<Integer>[] docIdsToLoad = SearchPhaseController.fillDocIdsToLoad(
                 context.getNumShards(),
@@ -121,8 +119,8 @@ public final class RankSearchPhase extends SearchPhase {
             );
             final CountedCollector<SearchPhaseResult> counter = new CountedCollector<>(
                 rankPhaseResults,
-                context.getNumShards(), // we count down every shard in the result no matter if we got any results or not
-                () -> onPhaseDone(reducedQueryPhase), // we execute the next phase when all shards have been processed
+                context.getNumShards(),
+                () -> onPhaseDone(reducedQueryPhase),
                 context
             );
 

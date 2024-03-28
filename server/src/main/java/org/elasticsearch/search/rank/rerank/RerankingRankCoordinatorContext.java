@@ -87,7 +87,7 @@ public abstract class RerankingRankCoordinatorContext extends RankCoordinatorCon
                     rankMap.put(rk, new FeatureRankDoc(rk.doc(), score, rk.shardIndex()));
                 }
             };
-            computeUpdatedScores((List<String>) batch.values(), scoreConsumer, countDown, () -> {
+            computeUpdatedScores(batch.values().stream().toList(), scoreConsumer, countDown, () -> {
                 FeatureRankDoc[] sortedResults = rankMap.values().toArray(FeatureRankDoc[]::new);
                 Arrays.sort(sortedResults, Comparator.comparing((FeatureRankDoc doc) -> doc.score).reversed());
                 FeatureRankDoc[] topResults = new FeatureRankDoc[Math.min(size, sortedResults.length - from)];
