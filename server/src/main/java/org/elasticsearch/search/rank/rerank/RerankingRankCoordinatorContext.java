@@ -26,12 +26,18 @@ import java.util.function.Consumer;
 
 public abstract class RerankingRankCoordinatorContext extends RankCoordinatorContext {
 
-    protected final String inferenceId = "some-model";
-    protected final String inferenceText = "some-query-text";
-
     public RerankingRankCoordinatorContext(int size, int from, int windowSize, Client client) {
         super(size, from, windowSize, client);
     }
+
+    protected abstract void computeUpdatedScores(
+        List<String> features,
+        Consumer<double[]> scoreConsumer,
+        CountDown countDown,
+        Runnable onFinish
+    );
+
+    protected abstract List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures);
 
     @Override
     public SearchPhaseController.SortedTopDocs postQueryRank(
@@ -58,17 +64,6 @@ public abstract class RerankingRankCoordinatorContext extends RankCoordinatorCon
         assert topDocStats.fetchHits == 0;
         topDocStats.fetchHits = topResults.length;
         return new SearchPhaseController.SortedTopDocs(topResults, false, null, null, null, 0);
-    }
-
-    private Map<RankKey, String> extractFeatures(List<RankFeatureResult> rankSearchResults) {
-        Map<RankKey, String> docFeatures = new LinkedHashMap<>(windowSize);
-        for (RankFeatureResult rankFeatureResult : rankSearchResults) {
-            RankShardFeatureResult shardResult = rankFeatureResult.shardResult();
-            for (FeatureRankDoc doc : shardResult.featureRankDocs) {
-                docFeatures.put(new RankKey(doc.doc, doc.shardIndex), doc.featureData);
-            }
-        }
-        return docFeatures;
     }
 
     @Override
@@ -100,17 +95,19 @@ public abstract class RerankingRankCoordinatorContext extends RankCoordinatorCon
         }
     }
 
-    protected abstract void computeUpdatedScores(
-        List<String> features,
-        Consumer<double[]> scoreConsumer,
-        CountDown countDown,
-        Runnable onFinish
-    );
-
-    protected abstract List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures);
-
     @Override
     public boolean isRerank() {
         return true;
+    }
+
+    private Map<RankKey, String> extractFeatures(List<RankFeatureResult> rankSearchResults) {
+        Map<RankKey, String> docFeatures = new LinkedHashMap<>(windowSize);
+        for (RankFeatureResult rankFeatureResult : rankSearchResults) {
+            RankShardFeatureResult shardResult = rankFeatureResult.shardResult();
+            for (FeatureRankDoc doc : shardResult.featureRankDocs) {
+                docFeatures.put(new RankKey(doc.doc, doc.shardIndex), doc.featureData);
+            }
+        }
+        return docFeatures;
     }
 }

@@ -110,7 +110,8 @@ public final class RankSearchPhase extends SearchPhase {
 
     private void innerRun() throws Exception {
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase = queryPhaseResults.reduce();
-        boolean isRerankSearch = reducedQueryPhase.rankCoordinatorContext() != null && reducedQueryPhase.rankCoordinatorContext().isRerank();
+        boolean isRerankSearch = reducedQueryPhase.rankCoordinatorContext() != null
+            && reducedQueryPhase.rankCoordinatorContext().isRerank();
         if (isRerankSearch) {
             SearchPhaseController.SortedTopDocs firstPhaseResults = reducedQueryPhase.sortedTopDocs();
             final List<Integer>[] docIdsToLoad = SearchPhaseController.fillDocIdsToLoad(

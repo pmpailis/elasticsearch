@@ -33,12 +33,20 @@ public abstract class InferenceRankCoordinatorContext<Request extends ActionRequ
 
     protected abstract ActionType<Response> action();
 
+    protected abstract double[] extractScoresFromResponse(Response response);
+
     @Override
     protected List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures) {
         return List.of(docFeatures);
     }
 
-    protected abstract double[] extractScoresFromResponse(Response response);
+    @Override
+    protected void computeUpdatedScores(List<String> features, Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
+        final ActionListener<Response> actionListener = listener(scoreConsumer, countDown, onFinish);
+        Request req = request(features);
+        ActionType<Response> action = action();
+        client.execute(action, req, actionListener);
+    }
 
     private ActionListener<Response> listener(Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
         return new ActionListener<>() {
@@ -54,20 +62,11 @@ public abstract class InferenceRankCoordinatorContext<Request extends ActionRequ
 
             @Override
             public void onFailure(Exception e) {
-                // do something
                 System.out.println(e.getMessage());
                 if (countDown.countDown()) {
                     onFinish.run();
                 }
             }
         };
-    }
-
-    @Override
-    protected void computeUpdatedScores(List<String> features, Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
-        final ActionListener<Response> actionListener = listener(scoreConsumer, countDown, onFinish);
-        Request req = request(features);
-        ActionType<Response> action = action();
-        client.execute(action, req, actionListener);
     }
 }
