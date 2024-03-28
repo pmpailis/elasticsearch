@@ -44,6 +44,11 @@ public class FeatureRankShardContext extends RankShardContext {
             }
             return featureRankDocs;
         }).flatMap(Arrays::stream).toArray(FeatureRankDoc[]::new));
+//        assert rankResults.size() == 1;
+//        return new RankShardFeatureResult(
+//            Arrays.stream(rankResults.get(0).scoreDocs)
+//                .map(x -> new FeatureRankDoc(x.doc, x.score, x.shardIndex))
+//                .toArray(FeatureRankDoc[]::new));
     }
 
     public RankShardResult getFeatureRankDocs(SearchContext context, int[] docIds, String field) {
