@@ -52,19 +52,25 @@ public abstract class InferenceRankCoordinatorContext<Request extends ActionRequ
         return new ActionListener<>() {
             @Override
             public void onResponse(Response response) {
-                assert response != null;
-                double[] scores = extractScoresFromResponse(response);
-                scoreConsumer.accept(scores);
-                if (countDown.countDown()) {
-                    onFinish.run();
+                try {
+                    assert response != null;
+                    double[] scores = extractScoresFromResponse(response);
+                    scoreConsumer.accept(scores);
+                } finally {
+                    if (countDown.countDown()) {
+                        onFinish.run();
+                    }
                 }
             }
 
             @Override
             public void onFailure(Exception e) {
-                System.out.println(e.getMessage());
-                if (countDown.countDown()) {
-                    onFinish.run();
+                try {
+                    System.out.println(e.getMessage());
+                } finally {
+                    if (countDown.countDown()) {
+                        onFinish.run();
+                    }
                 }
             }
         };
