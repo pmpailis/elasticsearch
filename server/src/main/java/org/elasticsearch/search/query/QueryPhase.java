@@ -36,8 +36,8 @@ import org.elasticsearch.search.aggregations.AggregationPhase;
 import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.internal.ScrollContext;
 import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.rank.QueryPhaseShardContext;
 import org.elasticsearch.search.rank.RankSearchContext;
-import org.elasticsearch.search.rank.RankShardContext;
 import org.elasticsearch.search.rescore.RescorePhase;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.suggest.SuggestPhase;
@@ -59,7 +59,7 @@ public class QueryPhase {
     private QueryPhase() {}
 
     public static void execute(SearchContext searchContext) throws QueryPhaseExecutionException {
-        if (searchContext.rankShardContext() == null) {
+        if (searchContext.queryPhaseShardContext() == null) {
             executeQuery(searchContext);
         } else {
             executeRank(searchContext);
@@ -67,7 +67,7 @@ public class QueryPhase {
     }
 
     static void executeRank(SearchContext searchContext) throws QueryPhaseExecutionException {
-        RankShardContext rankShardContext = searchContext.rankShardContext();
+        QueryPhaseShardContext rankShardContext = searchContext.queryPhaseShardContext();
         QuerySearchResult querySearchResult = searchContext.queryResult();
 
         // run the combined boolean query total hits or aggregations
@@ -104,7 +104,7 @@ public class QueryPhase {
             }
         }
 
-        querySearchResult.setRankShardResult(rankShardContext.combine(rrfRankResults));
+        querySearchResult.setRankShardResult(rankShardContext.combineQueryPhaseResults(rrfRankResults));
 
         // record values relevant to all queries
         querySearchResult.searchTimedOut(searchTimedOut);

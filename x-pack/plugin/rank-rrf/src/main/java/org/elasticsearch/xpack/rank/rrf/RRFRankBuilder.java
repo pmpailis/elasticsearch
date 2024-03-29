@@ -14,16 +14,21 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.license.LicenseUtils;
+import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseShardContext;
 import org.elasticsearch.search.rank.RankBuilder;
-import org.elasticsearch.search.rank.RankCoordinatorContext;
-import org.elasticsearch.search.rank.RankShardContext;
-import org.elasticsearch.search.rank.rerank.FeatureRankShardContext;
+import org.elasticsearch.search.rank.RankFeaturePhaseCoordinatorContext;
+import org.elasticsearch.search.rank.RankFeaturePhaseShardContext;
+import org.elasticsearch.search.rank.rerank.RandomOrderRankFeaturePhaseCoordinatorContext;
+import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseShardContext;
+import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseShardContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xpack.core.XPackPlugin;
-import org.elasticsearch.xpack.core.ml.reranking.CrossEncoderRankCoordinatorContext;
 
 import java.io.IOException;
 import java.util.List;
@@ -98,13 +103,28 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankShardContext buildRankShardContext(List<Query> queries, int from) {
-        return new FeatureRankShardContext(queries, from, windowSize());
+    public QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
+        // return new RRFQueryPhaseShardContext(queries, windowSize(), rankConstant);
+        return new RerankingQueryPhaseShardContext(queries, windowSize());
     }
 
     @Override
-    public RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client) {
-        return new CrossEncoderRankCoordinatorContext(size, from, windowSize(), client);
+    public QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
+        // return new RRFQueryPhaseCoordinatorContext(size, from, windowSize(), rankConstant);
+        return new RerankingQueryPhaseCoordinatorContext(windowSize(), from);
+    }
+
+    @Override
+    public RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context) {
+        // return null;
+        return new RerankingRankFeaturePhaseShardContext(context);
+    }
+
+    @Override
+    public RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+        // return null;
+        return new RandomOrderRankFeaturePhaseCoordinatorContext(size, from, windowSize());
+        // return new CrossEncoderFeaturePhaseCoordinatorContext(size, from, windowSize(), client);
     }
 
     @Override

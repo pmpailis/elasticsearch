@@ -5,7 +5,7 @@
  * in compliance with, at your election, the Elastic License 2.0 or the Server
  * Side Public License, v 1.
  */
-package org.elasticsearch.search.rank.rerank;
+package org.elasticsearch.search.rank.feature;
 
 import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.OriginalIndices;
@@ -27,7 +27,7 @@ import java.util.stream.IntStream;
  * Shard level request for extracting all needed feature for a global reranker
  */
 
-public class RankShardFeatureRequest extends TransportRequest implements IndicesRequest {
+public class RankFeatureShardRequest extends TransportRequest implements IndicesRequest {
 
     private final OriginalIndices originalIndices;
     private final ShardSearchRequest shardSearchRequest;
@@ -38,7 +38,7 @@ public class RankShardFeatureRequest extends TransportRequest implements Indices
 
     private final String featureField;
 
-    public RankShardFeatureRequest(
+    public RankFeatureShardRequest(
         OriginalIndices originalIndices,
         ShardSearchContextId contextId,
         ShardSearchRequest shardSearchRequest,
@@ -52,7 +52,7 @@ public class RankShardFeatureRequest extends TransportRequest implements Indices
         this.featureField = featureField;
     }
 
-    public RankShardFeatureRequest(StreamInput in) throws IOException {
+    public RankFeatureShardRequest(StreamInput in) throws IOException {
         super(in);
         originalIndices = OriginalIndices.readOriginalIndices(in);
         shardSearchRequest = in.readOptionalWriteable(ShardSearchRequest::new);

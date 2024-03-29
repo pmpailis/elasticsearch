@@ -112,8 +112,8 @@ import org.elasticsearch.search.query.QueryPhase;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
-import org.elasticsearch.search.rank.rerank.RankFeatureShardPhase;
-import org.elasticsearch.search.rank.rerank.RankShardFeatureRequest;
+import org.elasticsearch.search.rank.feature.RankFeatureShardPhase;
+import org.elasticsearch.search.rank.feature.RankFeatureShardRequest;
 import org.elasticsearch.search.rescore.RescorerBuilder;
 import org.elasticsearch.search.searchafter.SearchAfterBuilder;
 import org.elasticsearch.search.sort.FieldSortBuilder;
@@ -717,7 +717,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     public void executeRankFeaturePhase(
-        RankShardFeatureRequest request,
+        RankFeatureShardRequest request,
         SearchShardTask task,
         ChannelActionListener<TransportResponse> listener
     ) {
@@ -1450,7 +1450,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             for (SubSearchSourceBuilder subSearchSourceBuilder : source.subSearches()) {
                 queries.add(subSearchSourceBuilder.toSearchQuery(context.getSearchExecutionContext()));
             }
-            context.rankShardContext(source.rankBuilder().buildRankShardContext(queries, context.from()));
+            context.queryPhaseShardContext(source.rankBuilder().buildQueryPhaseShardContext(queries, context.from()));
         }
     }
 

@@ -13,20 +13,24 @@ import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.util.concurrent.CountDown;
-import org.elasticsearch.search.rank.rerank.RerankingRankCoordinatorContext;
+import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseCoordinatorContext;
 
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
-public abstract class InferenceRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse> extends
-    RerankingRankCoordinatorContext {
+public abstract class InferenceRankFeaturePhaseCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse> extends
+    RerankingRankFeaturePhaseCoordinatorContext {
 
     protected final String inferenceId = "some-model";
     protected final String inferenceText = "some-query-text";
 
-    public InferenceRankCoordinatorContext(int size, int from, int windowSize, Client client) {
-        super(size, from, windowSize, client);
+    protected final Client client;
+
+    public InferenceRankFeaturePhaseCoordinatorContext(int size, int from, int windowSize, Client client) {
+        super(size, from, windowSize);
+        this.client = client;
     }
 
     protected abstract Request request(List<String> docFeatures);
@@ -36,7 +40,7 @@ public abstract class InferenceRankCoordinatorContext<Request extends ActionRequ
     protected abstract double[] extractScoresFromResponse(Response response);
 
     @Override
-    protected List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures) {
+    protected List<Map<RankBuilder.RankKey, String>> batches(Map<RankBuilder.RankKey, String> docFeatures) {
         return List.of(docFeatures);
     }
 

@@ -6,7 +6,7 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank.rerank;
+package org.elasticsearch.search.rank.feature;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -18,15 +18,15 @@ import java.util.Objects;
 /**
  * A {@link RankDoc} that contains field data to be used later by the reranker on the coordinator node.
  */
-public class FeatureRankDoc extends RankDoc {
+public class RankFeatureDoc extends RankDoc {
 
     public String featureData;
 
-    public FeatureRankDoc(int doc, float score, int shardIndex) {
+    public RankFeatureDoc(int doc, float score, int shardIndex) {
         super(doc, score, shardIndex);
     }
 
-    public FeatureRankDoc(StreamInput in) throws IOException {
+    public RankFeatureDoc(StreamInput in) throws IOException {
         super(in);
         featureData = in.readOptionalString();
     }
@@ -42,7 +42,7 @@ public class FeatureRankDoc extends RankDoc {
 
     @Override
     protected boolean doEquals(RankDoc rd) {
-        FeatureRankDoc other = (FeatureRankDoc) rd;
+        RankFeatureDoc other = (RankFeatureDoc) rd;
         return Objects.equals(this.featureData, other.featureData);
     }
 

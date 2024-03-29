@@ -8,8 +8,8 @@
 
 package org.elasticsearch.search.rank.rerank;
 
-import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.util.concurrent.CountDown;
+import org.elasticsearch.search.rank.RankBuilder;
 
 import java.util.Collections;
 import java.util.List;
@@ -19,10 +19,10 @@ import java.util.function.Consumer;
 /**
  * A global reranker operating on the top `window_size` results from all shards, that provides a random order of the top hits.
  */
-public class RandomOrderRankCoordinatorContext extends RerankingRankCoordinatorContext {
+public class RandomOrderRankFeaturePhaseCoordinatorContext extends RerankingRankFeaturePhaseCoordinatorContext {
 
-    public RandomOrderRankCoordinatorContext(int size, int from, int windowSize, Client client) {
-        super(size, from, windowSize, client);
+    public RandomOrderRankFeaturePhaseCoordinatorContext(int size, int from, int windowSize) {
+        super(size, from, windowSize);
     }
 
     @Override
@@ -38,7 +38,7 @@ public class RandomOrderRankCoordinatorContext extends RerankingRankCoordinatorC
     }
 
     @Override
-    protected List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures) {
+    protected List<Map<RankBuilder.RankKey, String>> batches(Map<RankBuilder.RankKey, String> docFeatures) {
         return Collections.singletonList(docFeatures);
     }
 

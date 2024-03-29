@@ -441,4 +441,5 @@ module org.elasticsearch.server {
             org.elasticsearch.serverless.apifiltering;
     exports org.elasticsearch.lucene.spatial;
     exports org.elasticsearch.search.rank.rerank;
+    exports org.elasticsearch.search.rank.feature;
 }

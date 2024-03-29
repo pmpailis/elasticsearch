@@ -228,7 +228,7 @@ import org.elasticsearch.search.fetch.subphase.highlight.PlainHighlighter;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankShardResult;
-import org.elasticsearch.search.rank.rerank.RankShardFeatureResult;
+import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
 import org.elasticsearch.search.rank.rerank.RerankingRankBuilder;
 import org.elasticsearch.search.rescore.QueryRescorerBuilder;
 import org.elasticsearch.search.rescore.RescorerBuilder;
@@ -1241,7 +1241,7 @@ public class SearchModule {
 
     private void registerRank() {
         namedWriteables.add(new NamedWriteableRegistry.Entry(RankBuilder.class, "rerank", RerankingRankBuilder::new));
-        namedWriteables.add(new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-shard-feature", RankShardFeatureResult::new));
+        namedWriteables.add(new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-shard-feature", RankFeatureShardResult::new));
     }
 
     public FetchPhase getFetchPhase() {

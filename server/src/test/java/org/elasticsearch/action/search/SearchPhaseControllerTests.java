@@ -56,12 +56,11 @@ import org.elasticsearch.search.profile.ProfileResult;
 import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.aggregation.AggregationProfileShardResult;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.RankCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.TestRankDoc;
 import org.elasticsearch.search.rank.TestRankShardResult;
-import org.elasticsearch.search.rank.rerank.RankFeatureResult;
 import org.elasticsearch.search.suggest.SortBy;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
@@ -87,7 +86,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
@@ -363,6 +361,8 @@ public class SearchPhaseControllerTests extends ESTestCase {
         for (int trackTotalHits : new int[] { SearchContext.TRACK_TOTAL_HITS_DISABLED, SearchContext.TRACK_TOTAL_HITS_ACCURATE }) {
             AtomicArray<SearchPhaseResult> queryResults = generateQueryResults(nShards, List.of(), queryResultSize, false, false, true);
             try {
+                final int fsize = randomIntBetween(1, 10);
+                final int windowSize = randomIntBetween(11, 100);
                 SearchPhaseController.ReducedQueryPhase reducedQueryPhase = SearchPhaseController.reducedQueryPhase(
                     queryResults.asList(),
                     new ArrayList<>(),
@@ -371,12 +371,10 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     0,
                     true,
                     InternalAggregationTestCase.emptyReduceContextBuilder(),
-                    new RankCoordinatorContext(randomIntBetween(1, 10), 0, randomIntBetween(11, 100), null) {
+                    new QueryPhaseCoordinatorContext(windowSize) {
+
                         @Override
-                        public SearchPhaseController.SortedTopDocs postQueryRank(
-                            List<QuerySearchResult> querySearchResults,
-                            TopDocsStats topDocStats
-                        ) {
+                        public ScoreDoc[] rankQueryPhaseResults(List<QuerySearchResult> querySearchResults, TopDocsStats topDocStats) {
                             PriorityQueue<RankDoc> queue = new PriorityQueue<RankDoc>(windowSize) {
                                 @Override
                                 protected boolean lessThan(RankDoc a, RankDoc b) {
@@ -391,19 +389,14 @@ public class SearchPhaseControllerTests extends ESTestCase {
                                     }
                                 }
                             }
-                            int size = Math.min(this.size, queue.size());
+                            int size = Math.min(fsize, queue.size());
                             RankDoc[] topResults = new RankDoc[size];
                             for (int rdi = 0; rdi < size; ++rdi) {
                                 topResults[rdi] = queue.pop();
                                 topResults[rdi].rank = rdi + 1;
                             }
                             topDocStats.fetchHits = topResults.length;
-                            return new SearchPhaseController.SortedTopDocs(topResults, false, null, null, null, 0);
-                        }
-
-                        @Override
-                        public void reRank(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
-                            // no op;
+                            return topResults;
                         }
                     },
                     true
@@ -628,8 +621,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 3 + numEmptyResponses,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             if (numEmptyResponses == 0) {
@@ -753,8 +745,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -826,8 +817,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -889,8 +879,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -956,8 +945,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 4,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             int score = 100;
@@ -1014,8 +1002,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             AtomicInteger max = new AtomicInteger();
@@ -1070,8 +1057,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             SortField[] sortFields = { new SortField("field", SortField.Type.STRING) };
@@ -1129,8 +1115,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             int maxScoreTerm = -1;
@@ -1276,8 +1261,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     progressListener,
                     request,
                     expectedNumResults,
-                    exc -> {},
-                    null
+                    exc -> {}
                 )
             ) {
                 AtomicInteger max = new AtomicInteger();
@@ -1367,8 +1351,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 numShards,
-                exc -> hasConsumedFailure.set(true),
-                null
+                exc -> hasConsumedFailure.set(true)
             )
         ) {
             CountDownLatch latch = new CountDownLatch(numShards);
@@ -1439,8 +1422,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                 SearchProgressListener.NOOP,
                 request,
                 expectedNumResults,
-                exc -> hasConsumedFailure.set(true),
-                null
+                exc -> hasConsumedFailure.set(true)
             )
         ) {
             for (int i = 0; i < expectedNumResults; i++) {

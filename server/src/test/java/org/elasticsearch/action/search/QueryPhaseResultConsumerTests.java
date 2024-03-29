@@ -115,8 +115,7 @@ public class QueryPhaseResultConsumerTests extends ESTestCase {
                 e -> onPartialMergeFailure.accumulateAndGet(e, (prev, curr) -> {
                     curr.addSuppressed(prev);
                     return curr;
-                }),
-                null
+                })
             )
         ) {
 

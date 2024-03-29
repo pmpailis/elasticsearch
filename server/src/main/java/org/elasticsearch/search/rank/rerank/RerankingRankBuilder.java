@@ -13,9 +13,12 @@ import org.elasticsearch.TransportVersion;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseShardContext;
 import org.elasticsearch.search.rank.RankBuilder;
-import org.elasticsearch.search.rank.RankCoordinatorContext;
-import org.elasticsearch.search.rank.RankShardContext;
+import org.elasticsearch.search.rank.RankFeaturePhaseCoordinatorContext;
+import org.elasticsearch.search.rank.RankFeaturePhaseShardContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -82,13 +85,23 @@ public class RerankingRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankShardContext buildRankShardContext(List<Query> queries, int from) {
-        return new FeatureRankShardContext(queries, from, windowSize());
+    public QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
+        return null;
     }
 
     @Override
-    public RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client) {
-        return new RandomOrderRankCoordinatorContext(size, from, windowSize(), client);
+    public QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
+        return null;
+    }
+
+    @Override
+    public RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context) {
+        return new RerankingRankFeaturePhaseShardContext(context);
+    }
+
+    @Override
+    public RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+        return new RandomOrderRankFeaturePhaseCoordinatorContext(size, from, windowSize());
     }
 
     @Override

@@ -193,8 +193,7 @@ public class TermsReduceBenchmark {
             isCanceled::get,
             SearchProgressListener.NOOP,
             shards.size(),
-            exc -> {},
-            null
+            exc -> {}
         );
         CountDownLatch latch = new CountDownLatch(shards.size());
         for (int i = 0; i < shards.size(); i++) {

@@ -14,6 +14,7 @@ import org.elasticsearch.TransportVersions;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
@@ -74,12 +75,22 @@ public class TestRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankShardContext buildRankShardContext(List<Query> queries, int from) {
+    public QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client) {
+    public QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client) {
         throw new UnsupportedOperationException();
     }
 

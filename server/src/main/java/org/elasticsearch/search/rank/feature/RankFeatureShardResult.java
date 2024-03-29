@@ -6,7 +6,7 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank.rerank;
+package org.elasticsearch.search.rank.feature;
 
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
@@ -18,19 +18,19 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
 
-public class RankShardFeatureResult implements RankShardResult {
+public class RankFeatureShardResult implements RankShardResult {
 
     /**
      * The result set of RRF docs for the shard.
      */
-    public final FeatureRankDoc[] featureRankDocs;
+    public final RankFeatureDoc[] rankFeatureDocs;
 
-    public RankShardFeatureResult(FeatureRankDoc[] reRankedDocs) {
-        this.featureRankDocs = Objects.requireNonNull(reRankedDocs);
+    public RankFeatureShardResult(RankFeatureDoc[] reRankedDocs) {
+        this.rankFeatureDocs = Objects.requireNonNull(reRankedDocs);
     }
 
-    public RankShardFeatureResult(StreamInput in) throws IOException {
-        featureRankDocs = in.readArray(FeatureRankDoc::new, FeatureRankDoc[]::new);
+    public RankFeatureShardResult(StreamInput in) throws IOException {
+        rankFeatureDocs = in.readArray(RankFeatureDoc::new, RankFeatureDoc[]::new);
     }
 
     @Override
@@ -45,24 +45,24 @@ public class RankShardFeatureResult implements RankShardResult {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeArray(featureRankDocs);
+        out.writeArray(rankFeatureDocs);
     }
 
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
-        RankShardFeatureResult that = (RankShardFeatureResult) o;
-        return Arrays.equals(featureRankDocs, that.featureRankDocs);
+        RankFeatureShardResult that = (RankFeatureShardResult) o;
+        return Arrays.equals(rankFeatureDocs, that.rankFeatureDocs);
     }
 
     @Override
     public int hashCode() {
-        return 31 * Arrays.hashCode(featureRankDocs);
+        return 31 * Arrays.hashCode(rankFeatureDocs);
     }
 
     @Override
     public String toString() {
-        return this.getClass().getSimpleName() + "{featureRankDocs=" + Arrays.toString(featureRankDocs) + '}';
+        return this.getClass().getSimpleName() + "{featureRankDocs=" + Arrays.toString(rankFeatureDocs) + '}';
     }
 }

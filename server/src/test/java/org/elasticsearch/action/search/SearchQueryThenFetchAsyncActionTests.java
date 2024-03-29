@@ -196,8 +196,7 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
                 task::isCancelled,
                 task.getProgressListener(),
                 shardsIter.size(),
-                exc -> {},
-                null
+                exc -> {}
             )
         ) {
             SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(
@@ -215,7 +214,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
                 timeProvider,
                 new ClusterState.Builder(new ClusterName("test")).build(),
                 task,
-                SearchResponse.Clusters.EMPTY
+                SearchResponse.Clusters.EMPTY,
+                null
             ) {
                 @Override
                 protected SearchPhase getNextPhase(SearchPhaseResults<SearchPhaseResult> results, SearchPhaseContext context) {
@@ -347,8 +347,7 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {},
-            null
+            exc -> {}
         );
         final List<Object> responses = new ArrayList<>();
         SearchQueryThenFetchAsyncAction newSearchAsyncAction = new SearchQueryThenFetchAsyncAction(
@@ -375,7 +374,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             timeProvider,
             new ClusterState.Builder(new ClusterName("test")).build(),
             task,
-            SearchResponse.Clusters.EMPTY
+            SearchResponse.Clusters.EMPTY,
+            null
         );
 
         newSearchAsyncAction.start();
@@ -497,8 +497,7 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {},
-            null
+            exc -> {}
         );
         CountDownLatch latch = new CountDownLatch(1);
         SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(
@@ -516,7 +515,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             timeProvider,
             new ClusterState.Builder(new ClusterName("test")).build(),
             task,
-            SearchResponse.Clusters.EMPTY
+            SearchResponse.Clusters.EMPTY,
+            null
         ) {
             @Override
             protected SearchPhase getNextPhase(SearchPhaseResults<SearchPhaseResult> results, SearchPhaseContext context) {
@@ -648,8 +648,7 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             task::isCancelled,
             task.getProgressListener(),
             shardsIter.size(),
-            exc -> {},
-            null
+            exc -> {}
         );
         CountDownLatch latch = new CountDownLatch(1);
         SearchQueryThenFetchAsyncAction action = new SearchQueryThenFetchAsyncAction(
@@ -667,7 +666,8 @@ public class SearchQueryThenFetchAsyncActionTests extends ESTestCase {
             timeProvider,
             new ClusterState.Builder(new ClusterName("test")).build(),
             task,
-            SearchResponse.Clusters.EMPTY
+            SearchResponse.Clusters.EMPTY,
+            null
         ) {
             @Override
             protected SearchPhase getNextPhase(SearchPhaseResults<SearchPhaseResult> results, SearchPhaseContext context) {

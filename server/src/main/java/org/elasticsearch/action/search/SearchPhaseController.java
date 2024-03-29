@@ -22,7 +22,6 @@ import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.TotalHits.Relation;
 import org.apache.lucene.util.SetOnce;
-import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.io.stream.DelayableWriteable;
 import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
@@ -47,7 +46,7 @@ import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileResults;
 import org.elasticsearch.search.profile.SearchProfileResultsBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.RankCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
@@ -457,7 +456,7 @@ public final class SearchPhaseController {
                     : "not enough hits fetched. index [" + index + "] length: " + fetchResult.hits().getHits().length;
                 SearchHit searchHit = fetchResult.hits().getHits()[index];
                 searchHit.shard(fetchResult.getSearchShardTarget());
-                if (reducedQueryPhase.rankCoordinatorContext != null) {
+                if (reducedQueryPhase.queryPhaseCoordinatorContext != null) {
                     assert shardDoc instanceof RankDoc;
                     searchHit.setRank(((RankDoc) shardDoc).rank);
                     searchHit.score(shardDoc.score);
@@ -543,7 +542,7 @@ public final class SearchPhaseController {
         int numReducePhases,
         boolean isScrollRequest,
         AggregationReduceContext.Builder aggReduceContextBuilder,
-        RankCoordinatorContext rankCoordinatorContext,
+        QueryPhaseCoordinatorContext queryPhaseCoordinatorContext,
         boolean performFinalReduce
     ) {
         assert numReducePhases >= 0 : "num reduce phases must be >= 0 but was: " + numReducePhases;
@@ -635,10 +634,21 @@ public final class SearchPhaseController {
         final SearchProfileResultsBuilder profileBuilder = profileShardResults.isEmpty()
             ? null
             : new SearchProfileResultsBuilder(profileShardResults);
-        final SortedTopDocs sortedTopDocs = rankCoordinatorContext == null
+        final SortedTopDocs sortedTopDocs = queryPhaseCoordinatorContext == null
             ? sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions)
-            : rankCoordinatorContext.postQueryRank(queryResults.stream().map(SearchPhaseResult::queryResult).toList(), topDocsStats);
-        if (rankCoordinatorContext != null) {
+            : new SortedTopDocs(
+                queryPhaseCoordinatorContext.rankQueryPhaseResults(
+                    queryResults.stream().map(SearchPhaseResult::queryResult).toList(),
+                    topDocsStats
+                ),
+                false,
+                null,
+                null,
+                null,
+                0
+            );
+        if (queryPhaseCoordinatorContext != null) {
+            from = 0;
             size = sortedTopDocs.scoreDocs.length;
         }
         final TotalHits totalHits = topDocsStats.getTotalHits();
@@ -653,7 +663,7 @@ public final class SearchPhaseController {
             profileBuilder,
             sortedTopDocs,
             sortValueFormats,
-            rankCoordinatorContext,
+            queryPhaseCoordinatorContext,
             numReducePhases,
             size,
             from,
@@ -739,7 +749,7 @@ public final class SearchPhaseController {
         // sort value formats used to sort / format the result
         DocValueFormat[] sortValueFormats,
         // the rank context if ranking is used
-        RankCoordinatorContext rankCoordinatorContext,
+        QueryPhaseCoordinatorContext queryPhaseCoordinatorContext,
         // the number of reduces phases
         int numReducePhases,
         // the size of the top hits to return
@@ -797,8 +807,7 @@ public final class SearchPhaseController {
         SearchProgressListener listener,
         SearchRequest request,
         int numShards,
-        Consumer<Exception> onPartialMergeFailure,
-        Client client
+        Consumer<Exception> onPartialMergeFailure
     ) {
         final int size = request.source() == null || request.source().size() == -1 ? SearchService.DEFAULT_SIZE : request.source().size();
         // Use CountOnlyQueryPhaseResultConsumer for requests without aggs, suggest, etc. things only wanting a total count and
@@ -821,8 +830,7 @@ public final class SearchPhaseController {
             isCanceled,
             listener,
             numShards,
-            onPartialMergeFailure,
-            client
+            onPartialMergeFailure
         );
     }
 

@@ -18,9 +18,11 @@ import org.elasticsearch.xpack.core.ml.inference.results.TextEmbeddingResults;
 import java.util.List;
 import java.util.Map;
 
-public class CrossEncoderRankCoordinatorContext extends InferenceRankCoordinatorContext<InferenceAction.Request, InferenceAction.Response> {
+public class CrossEncoderRankFeaturePhaseCoordinatorContext extends InferenceRankFeaturePhaseCoordinatorContext<
+    InferenceAction.Request,
+    InferenceAction.Response> {
 
-    public CrossEncoderRankCoordinatorContext(int size, int from, int windowSize, Client client) {
+    public CrossEncoderRankFeaturePhaseCoordinatorContext(int size, int from, int windowSize, Client client) {
         super(size, from, windowSize, client);
     }
 

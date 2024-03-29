@@ -39,8 +39,8 @@ import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.ScrollQuerySearchResult;
-import org.elasticsearch.search.rank.rerank.RankFeatureResult;
-import org.elasticsearch.search.rank.rerank.RankShardFeatureRequest;
+import org.elasticsearch.search.rank.feature.RankFeatureResult;
+import org.elasticsearch.search.rank.feature.RankFeatureShardRequest;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.RemoteClusterService;
@@ -271,7 +271,7 @@ public class SearchTransportService {
 
     public void sendExecuteRankFeature(
         Transport.Connection connection,
-        RankShardFeatureRequest request,
+        RankFeatureShardRequest request,
         SearchTask task,
         SearchActionListener<RankFeatureResult> listener
     ) {
@@ -558,12 +558,12 @@ public class SearchTransportService {
         );
         TransportActionProxy.registerProxyAction(transportService, QUERY_FETCH_SCROLL_ACTION_NAME, true, ScrollQueryFetchSearchResult::new);
 
-        final TransportRequestHandler<RankShardFeatureRequest> rankShardFeatureRequest = (request, channel, task) -> searchService
+        final TransportRequestHandler<RankFeatureShardRequest> rankShardFeatureRequest = (request, channel, task) -> searchService
             .executeRankFeaturePhase(request, (SearchShardTask) task, new ChannelActionListener<>(channel));
         transportService.registerRequestHandler(
             RANK_FEATURE_SHARD_ACTION_NAME,
             EsExecutors.DIRECT_EXECUTOR_SERVICE,
-            RankShardFeatureRequest::new,
+            RankFeatureShardRequest::new,
             instrumentedHandler(RANK_SHARD_FEATURE_ACTION_METRIC, transportService, searchTransportMetrics, rankShardFeatureRequest)
         );
         TransportActionProxy.registerProxyAction(transportService, RANK_FEATURE_SHARD_ACTION_NAME, true, RankFeatureResult::new);

@@ -15,6 +15,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.VersionedNamedWriteable;
 import org.elasticsearch.search.SearchService;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -29,6 +30,9 @@ import java.util.Objects;
  * require multiple queries for global rank relevance.
  */
 public abstract class RankBuilder implements VersionedNamedWriteable, ToXContentObject {
+
+    // used for faster hash lookup in a map of ranked documents
+    public record RankKey(int doc, int shardIndex) {}
 
     public static final ParseField WINDOW_SIZE_FIELD = new ParseField("window_size");
 
@@ -71,12 +75,22 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
     /**
      * Generates a context used to execute required searches on the shard.
      */
-    public abstract RankShardContext buildRankShardContext(List<Query> queries, int from);
+    public abstract QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from);
+
+    /**
+     * Generates a context that is used after the query phase to rank the results from all shards
+     */
+    public abstract QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
+
+    /**
+     * Generates a context used to execute required searches on the shard.
+     */
+    public abstract RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context);
 
     /**
      * Generates a context used to perform global ranking on the coordinator.
      */
-    public abstract RankCoordinatorContext buildRankCoordinatorContext(int size, int from, Client client);
+    public abstract RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client);
 
     @Override
     public final boolean equals(Object obj) {

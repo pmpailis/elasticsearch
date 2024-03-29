@@ -6,7 +6,7 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank.rerank;
+package org.elasticsearch.search.rank.feature;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -21,7 +21,8 @@ import org.elasticsearch.transport.LeakTracker;
 import java.io.IOException;
 
 public class RankFeatureResult extends SearchPhaseResult {
-    private RankShardFeatureResult rankShardResult;
+
+    private RankFeatureShardResult rankShardResult;
 
     private final RefCounted refCounted = LeakTracker.wrap(new SimpleRefCounted());
 
@@ -36,7 +37,7 @@ public class RankFeatureResult extends SearchPhaseResult {
     public RankFeatureResult(StreamInput in) throws IOException {
         super(in);
         contextId = new ShardSearchContextId(in);
-        rankShardResult = in.readOptionalWriteable(RankShardFeatureResult::new);
+        rankShardResult = in.readOptionalWriteable(RankFeatureShardResult::new);
         setShardSearchRequest(in.readOptionalWriteable(ShardSearchRequest::new));
         setSearchShardTarget(in.readOptionalWriteable(SearchShardTarget::new));
     }
@@ -55,12 +56,12 @@ public class RankFeatureResult extends SearchPhaseResult {
         return this;
     }
 
-    public void shardResult(RankShardFeatureResult shardResult) {
+    public void shardResult(RankFeatureShardResult shardResult) {
         assert shardResult != null;
         this.rankShardResult = shardResult;
     }
 
-    public RankShardFeatureResult shardResult() {
+    public RankFeatureShardResult shardResult() {
         return rankShardResult;
     }
 

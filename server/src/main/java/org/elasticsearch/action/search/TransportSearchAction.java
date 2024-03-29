@@ -1341,8 +1341,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     task.getProgressListener(),
                     searchRequest,
                     shardIterators.size(),
-                    exc -> searchTransportService.cancelSearchTask(task, "failed to merge result [" + exc.getMessage() + "]"),
-                    client
+                    exc -> searchTransportService.cancelSearchTask(task, "failed to merge result [" + exc.getMessage() + "]")
                 );
                 if (searchRequest.searchType() == DFS_QUERY_THEN_FETCH) {
                     return new SearchDfsQueryThenFetchAsyncAction(
@@ -1360,7 +1359,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         timeProvider,
                         clusterState,
                         task,
-                        clusters
+                        clusters,
+                        client
                     );
                 } else {
                     assert searchRequest.searchType() == QUERY_THEN_FETCH : searchRequest.searchType();
@@ -1379,7 +1379,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         timeProvider,
                         clusterState,
                         task,
-                        clusters
+                        clusters,
+                        client
                     );
                 }
             }

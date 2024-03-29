@@ -12,7 +12,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
-import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
 import org.elasticsearch.common.io.stream.DelayableWriteable;
@@ -27,7 +26,7 @@ import org.elasticsearch.search.aggregations.AggregationReduceContext;
 import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.RankCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -59,7 +58,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
     private final CircuitBreaker circuitBreaker;
     private final SearchProgressListener progressListener;
     private final AggregationReduceContext.Builder aggReduceContextBuilder;
-    private final RankCoordinatorContext rankCoordinatorContext;
+    private final QueryPhaseCoordinatorContext queryPhaseCoordinatorContext;
 
     private final int topNSize;
     private final boolean hasTopDocs;
@@ -81,8 +80,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         Supplier<Boolean> isCanceled,
         SearchProgressListener progressListener,
         int expectedResultSize,
-        Consumer<Exception> onPartialMergeFailure,
-        Client client
+        Consumer<Exception> onPartialMergeFailure
     ) {
         super(expectedResultSize);
         this.executor = executor;
@@ -95,10 +93,10 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         SearchSourceBuilder source = request.source();
         int size = source == null || source.size() == -1 ? SearchService.DEFAULT_SIZE : source.size();
         int from = source == null || source.from() == -1 ? SearchService.DEFAULT_FROM : source.from();
-        this.rankCoordinatorContext = source == null || source.rankBuilder() == null
+        this.queryPhaseCoordinatorContext = source == null || source.rankBuilder() == null
             ? null
-            : source.rankBuilder().buildRankCoordinatorContext(size, from, client);
-        this.hasTopDocs = (source == null || size != 0) && rankCoordinatorContext == null;
+            : source.rankBuilder().buildQueryPhaseCoordinatorContext(size, from);
+        this.hasTopDocs = (source == null || size != 0) && queryPhaseCoordinatorContext == null;
         this.hasAggs = source != null && source.aggregations() != null;
         this.aggReduceContextBuilder = hasAggs ? controller.getReduceContext(isCanceled, source.aggregations()) : null;
         int batchReduceSize = (hasAggs || hasTopDocs) ? Math.min(request.getBatchedReduceSize(), expectedResultSize) : expectedResultSize;
@@ -146,7 +144,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                 pendingMerges.numReducePhases,
                 false,
                 aggReduceContextBuilder,
-                rankCoordinatorContext,
+                queryPhaseCoordinatorContext,
                 performFinalReduce
             );
         } finally {
