@@ -86,12 +86,12 @@ public class RerankingRankBuilder extends RankBuilder {
 
     @Override
     public QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
-        return null;
+        return new RerankingQueryPhaseShardContext(queries, windowSize());
     }
 
     @Override
     public QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
-        return null;
+        return new RerankingQueryPhaseCoordinatorContext(windowSize(), from);
     }
 
     @Override
