@@ -87,4 +87,9 @@ public class RankFeatureResult extends SearchPhaseResult {
     public boolean hasReferences() {
         return refCounted.hasReferences();
     }
+
+    @Override
+    public boolean hasSearchContext() {
+        return true;
+    }
 }

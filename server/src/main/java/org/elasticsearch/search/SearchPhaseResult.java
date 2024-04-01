@@ -44,6 +44,10 @@ public abstract class SearchPhaseResult extends TransportResponse {
         super(in);
     }
 
+    public boolean hasSearchContext() {
+        return false;
+    }
+
     /**
      * Returns the search context ID that is used to reference the search context on the executing node
      * or <code>null</code> if no context was created.

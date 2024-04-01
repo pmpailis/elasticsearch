@@ -184,7 +184,7 @@ public final class RankFeaturePhase extends SearchPhase {
         rankFeaturePhaseRankCoordinatorContext.rankGlobalResults(
             rankPhaseResults.getAtomicArray().asList().stream().map(SearchPhaseResult::rankFeatureResult).toList(),
             (scoreDocs) -> {
-                SearchPhaseController.ReducedQueryPhase rerankedReducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
+                SearchPhaseController.ReducedQueryPhase reducedRankFeaturePhase = new SearchPhaseController.ReducedQueryPhase(
                     reducedQueryPhase.totalHits(),
                     reducedQueryPhase.fetchHits(),
                     Arrays.stream(scoreDocs).map(x -> x.score).max(Comparator.comparingDouble(x -> x)).orElse(Float.NaN),
@@ -202,7 +202,7 @@ public final class RankFeaturePhase extends SearchPhase {
                     reducedQueryPhase.isEmptyResult()
                 );
                 queryPhaseResults.close();
-                moveToNextPhase(rankPhaseResults, rerankedReducedQueryPhase);
+                moveToNextPhase(rankPhaseResults, reducedRankFeaturePhase);
             }
         );
     }

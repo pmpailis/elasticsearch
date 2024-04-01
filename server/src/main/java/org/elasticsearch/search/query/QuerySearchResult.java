@@ -359,6 +359,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
         return (suggest != null && suggest.hasScoreDocs());
     }
 
+    @Override
     public boolean hasSearchContext() {
         return hasScoreDocs || hasSuggestHits() || rankShardResult != null;
     }
