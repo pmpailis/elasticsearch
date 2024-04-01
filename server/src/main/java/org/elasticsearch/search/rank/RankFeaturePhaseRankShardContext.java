@@ -15,7 +15,7 @@ import org.elasticsearch.core.Nullable;
  * In this class, we can fetch the feature data for a given set of documents and pass them back to the coordinator
  * through the {@link RankShardResult}.
  */
-public abstract class RankFeaturePhaseRankShardContext {
+public abstract class RankFeaturePhaseRankShardContext implements RankFeaturePhaseRankContext {
 
     public RankFeaturePhaseRankShardContext() {}
 

@@ -18,7 +18,7 @@ import java.util.List;
  * results on each shard. It runs all queries needed, and combines their scores and doc ordering through the
  * {@link QueryPhaseRankShardContext#combineQueryPhaseResults} method.
  */
-public abstract class QueryPhaseRankShardContext {
+public abstract class QueryPhaseRankShardContext implements QueryPhaseRankContext {
 
     protected final List<Query> queries;
     protected final int windowSize;

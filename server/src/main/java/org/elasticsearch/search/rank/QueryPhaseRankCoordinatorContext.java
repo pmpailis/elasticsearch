@@ -22,7 +22,7 @@ import java.util.List;
  *
  * Note: Currently this can use only sort by score; sort by field is to be implemented.
  */
-public abstract class QueryPhaseRankCoordinatorContext {
+public abstract class QueryPhaseRankCoordinatorContext implements QueryPhaseRankContext {
 
     protected final int windowSize;
 

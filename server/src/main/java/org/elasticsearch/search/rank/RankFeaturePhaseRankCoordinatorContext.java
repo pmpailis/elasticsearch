@@ -19,7 +19,7 @@ import java.util.function.Consumer;
  * {@code RankFeaturePhaseRankCoordinatorContext} is a base class that runs on the coordinating node and is responsible for retrieving
  * `window_size` total results from all shards, rank them, and then produce a final paginated response of [from, from+size] results.
  */
-public abstract class RankFeaturePhaseRankCoordinatorContext {
+public abstract class RankFeaturePhaseRankCoordinatorContext implements RankFeaturePhaseRankContext {
 
     protected final int size;
     protected final int from;
