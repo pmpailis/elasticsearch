@@ -294,12 +294,12 @@ public class RankSearchContext extends SearchContext {
     }
 
     @Override
-    public QueryPhaseShardContext queryPhaseShardContext() {
+    public QueryPhaseRankShardContext queryPhaseShardContext() {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void queryPhaseShardContext(QueryPhaseShardContext queryPhaseShardContext) {
+    public void queryPhaseShardContext(QueryPhaseRankShardContext queryPhaseRankShardContext) {
         throw new UnsupportedOperationException();
     }
 

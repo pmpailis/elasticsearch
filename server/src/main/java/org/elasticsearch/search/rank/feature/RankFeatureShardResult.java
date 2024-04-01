@@ -21,7 +21,7 @@ import java.util.Objects;
 public class RankFeatureShardResult implements RankShardResult {
 
     /**
-     * The result set of RRF docs for the shard.
+     * The result set of {@link RankFeatureDoc} docs for the shard.
      */
     public final RankFeatureDoc[] rankFeatureDocs;
 
@@ -35,7 +35,7 @@ public class RankFeatureShardResult implements RankShardResult {
 
     @Override
     public String getWriteableName() {
-        return "rank-shard-feature";
+        return "rank-feature-shard";
     }
 
     @Override
@@ -63,6 +63,6 @@ public class RankFeatureShardResult implements RankShardResult {
 
     @Override
     public String toString() {
-        return this.getClass().getSimpleName() + "{featureRankDocs=" + Arrays.toString(rankFeatureDocs) + '}';
+        return this.getClass().getSimpleName() + "{rankFeatureDocs=" + Arrays.toString(rankFeatureDocs) + '}';
     }
 }

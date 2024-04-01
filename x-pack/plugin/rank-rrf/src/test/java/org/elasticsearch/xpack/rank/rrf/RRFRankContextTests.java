@@ -36,7 +36,7 @@ public class RRFRankContextTests extends ESTestCase {
     }
 
     public void testShardCombine() {
-        RRFQueryPhaseShardContext context = new RRFQueryPhaseShardContext(null, 10, 1);
+        RRFQueryPhaseRankShardContext context = new RRFQueryPhaseRankShardContext(null, 10, 1);
 
         List<TopDocs> topDocs = List.of(
             new TopDocs(
@@ -165,7 +165,7 @@ public class RRFRankContextTests extends ESTestCase {
     }
 
     public void testCoordinatorRank() {
-        RRFQueryPhaseCoordinatorContext context = new RRFQueryPhaseCoordinatorContext(4, 0, 5, 1);
+        RRFQueryPhaseRankCoordinatorContext context = new RRFQueryPhaseRankCoordinatorContext(4, 0, 5, 1);
         QuerySearchResult qsr0 = new QuerySearchResult();
         qsr0.setShardIndex(1);
         RRFRankDoc rd11 = new RRFRankDoc(1, -1, 2);
@@ -269,7 +269,7 @@ public class RRFRankContextTests extends ESTestCase {
     }
 
     public void testShardTieBreaker() {
-        RRFQueryPhaseShardContext context = new RRFQueryPhaseShardContext(null, 10, 1);
+        RRFQueryPhaseRankShardContext context = new RRFQueryPhaseRankShardContext(null, 10, 1);
 
         List<TopDocs> topDocs = List.of(
             new TopDocs(null, new ScoreDoc[] { new ScoreDoc(1, 10.0f, -1), new ScoreDoc(2, 9.0f, -1) }),
@@ -390,7 +390,7 @@ public class RRFRankContextTests extends ESTestCase {
     }
 
     public void testCoordinatorRankTieBreaker() {
-        RRFQueryPhaseCoordinatorContext context = new RRFQueryPhaseCoordinatorContext(4, 0, 5, 1);
+        RRFQueryPhaseRankCoordinatorContext context = new RRFQueryPhaseRankCoordinatorContext(4, 0, 5, 1);
 
         QuerySearchResult qsr0 = new QuerySearchResult();
         qsr0.setShardIndex(1);

@@ -56,7 +56,7 @@ import org.elasticsearch.search.profile.ProfileResult;
 import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.aggregation.AggregationProfileShardResult;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.TestRankDoc;
@@ -371,7 +371,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     0,
                     true,
                     InternalAggregationTestCase.emptyReduceContextBuilder(),
-                    new QueryPhaseCoordinatorContext(windowSize) {
+                    new QueryPhaseRankCoordinatorContext(windowSize) {
 
                         @Override
                         public ScoreDoc[] rankQueryPhaseResults(List<QuerySearchResult> querySearchResults, TopDocsStats topDocStats) {

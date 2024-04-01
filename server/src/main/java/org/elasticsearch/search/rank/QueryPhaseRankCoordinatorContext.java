@@ -16,15 +16,17 @@ import org.elasticsearch.search.query.QuerySearchResult;
 import java.util.List;
 
 /**
- * {@code PostQueryCoordinatorContext} is a base class used to generate ranking
- * results on the coordinator and then set the rank for any
- * search hits that are found.
+ * {@code QueryPhaseRankCoordinatorContext} is running on the coordinator nde and is
+ * responsible for combining the query phase results from the shards and rank them accordingly.
+ * The output is a `window_size` ranked list of ordered results from all shards.
+ *
+ * Note: Currently this can use only sort by score; sort by field is to be implemented.
  */
-public abstract class QueryPhaseCoordinatorContext {
+public abstract class QueryPhaseRankCoordinatorContext {
 
     protected final int windowSize;
 
-    public QueryPhaseCoordinatorContext(int windowSize) {
+    public QueryPhaseRankCoordinatorContext(int windowSize) {
         this.windowSize = windowSize;
     }
 
@@ -32,8 +34,8 @@ public abstract class QueryPhaseCoordinatorContext {
      * This is used to pull information passed back from the shards as part
      * of {@link QuerySearchResult#getRankShardResult()} and return a {@link SortedTopDocs}
      * of the `window_size` ranked results. Note that {@link TopDocsStats} is included so that
-     * appropriate stats may be updated based on rank results. This is called at the end
-     * of the query phase prior to the fetch phase.
+     * appropriate stats may be updated based on rank results. This is called at start of the RankFeature phase as part of
+     * reducing the results.
      */
     public abstract ScoreDoc[] rankQueryPhaseResults(List<QuerySearchResult> querySearchResults, TopDocsStats topDocStats);
 

@@ -72,4 +72,7 @@ public abstract class RankDoc extends ScoreDoc implements Writeable {
     public String toString() {
         return "RankDoc{" + "score=" + score + ", doc=" + doc + ", shardIndex=" + shardIndex + '}';
     }
+
+    // used for faster hash lookup in a map of ranked documents
+    public record RankKey(int doc, int shardIndex) {}
 }

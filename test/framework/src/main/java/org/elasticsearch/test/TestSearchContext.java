@@ -43,7 +43,7 @@ import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.sort.SortAndFormats;
@@ -70,7 +70,7 @@ public class TestSearchContext extends SearchContext {
     SortAndFormats sort;
     boolean trackScores = false;
     int trackTotalHitsUpTo = SearchContext.DEFAULT_TRACK_TOTAL_HITS_UP_TO;
-    QueryPhaseShardContext queryPhaseShardContext;
+    QueryPhaseRankShardContext queryPhaseRankShardContext;
     ContextIndexSearcher searcher;
     int from;
     int size;
@@ -539,13 +539,13 @@ public class TestSearchContext extends SearchContext {
     }
 
     @Override
-    public QueryPhaseShardContext queryPhaseShardContext() {
-        return queryPhaseShardContext;
+    public QueryPhaseRankShardContext queryPhaseShardContext() {
+        return queryPhaseRankShardContext;
     }
 
     @Override
-    public void queryPhaseShardContext(QueryPhaseShardContext queryPhaseShardContext) {
-        this.queryPhaseShardContext = queryPhaseShardContext;
+    public void queryPhaseShardContext(QueryPhaseRankShardContext queryPhaseRankShardContext) {
+        this.queryPhaseRankShardContext = queryPhaseRankShardContext;
     }
 
     @Override

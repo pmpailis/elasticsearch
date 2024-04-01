@@ -46,7 +46,7 @@ import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileResults;
 import org.elasticsearch.search.profile.SearchProfileResultsBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
@@ -456,7 +456,7 @@ public final class SearchPhaseController {
                     : "not enough hits fetched. index [" + index + "] length: " + fetchResult.hits().getHits().length;
                 SearchHit searchHit = fetchResult.hits().getHits()[index];
                 searchHit.shard(fetchResult.getSearchShardTarget());
-                if (reducedQueryPhase.queryPhaseCoordinatorContext != null) {
+                if (reducedQueryPhase.queryPhaseRankCoordinatorContext != null) {
                     assert shardDoc instanceof RankDoc;
                     searchHit.setRank(((RankDoc) shardDoc).rank);
                     searchHit.score(shardDoc.score);
@@ -542,7 +542,7 @@ public final class SearchPhaseController {
         int numReducePhases,
         boolean isScrollRequest,
         AggregationReduceContext.Builder aggReduceContextBuilder,
-        QueryPhaseCoordinatorContext queryPhaseCoordinatorContext,
+        QueryPhaseRankCoordinatorContext queryPhaseRankCoordinatorContext,
         boolean performFinalReduce
     ) {
         assert numReducePhases >= 0 : "num reduce phases must be >= 0 but was: " + numReducePhases;
@@ -634,10 +634,10 @@ public final class SearchPhaseController {
         final SearchProfileResultsBuilder profileBuilder = profileShardResults.isEmpty()
             ? null
             : new SearchProfileResultsBuilder(profileShardResults);
-        final SortedTopDocs sortedTopDocs = queryPhaseCoordinatorContext == null
+        final SortedTopDocs sortedTopDocs = queryPhaseRankCoordinatorContext == null
             ? sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions)
             : new SortedTopDocs(
-                queryPhaseCoordinatorContext.rankQueryPhaseResults(
+                queryPhaseRankCoordinatorContext.rankQueryPhaseResults(
                     queryResults.stream().map(SearchPhaseResult::queryResult).toList(),
                     topDocsStats
                 ),
@@ -647,7 +647,7 @@ public final class SearchPhaseController {
                 null,
                 0
             );
-        if (queryPhaseCoordinatorContext != null) {
+        if (queryPhaseRankCoordinatorContext != null) {
             from = 0;
             size = sortedTopDocs.scoreDocs.length;
         }
@@ -663,7 +663,7 @@ public final class SearchPhaseController {
             profileBuilder,
             sortedTopDocs,
             sortValueFormats,
-            queryPhaseCoordinatorContext,
+            queryPhaseRankCoordinatorContext,
             numReducePhases,
             size,
             from,
@@ -749,7 +749,7 @@ public final class SearchPhaseController {
         // sort value formats used to sort / format the result
         DocValueFormat[] sortValueFormats,
         // the rank context if ranking is used
-        QueryPhaseCoordinatorContext queryPhaseCoordinatorContext,
+        QueryPhaseRankCoordinatorContext queryPhaseRankCoordinatorContext,
         // the number of reduces phases
         int numReducePhases,
         // the size of the top hits to return

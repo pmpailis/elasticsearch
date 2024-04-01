@@ -31,9 +31,6 @@ import java.util.Objects;
  */
 public abstract class RankBuilder implements VersionedNamedWriteable, ToXContentObject {
 
-    // used for faster hash lookup in a map of ranked documents
-    public record RankKey(int doc, int shardIndex) {}
-
     public static final ParseField WINDOW_SIZE_FIELD = new ParseField("window_size");
 
     public static final int DEFAULT_WINDOW_SIZE = SearchService.DEFAULT_SIZE;
@@ -73,24 +70,27 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
     }
 
     /**
-     * Generates a context used to execute required searches on the shard.
+     * Generates a context used to execute required searches during the query phase on the shard.
      */
-    public abstract QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from);
+    public abstract QueryPhaseRankShardContext buildQueryPhaseShardContext(List<Query> queries, int from);
 
     /**
-     * Generates a context that is used after the query phase to rank the results from all shards
+     * Generates a context used to be executed on the coordinating node, that would combine all individual shard results.
      */
-    public abstract QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
+    public abstract QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
 
     /**
-     * Generates a context used to execute required searches on the shard.
+     * Generates a context used to execute the rank feature phase on the shard. This is responsible for retrieving any needed
+     * feature data, and passing them back to the coordinator through the appropriate {@link  RankShardResult}.
      */
-    public abstract RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context);
+    public abstract RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext(SearchContext context);
 
     /**
-     * Generates a context used to perform global ranking on the coordinator.
+     * Generates a context used to perform global ranking during the RankFeature phase,
+     * on the coordinator based on all the individual shard results. The output of this will be a `size` ranked list of ordered results,
+     * which will then be passed to fetch phase.
      */
-    public abstract RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client);
+    public abstract RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client);
 
     @Override
     public final boolean equals(Object obj) {

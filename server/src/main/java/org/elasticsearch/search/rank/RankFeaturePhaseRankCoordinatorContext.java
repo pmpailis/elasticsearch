@@ -16,28 +16,31 @@ import java.util.List;
 import java.util.function.Consumer;
 
 /**
- * {@code RankContext} is a base class used to generate ranking
- * results on the coordinator and then set the rank for any
- * search hits that are found.
+ * {@code RankFeaturePhaseRankCoordinatorContext} is a base class that runs on the coordinating node and is responsible for retrieving
+ * `window_size` total results from all shards, rank them, and then produce a final paginated response of [from, from+size] results.
  */
-public abstract class RankFeaturePhaseCoordinatorContext {
+public abstract class RankFeaturePhaseRankCoordinatorContext {
 
     protected final int size;
     protected final int from;
     protected final int windowSize;
 
-    public RankFeaturePhaseCoordinatorContext(int size, int from, int windowSize) {
+    public RankFeaturePhaseRankCoordinatorContext(int size, int from, int windowSize) {
         this.size = size;
         this.from = from;
         this.windowSize = windowSize;
     }
 
     /**
-     * This is used to re-rank the results after the query phase has completed. This is called
-     * by the {@link RankFeaturePhase} and computes a reranked list of global top-K results, based on the features extracted
-     * during this phase by each of the shards (and passed through the {@link RankFeatureResult}).
+     * This is used to re-rank the results once we have retrieved all {@link RankFeatureResult} responses
+     * during the {@link RankFeaturePhase} phase. This method computes a reranked list of global top-K results,
+     * based on the feature data extracted by each of the shards.
+     *
+     * To support non-blocking async operations, once we generate a final array of {@link ScoreDoc} results, we pass them
+     * to the {@param onFinish} consumer to proceed with the next steps, as defined by the caller.
      *
      * @param rankSearchResults a list of rank feature results from each shard
+     * @param onFinish a consumer to be called once the global ranking is complete
      */
     public abstract void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish);
 }

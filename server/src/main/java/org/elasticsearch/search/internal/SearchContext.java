@@ -41,7 +41,7 @@ import org.elasticsearch.search.fetch.subphase.ScriptFieldsContext;
 import org.elasticsearch.search.fetch.subphase.highlight.SearchHighlightContext;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.sort.SortAndFormats;
@@ -142,9 +142,9 @@ public abstract class SearchContext implements Releasable {
 
     public abstract void suggest(SuggestionSearchContext suggest);
 
-    public abstract QueryPhaseShardContext queryPhaseShardContext();
+    public abstract QueryPhaseRankShardContext queryPhaseShardContext();
 
-    public abstract void queryPhaseShardContext(QueryPhaseShardContext queryPhaseShardContext);
+    public abstract void queryPhaseShardContext(QueryPhaseRankShardContext queryPhaseRankShardContext);
 
     /**
      * @return list of all rescore contexts.  empty if there aren't any.

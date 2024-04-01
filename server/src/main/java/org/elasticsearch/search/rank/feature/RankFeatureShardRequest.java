@@ -36,20 +36,16 @@ public class RankFeatureShardRequest extends TransportRequest implements Indices
 
     private final int[] docIds;
 
-    private final String featureField;
-
     public RankFeatureShardRequest(
         OriginalIndices originalIndices,
         ShardSearchContextId contextId,
         ShardSearchRequest shardSearchRequest,
-        List<Integer> docIds,
-        String featureField
+        List<Integer> docIds
     ) {
         this.originalIndices = originalIndices;
         this.shardSearchRequest = shardSearchRequest;
         this.docIds = docIds.stream().flatMapToInt(IntStream::of).toArray();
         this.contextId = contextId;
-        this.featureField = featureField;
     }
 
     public RankFeatureShardRequest(StreamInput in) throws IOException {
@@ -57,7 +53,6 @@ public class RankFeatureShardRequest extends TransportRequest implements Indices
         originalIndices = OriginalIndices.readOriginalIndices(in);
         shardSearchRequest = in.readOptionalWriteable(ShardSearchRequest::new);
         docIds = in.readIntArray();
-        featureField = in.readString();
         contextId = in.readOptionalWriteable(ShardSearchContextId::new);
     }
 
@@ -67,7 +62,6 @@ public class RankFeatureShardRequest extends TransportRequest implements Indices
         OriginalIndices.writeOriginalIndices(originalIndices, out);
         out.writeOptionalWriteable(shardSearchRequest);
         out.writeIntArray(docIds);
-        out.writeString(featureField);
         out.writeOptionalWriteable(contextId);
     }
 
@@ -93,10 +87,6 @@ public class RankFeatureShardRequest extends TransportRequest implements Indices
 
     public int[] getDocIds() {
         return docIds;
-    }
-
-    public String getFeatureField() {
-        return featureField;
     }
 
     public ShardSearchContextId contextId() {

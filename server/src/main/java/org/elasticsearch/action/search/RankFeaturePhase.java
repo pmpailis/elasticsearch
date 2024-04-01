@@ -13,9 +13,10 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.dfs.AggregatedDfs;
 import org.elasticsearch.search.internal.ShardSearchContextId;
-import org.elasticsearch.search.rank.RankFeaturePhaseCoordinatorContext;
+import org.elasticsearch.search.rank.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rank.feature.RankFeatureShardRequest;
 
@@ -50,7 +51,7 @@ public final class RankFeaturePhase extends SearchPhase {
         SearchPhaseContext context,
         Client client
     ) {
-        super("rank-search");
+        super("rank-feature");
         if (context.getNumShards() != queryPhaseResults.getNumShards()) {
             throw new IllegalStateException(
                 "number of shards must match the length of the query results but doesn't:"
@@ -93,13 +94,8 @@ public final class RankFeaturePhase extends SearchPhase {
         // if the RankBuilder specifies a QueryPhaseCoordinatorContext, it will be called as part of the reduce call
         // to operate on the first `window_size * num_shards` results and merge them appropriately.
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase = queryPhaseResults.reduce();
-        RankFeaturePhaseCoordinatorContext rankFeaturePhaseCoordinatorContext = context.getRequest().source().rankBuilder() != null
-            ? context.getRequest()
-                .source()
-                .rankBuilder()
-                .buildFeaturePhaseCoordinatorContext(context.getRequest().source().size(), context.getRequest().source().from(), client)
-            : null;
-        if (rankFeaturePhaseCoordinatorContext != null) {
+        RankFeaturePhaseRankCoordinatorContext rankFeaturePhaseRankCoordinatorContext = coordinatorContext(context.getRequest().source());
+        if (rankFeaturePhaseRankCoordinatorContext != null) {
             SearchPhaseController.SortedTopDocs firstPhaseResults = reducedQueryPhase.sortedTopDocs();
             final List<Integer>[] docIdsToLoad = SearchPhaseController.fillDocIdsToLoad(
                 context.getNumShards(),
@@ -108,7 +104,7 @@ public final class RankFeaturePhase extends SearchPhase {
             final CountedCollector<SearchPhaseResult> counter = new CountedCollector<>(
                 rankPhaseResults,
                 context.getNumShards(),
-                () -> onPhaseDone(rankFeaturePhaseCoordinatorContext, reducedQueryPhase),
+                () -> onPhaseDone(rankFeaturePhaseRankCoordinatorContext, reducedQueryPhase),
                 context
             );
 
@@ -120,14 +116,24 @@ public final class RankFeaturePhase extends SearchPhase {
                     continue;
                 }
                 SearchPhaseResult queryResult = queryPhaseResults.getAtomicArray().get(i);
-                executeFeatureShardPhase(queryResult, counter, entry);
+                executeRankFeatureShardPhase(queryResult, counter, entry);
             }
         } else {
+            rankPhaseResults.close();
             moveToNextPhase(queryPhaseResults, reducedQueryPhase);
         }
     }
 
-    private void executeFeatureShardPhase(
+    private RankFeaturePhaseRankCoordinatorContext coordinatorContext(SearchSourceBuilder source) {
+        return source.rankBuilder() != null
+            ? context.getRequest()
+                .source()
+                .rankBuilder()
+                .buildRankFeaturePhaseCoordinatorContext(context.getRequest().source().size(), context.getRequest().source().from(), client)
+            : null;
+    }
+
+    private void executeRankFeatureShardPhase(
         SearchPhaseResult queryResult,
         final CountedCollector<SearchPhaseResult> counter,
         final List<Integer> entry
@@ -142,8 +148,7 @@ public final class RankFeaturePhase extends SearchPhase {
                     context.getOriginalIndices(queryResult.getShardIndex()),
                     queryResult.getContextId(),
                     queryResult.getShardSearchRequest(),
-                    entry,
-                    "body" // TODO: retrieve from request
+                    entry
                 ),
                 context.getTask(),
                 new SearchActionListener<>(shardTarget, shardIndex) {
@@ -153,6 +158,7 @@ public final class RankFeaturePhase extends SearchPhase {
                             if (response != null) {
                                 counter.onResult(response);
                             } else {
+                                logger.debug(() -> "[" + contextId + "] No rank feature results returned");
                                 counter.countDown();
                             }
                         } catch (Exception e) {
@@ -163,7 +169,7 @@ public final class RankFeaturePhase extends SearchPhase {
                     @Override
                     public void onFailure(Exception e) {
                         logger.debug(() -> "[" + contextId + "] Failed to execute rank phase", e);
-                        progressListener.notifyFetchFailure(shardIndex, shardTarget, e);
+                        progressListener.notifyQueryFailure(shardIndex, shardTarget, e); // something similar for RankFeature phase??
                         counter.onFailure(shardIndex, shardTarget, e);
                     }
                 }
@@ -171,10 +177,11 @@ public final class RankFeaturePhase extends SearchPhase {
     }
 
     private void onPhaseDone(
-        RankFeaturePhaseCoordinatorContext rankFeaturePhaseCoordinatorContext,
+        RankFeaturePhaseRankCoordinatorContext rankFeaturePhaseRankCoordinatorContext,
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase
     ) {
-        rankFeaturePhaseCoordinatorContext.rankGlobalResults(
+        assert rankFeaturePhaseRankCoordinatorContext != null;
+        rankFeaturePhaseRankCoordinatorContext.rankGlobalResults(
             rankPhaseResults.getAtomicArray().asList().stream().map(SearchPhaseResult::rankFeatureResult).toList(),
             (scoreDocs) -> {
                 SearchPhaseController.ReducedQueryPhase rerankedReducedQueryPhase = new SearchPhaseController.ReducedQueryPhase(
@@ -188,12 +195,13 @@ public final class RankFeaturePhase extends SearchPhase {
                     reducedQueryPhase.profileBuilder(),
                     new SearchPhaseController.SortedTopDocs(scoreDocs, false, null, null, null, 0),
                     reducedQueryPhase.sortValueFormats(),
-                    reducedQueryPhase.queryPhaseCoordinatorContext(),
+                    reducedQueryPhase.queryPhaseRankCoordinatorContext(),
                     reducedQueryPhase.numReducePhases(),
                     reducedQueryPhase.size(),
                     reducedQueryPhase.from(),
                     reducedQueryPhase.isEmptyResult()
                 );
+                queryPhaseResults.close();
                 moveToNextPhase(rankPhaseResults, rerankedReducedQueryPhase);
             }
         );

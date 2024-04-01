@@ -8,14 +8,33 @@
 
 package org.elasticsearch.search.rank;
 
-/**
- * {@code RankShardContext} is a base class used to generate ranking
- * results on each shard where it's responsible for executing any
- * queries during the query phase required for its global ranking method.
- */
-public abstract class RankFeaturePhaseShardContext {
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TopDocs;
 
-    public RankFeaturePhaseShardContext() {}
+import java.util.List;
+
+/**
+ * {@link QueryPhaseRankShardContext} is used to generate the top {@code window_size}
+ * results on each shard. It runs all queries needed, and combines their scores and doc ordering through the
+ * {@link QueryPhaseRankShardContext#combineQueryPhaseResults} method.
+ */
+public abstract class QueryPhaseRankShardContext {
+
+    protected final List<Query> queries;
+    protected final int windowSize;
+
+    public QueryPhaseRankShardContext(List<Query> queries, int windowSize) {
+        this.queries = queries;
+        this.windowSize = windowSize;
+    }
+
+    public List<Query> queries() {
+        return queries;
+    }
+
+    public int windowSize() {
+        return windowSize;
+    }
 
     /**
      * This is used to reduce the number of required results that are serialized
@@ -24,5 +43,5 @@ public abstract class RankFeaturePhaseShardContext {
      * know any searches that match the same document must be on the same shard, we can sort on the shard
      * instead for a top window_size set of results and reduce the amount of data we serialize.
      */
-    public abstract RankShardResult fetchFeatureData(int[] docIds, String field);
+    public abstract RankShardResult combineQueryPhaseResults(List<TopDocs> rankResults);
 }

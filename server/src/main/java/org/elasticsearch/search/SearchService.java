@@ -725,7 +725,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
         final Releasable markAsUsed = readerContext.markAsUsed(getKeepAlive(shardSearchRequest));
         runAsync(getExecutor(readerContext.indexShard()), () -> {
-            try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.FEATURE, false)) {
+            try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.RANK_FEATURE, false)) {
                 RankFeatureShardPhase.execute(searchContext, request);
                 searchContext.rankFeatureResult().incRef();
                 return searchContext.rankFeatureResult();
@@ -1586,7 +1586,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 context.addQueryResult();
             }
         },
-        FEATURE {
+        RANK_FEATURE {
             @Override
             void addResultsObject(SearchContext context) {
                 context.addRankFeatureResult();

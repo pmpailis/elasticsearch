@@ -11,7 +11,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.common.util.Maps;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 
 import java.util.Arrays;
 import java.util.List;
@@ -22,11 +22,11 @@ import static org.elasticsearch.search.rank.RankDoc.NO_RANK;
 /**
  * Executes queries and generates results on the shard for RRF.
  */
-public class RRFQueryPhaseShardContext extends QueryPhaseShardContext {
+public class RRFQueryPhaseRankShardContext extends QueryPhaseRankShardContext {
 
     protected final int rankConstant;
 
-    public RRFQueryPhaseShardContext(List<Query> queries, int windowSize, int rankConstant) {
+    public RRFQueryPhaseRankShardContext(List<Query> queries, int windowSize, int rankConstant) {
         super(queries, windowSize);
         this.rankConstant = rankConstant;
     }

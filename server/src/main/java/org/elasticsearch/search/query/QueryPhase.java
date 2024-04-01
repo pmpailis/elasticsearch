@@ -36,7 +36,7 @@ import org.elasticsearch.search.aggregations.AggregationPhase;
 import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.internal.ScrollContext;
 import org.elasticsearch.search.internal.SearchContext;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.RankSearchContext;
 import org.elasticsearch.search.rescore.RescorePhase;
 import org.elasticsearch.search.sort.SortAndFormats;
@@ -67,7 +67,7 @@ public class QueryPhase {
     }
 
     static void executeRank(SearchContext searchContext) throws QueryPhaseExecutionException {
-        QueryPhaseShardContext rankShardContext = searchContext.queryPhaseShardContext();
+        QueryPhaseRankShardContext rankShardContext = searchContext.queryPhaseShardContext();
         QuerySearchResult querySearchResult = searchContext.queryResult();
 
         // run the combined boolean query total hits or aggregations

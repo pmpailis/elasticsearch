@@ -12,8 +12,8 @@ import org.apache.lucene.util.PriorityQueue;
 import org.elasticsearch.action.search.SearchPhaseController.TopDocsStats;
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
-import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
+import org.elasticsearch.search.rank.RankDoc.RankKey;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -25,13 +25,13 @@ import static org.elasticsearch.xpack.rank.rrf.RRFRankDoc.NO_RANK;
 /**
  * Ranks and decorates search hits for RRF results on the coordinator.
  */
-public class RRFQueryPhaseCoordinatorContext extends QueryPhaseCoordinatorContext {
+public class RRFQueryPhaseRankCoordinatorContext extends QueryPhaseRankCoordinatorContext {
 
     private final int size;
     private final int from;
     private final int rankConstant;
 
-    public RRFQueryPhaseCoordinatorContext(int size, int from, int windowSize, int rankConstant) {
+    public RRFQueryPhaseRankCoordinatorContext(int size, int from, int windowSize, int rankConstant) {
         super(windowSize);
         this.size = size;
         this.from = from;
@@ -105,7 +105,7 @@ public class RRFQueryPhaseCoordinatorContext extends QueryPhaseCoordinatorContex
         // score if we already saw it as part of a previous query's
         // doc set, otherwise we make a new doc and calculate the
         // initial score
-        Map<RankBuilder.RankKey, RRFRankDoc> results = Maps.newMapWithExpectedSize(queryCount * windowSize);
+        Map<RankKey, RRFRankDoc> results = Maps.newMapWithExpectedSize(queryCount * windowSize);
         final int fqc = queryCount;
         for (int qi = 0; qi < queryCount; ++qi) {
             PriorityQueue<RRFRankDoc> queue = queues.get(qi);
@@ -113,7 +113,7 @@ public class RRFQueryPhaseCoordinatorContext extends QueryPhaseCoordinatorContex
             for (int rank = queue.size(); rank > 0; --rank) {
                 RRFRankDoc rrfRankDoc = queue.pop();
                 final int frank = rank;
-                results.compute(new RankBuilder.RankKey(rrfRankDoc.doc, rrfRankDoc.shardIndex), (key, value) -> {
+                results.compute(new RankKey(rrfRankDoc.doc, rrfRankDoc.shardIndex), (key, value) -> {
                     if (value == null) {
                         value = new RRFRankDoc(rrfRankDoc.doc, rrfRankDoc.shardIndex, fqc);
                     }

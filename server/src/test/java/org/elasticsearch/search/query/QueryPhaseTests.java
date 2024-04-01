@@ -78,7 +78,7 @@ import org.elasticsearch.search.internal.ReaderContext;
 import org.elasticsearch.search.internal.ScrollContext;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchContextId;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.tasks.TaskCancelHelper;
@@ -1056,7 +1056,7 @@ public class QueryPhaseTests extends IndexShardTestCase {
             context.parsedQuery(
                 new ParsedQuery(new BooleanQuery.Builder().add(queries.get(0), Occur.SHOULD).add(queries.get(1), Occur.SHOULD).build())
             );
-            context.queryPhaseShardContext(new QueryPhaseShardContext(queries, 100) {
+            context.queryPhaseShardContext(new QueryPhaseRankShardContext(queries, 100) {
                 @Override
                 public RankShardResult combineQueryPhaseResults(List<TopDocs> rankResults) {
                     return null;

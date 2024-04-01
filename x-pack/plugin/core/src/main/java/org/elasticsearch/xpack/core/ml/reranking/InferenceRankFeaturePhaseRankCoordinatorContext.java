@@ -13,24 +13,33 @@ import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.util.concurrent.CountDown;
-import org.elasticsearch.search.rank.RankBuilder;
-import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseCoordinatorContext;
+import org.elasticsearch.search.rank.RankDoc;
+import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordinatorContext;
 
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
-public abstract class InferenceRankFeaturePhaseCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse> extends
-    RerankingRankFeaturePhaseCoordinatorContext {
+public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
+    extends RerankingRankFeaturePhaseRankCoordinatorContext {
 
-    protected final String inferenceId = "some-model";
-    protected final String inferenceText = "some-query-text";
+    protected final String inferenceId;
+    protected final String inferenceText;
 
     protected final Client client;
 
-    public InferenceRankFeaturePhaseCoordinatorContext(int size, int from, int windowSize, Client client) {
+    public InferenceRankFeaturePhaseRankCoordinatorContext(
+        int size,
+        int from,
+        int windowSize,
+        Client client,
+        String inferenceId,
+        String inferenceText
+    ) {
         super(size, from, windowSize);
         this.client = client;
+        this.inferenceId = inferenceId;
+        this.inferenceText = inferenceText;
     }
 
     protected abstract Request request(List<String> docFeatures);
@@ -40,7 +49,7 @@ public abstract class InferenceRankFeaturePhaseCoordinatorContext<Request extend
     protected abstract double[] extractScoresFromResponse(Response response);
 
     @Override
-    protected List<Map<RankBuilder.RankKey, String>> batches(Map<RankBuilder.RankKey, String> docFeatures) {
+    protected List<Map<RankDoc.RankKey, String>> batches(Map<RankDoc.RankKey, String> docFeatures) {
         return List.of(docFeatures);
     }
 

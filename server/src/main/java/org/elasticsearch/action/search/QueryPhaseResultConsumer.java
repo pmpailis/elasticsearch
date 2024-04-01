@@ -26,7 +26,7 @@ import org.elasticsearch.search.aggregations.AggregationReduceContext;
 import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseCoordinatorContext;
+import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -58,7 +58,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
     private final CircuitBreaker circuitBreaker;
     private final SearchProgressListener progressListener;
     private final AggregationReduceContext.Builder aggReduceContextBuilder;
-    private final QueryPhaseCoordinatorContext queryPhaseCoordinatorContext;
+    private final QueryPhaseRankCoordinatorContext queryPhaseRankCoordinatorContext;
 
     private final int topNSize;
     private final boolean hasTopDocs;
@@ -93,10 +93,10 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         SearchSourceBuilder source = request.source();
         int size = source == null || source.size() == -1 ? SearchService.DEFAULT_SIZE : source.size();
         int from = source == null || source.from() == -1 ? SearchService.DEFAULT_FROM : source.from();
-        this.queryPhaseCoordinatorContext = source == null || source.rankBuilder() == null
+        this.queryPhaseRankCoordinatorContext = source == null || source.rankBuilder() == null
             ? null
             : source.rankBuilder().buildQueryPhaseCoordinatorContext(size, from);
-        this.hasTopDocs = (source == null || size != 0) && queryPhaseCoordinatorContext == null;
+        this.hasTopDocs = (source == null || size != 0) && queryPhaseRankCoordinatorContext == null;
         this.hasAggs = source != null && source.aggregations() != null;
         this.aggReduceContextBuilder = hasAggs ? controller.getReduceContext(isCanceled, source.aggregations()) : null;
         int batchReduceSize = (hasAggs || hasTopDocs) ? Math.min(request.getBatchedReduceSize(), expectedResultSize) : expectedResultSize;
@@ -144,7 +144,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                 pendingMerges.numReducePhases,
                 false,
                 aggReduceContextBuilder,
-                queryPhaseCoordinatorContext,
+                queryPhaseRankCoordinatorContext,
                 performFinalReduce
             );
         } finally {

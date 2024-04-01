@@ -75,22 +75,22 @@ public class TestRankBuilder extends RankBuilder {
     }
 
     @Override
-    public QueryPhaseShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
+    public QueryPhaseRankShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public QueryPhaseCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
+    public QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public RankFeaturePhaseShardContext buildFeaturePhaseShardContext(SearchContext context) {
+    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext(SearchContext context) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public RankFeaturePhaseCoordinatorContext buildFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+    public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
         throw new UnsupportedOperationException();
     }
 

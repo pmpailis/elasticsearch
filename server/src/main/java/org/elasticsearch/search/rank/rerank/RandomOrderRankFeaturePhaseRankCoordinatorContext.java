@@ -9,7 +9,7 @@
 package org.elasticsearch.search.rank.rerank;
 
 import org.elasticsearch.common.util.concurrent.CountDown;
-import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.RankDoc.RankKey;
 
 import java.util.Collections;
 import java.util.List;
@@ -19,9 +19,9 @@ import java.util.function.Consumer;
 /**
  * A global reranker operating on the top `window_size` results from all shards, that provides a random order of the top hits.
  */
-public class RandomOrderRankFeaturePhaseCoordinatorContext extends RerankingRankFeaturePhaseCoordinatorContext {
+public class RandomOrderRankFeaturePhaseRankCoordinatorContext extends RerankingRankFeaturePhaseRankCoordinatorContext {
 
-    public RandomOrderRankFeaturePhaseCoordinatorContext(int size, int from, int windowSize) {
+    public RandomOrderRankFeaturePhaseRankCoordinatorContext(int size, int from, int windowSize) {
         super(size, from, windowSize);
     }
 
@@ -37,8 +37,9 @@ public class RandomOrderRankFeaturePhaseCoordinatorContext extends RerankingRank
         }
     }
 
+    // No need to do any batching here
     @Override
-    protected List<Map<RankBuilder.RankKey, String>> batches(Map<RankBuilder.RankKey, String> docFeatures) {
+    protected List<Map<RankKey, String>> batches(Map<RankKey, String> docFeatures) {
         return Collections.singletonList(docFeatures);
     }
 

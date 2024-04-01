@@ -11,7 +11,7 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.elasticsearch.common.io.stream.Writeable;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.test.AbstractXContentSerializingTestCase;
 import org.elasticsearch.xcontent.XContentParser;
 import org.junit.Assert;
@@ -59,13 +59,13 @@ public class RRFRankBuilderTests extends AbstractXContentSerializingTestCase<RRF
         RRFRankBuilder rrfRankBuilder = createTestInstance();
 
         List<Query> queries = List.of(new TermQuery(new Term("field0", "test0")), new TermQuery(new Term("field1", "test1")));
-        QueryPhaseShardContext qpsc = rrfRankBuilder.buildQueryPhaseShardContext(queries, randomInt());
+        QueryPhaseRankShardContext qpsc = rrfRankBuilder.buildQueryPhaseShardContext(queries, randomInt());
         assertEquals(queries, qpsc.queries());
         assertEquals(rrfRankBuilder.windowSize(), qpsc.windowSize());
 
         assertNotNull(rrfRankBuilder.buildQueryPhaseCoordinatorContext(randomInt(), randomInt()));
 
-        assertNull(rrfRankBuilder.buildFeaturePhaseShardContext(null));
-        assertNull(rrfRankBuilder.buildFeaturePhaseCoordinatorContext(randomInt(), randomInt(), null));
+        assertNull(rrfRankBuilder.buildRankFeaturePhaseShardContext(null));
+        assertNull(rrfRankBuilder.buildRankFeaturePhaseCoordinatorContext(randomInt(), randomInt(), null));
     }
 }

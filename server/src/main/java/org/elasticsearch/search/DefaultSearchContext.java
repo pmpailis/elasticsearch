@@ -65,7 +65,7 @@ import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rank.QueryPhaseShardContext;
+import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.slice.SliceBuilder;
@@ -126,7 +126,7 @@ final class DefaultSearchContext extends SearchContext {
     // filter for sliced scroll
     private SliceBuilder sliceBuilder;
     private SearchShardTask task;
-    private QueryPhaseShardContext queryPhaseShardContext;
+    private QueryPhaseRankShardContext queryPhaseRankShardContext;
 
     /**
      * The original query as sent by the user without the types and aliases
@@ -527,13 +527,13 @@ final class DefaultSearchContext extends SearchContext {
     }
 
     @Override
-    public QueryPhaseShardContext queryPhaseShardContext() {
-        return queryPhaseShardContext;
+    public QueryPhaseRankShardContext queryPhaseShardContext() {
+        return queryPhaseRankShardContext;
     }
 
     @Override
-    public void queryPhaseShardContext(QueryPhaseShardContext queryPhaseShardContext) {
-        this.queryPhaseShardContext = queryPhaseShardContext;
+    public void queryPhaseShardContext(QueryPhaseRankShardContext queryPhaseRankShardContext) {
+        this.queryPhaseRankShardContext = queryPhaseRankShardContext;
     }
 
     @Override
