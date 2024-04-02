@@ -103,7 +103,6 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
             for (RankFeatureDoc doc : shardResult.rankFeatureDocs) {
                 docFeatures.put(new RankKey(doc.doc, doc.shardIndex), doc.featureData);
             }
-            rankFeatureResult.decRef();
         }
         return docFeatures;
     }
