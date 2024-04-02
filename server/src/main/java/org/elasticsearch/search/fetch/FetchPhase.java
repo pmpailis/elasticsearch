@@ -46,7 +46,7 @@ import java.util.function.Supplier;
  * Fetch phase of a search request, used to fetch the actual top matching documents to be returned to the client, identified
  * after reducing all of the matches returned by the query phase
  */
-public final class FetchPhase {
+public class FetchPhase {
     private static final Logger LOGGER = LogManager.getLogger(FetchPhase.class);
 
     private final FetchSubPhase[] fetchSubPhases;
@@ -75,9 +75,7 @@ public final class FetchPhase {
         Profiler profiler = context.getProfilers() == null ? Profiler.NOOP : Profilers.startProfilingFetchPhase();
         SearchHits hits = null;
         try {
-            FetchContext fetchContext = new FetchContext(context);
-            List<FetchSubPhaseProcessor> processors = getProcessors(context.shardTarget(), fetchContext, profiler);
-            hits = buildSearchHits(context, docIdsToLoad, profiler, processors);
+            hits = buildSearchHits(context, docIdsToLoad, profiler);
         } finally {
             // Always finish profiling
             ProfileResult profileResult = profiler.finish();
@@ -99,17 +97,15 @@ public final class FetchPhase {
         }
     }
 
-    public static SearchHits buildSearchHits(
-        SearchContext context,
-        int[] docIdsToLoad,
-        Profiler profiler,
-        List<FetchSubPhaseProcessor> processors
-    ) {
+    protected SearchHits buildSearchHits(SearchContext context, int[] docIdsToLoad, Profiler profiler) {
         SourceLoader sourceLoader = context.newSourceLoader();
 
         PreloadedSourceProvider sourceProvider = new PreloadedSourceProvider();
         PreloadedFieldLookupProvider fieldLookupProvider = new PreloadedFieldLookupProvider();
         context.getSearchExecutionContext().setLookupProviders(sourceProvider, ctx -> fieldLookupProvider);
+
+        FetchContext fetchContext = new FetchContext(context);
+        List<FetchSubPhaseProcessor> processors = getProcessors(context.shardTarget(), fetchContext, profiler);
 
         StoredFieldsSpec storedFieldsSpec = StoredFieldsSpec.build(processors, FetchSubPhaseProcessor::storedFieldsSpec);
         storedFieldsSpec = storedFieldsSpec.merge(new StoredFieldsSpec(false, false, sourceLoader.requiredStoredFields()));

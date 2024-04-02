@@ -228,6 +228,7 @@ import org.elasticsearch.search.fetch.subphase.highlight.PlainHighlighter;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankShardResult;
+import org.elasticsearch.search.rank.feature.RankFeatureShardPhase;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
 import org.elasticsearch.search.rank.rerank.RerankingRankBuilder;
 import org.elasticsearch.search.rescore.QueryRescorerBuilder;
@@ -1246,6 +1247,10 @@ public class SearchModule {
 
     public FetchPhase getFetchPhase() {
         return new FetchPhase(fetchSubPhases);
+    }
+
+    public RankFeatureShardPhase getRankFeatureShardPhase() {
+        return new RankFeatureShardPhase();
     }
 
 }

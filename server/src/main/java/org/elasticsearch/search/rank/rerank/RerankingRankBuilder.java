@@ -13,7 +13,6 @@ import org.elasticsearch.TransportVersion;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.RankBuilder;
@@ -95,8 +94,8 @@ public class RerankingRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext(SearchContext context) {
-        return new RerankingRankFeaturePhaseRankShardContext(context, field);
+    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
+        return new RerankingRankFeaturePhaseRankShardContext(field);
     }
 
     @Override

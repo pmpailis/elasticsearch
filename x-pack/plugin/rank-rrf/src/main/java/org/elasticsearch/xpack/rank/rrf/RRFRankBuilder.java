@@ -14,7 +14,6 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.license.LicenseUtils;
-import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.rank.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.RankBuilder;
@@ -111,9 +110,9 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext(SearchContext context) {
+    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
         return null;
-        // return new RerankingRankFeaturePhaseShardContext(context, "body");
+        // return new RerankingRankFeaturePhaseShardContext("body");
     }
 
     @Override

@@ -9,6 +9,7 @@
 package org.elasticsearch.search.rank;
 
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.search.SearchHits;
 
 /**
  * {@code RankFeaturePhaseRankShardContext} is a base class used to execute the RankFeature phase on each shard.
@@ -17,7 +18,15 @@ import org.elasticsearch.core.Nullable;
  */
 public abstract class RankFeaturePhaseRankShardContext implements RankFeaturePhaseRankContext {
 
-    public RankFeaturePhaseRankShardContext() {}
+    protected final String field;
+
+    public RankFeaturePhaseRankShardContext(final String field) {
+        this.field = field;
+    }
+
+    public String getField() {
+        return field;
+    }
 
     /**
      * This is used to fetch the feature data for a given set of documents, using the {@link  org.elasticsearch.search.fetch.FetchPhase}
@@ -25,5 +34,5 @@ public abstract class RankFeaturePhaseRankShardContext implements RankFeaturePha
      * The feature data is then stored in a {@link org.elasticsearch.search.rank.feature.RankFeatureDoc} and passed back to the coordinator.
      */
     @Nullable
-    public abstract RankShardResult fetchFeatureData(int[] docIds);
+    public abstract RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId);
 }

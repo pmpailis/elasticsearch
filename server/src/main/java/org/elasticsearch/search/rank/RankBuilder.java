@@ -15,7 +15,6 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.VersionedNamedWriteable;
 import org.elasticsearch.search.SearchService;
-import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -83,7 +82,7 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
      * Generates a context used to execute the rank feature phase on the shard. This is responsible for retrieving any needed
      * feature data, and passing them back to the coordinator through the appropriate {@link  RankShardResult}.
      */
-    public abstract RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext(SearchContext context);
+    public abstract RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext();
 
     /**
      * Generates a context used to perform global ranking during the RankFeature phase,

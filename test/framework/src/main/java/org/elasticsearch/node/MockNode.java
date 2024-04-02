@@ -40,6 +40,7 @@ import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.MockSearchService;
 import org.elasticsearch.search.SearchService;
 import org.elasticsearch.search.fetch.FetchPhase;
+import org.elasticsearch.search.rank.feature.RankFeatureShardPhase;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.telemetry.tracing.Tracer;
 import org.elasticsearch.test.ESTestCase;
@@ -98,6 +99,7 @@ public class MockNode extends Node {
             ScriptService scriptService,
             BigArrays bigArrays,
             FetchPhase fetchPhase,
+            RankFeatureShardPhase rankFeatureShardPhase,
             ResponseCollectorService responseCollectorService,
             CircuitBreakerService circuitBreakerService,
             ExecutorSelector executorSelector,
@@ -112,6 +114,7 @@ public class MockNode extends Node {
                     scriptService,
                     bigArrays,
                     fetchPhase,
+                    rankFeatureShardPhase,
                     responseCollectorService,
                     circuitBreakerService,
                     executorSelector,

@@ -33,6 +33,7 @@ import org.elasticsearch.script.ScriptEngine;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.SearchService;
 import org.elasticsearch.search.fetch.FetchPhase;
+import org.elasticsearch.search.rank.feature.RankFeatureShardPhase;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.telemetry.tracing.Tracer;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -117,6 +118,7 @@ class NodeServiceProvider {
         ScriptService scriptService,
         BigArrays bigArrays,
         FetchPhase fetchPhase,
+        RankFeatureShardPhase rankFeatureShardPhase,
         ResponseCollectorService responseCollectorService,
         CircuitBreakerService circuitBreakerService,
         ExecutorSelector executorSelector,
@@ -129,6 +131,7 @@ class NodeServiceProvider {
             scriptService,
             bigArrays,
             fetchPhase,
+            rankFeatureShardPhase,
             responseCollectorService,
             circuitBreakerService,
             executorSelector,

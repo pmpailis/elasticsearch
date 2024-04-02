@@ -279,6 +279,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     private final DfsPhase dfsPhase = new DfsPhase();
 
     private final FetchPhase fetchPhase;
+
+    private final RankFeatureShardPhase rankFeatureShardPhase;
+
     private volatile boolean enableSearchWorkerThreads;
     private volatile boolean enableQueryPhaseParallelCollection;
 
@@ -318,6 +321,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         ScriptService scriptService,
         BigArrays bigArrays,
         FetchPhase fetchPhase,
+        RankFeatureShardPhase rankFeatureShardPhase,
         ResponseCollectorService responseCollectorService,
         CircuitBreakerService circuitBreakerService,
         ExecutorSelector executorSelector,
@@ -331,6 +335,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         this.responseCollectorService = responseCollectorService;
         this.bigArrays = bigArrays;
         this.fetchPhase = fetchPhase;
+        this.rankFeatureShardPhase = rankFeatureShardPhase;
         this.multiBucketConsumerService = new MultiBucketConsumerService(
             clusterService,
             settings,
@@ -726,7 +731,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         final Releasable markAsUsed = readerContext.markAsUsed(getKeepAlive(shardSearchRequest));
         runAsync(getExecutor(readerContext.indexShard()), () -> {
             try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.RANK_FEATURE, false)) {
-                RankFeatureShardPhase.execute(searchContext, request);
+                rankFeatureShardPhase.execute(searchContext, request);
                 searchContext.rankFeatureResult().incRef();
                 return searchContext.rankFeatureResult();
             } catch (Exception e) {
