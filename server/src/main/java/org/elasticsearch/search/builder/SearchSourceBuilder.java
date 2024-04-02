@@ -38,6 +38,7 @@ import org.elasticsearch.search.fetch.subphase.FieldAndFormat;
 import org.elasticsearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.rerank.RerankingRankBuilder;
 import org.elasticsearch.search.rescore.RescorerBuilder;
 import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverParserContext;
@@ -1391,8 +1392,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                             "expected a rank name, but found token [" + token + "] for [" + RANK_FIELD.getPreferredName() + "]"
                         );
                     }
-                    rankBuilder = parser.namedObject(RankBuilder.class, parser.currentName(), null);
-                    // rankBuilder = RerankingRankBuilder.fromXContent(parser);
+                    // rankBuilder = parser.namedObject(RankBuilder.class, parser.currentName(), null);
+                    rankBuilder = RerankingRankBuilder.fromXContent(parser);
                     if (parser.currentToken() != XContentParser.Token.END_OBJECT) {
                         throw new ParsingException(
                             parser.getTokenLocation(),

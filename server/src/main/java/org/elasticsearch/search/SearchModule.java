@@ -1242,7 +1242,7 @@ public class SearchModule {
 
     private void registerRank() {
         namedWriteables.add(new NamedWriteableRegistry.Entry(RankBuilder.class, "rerank", RerankingRankBuilder::new));
-        namedWriteables.add(new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-shard-feature", RankFeatureShardResult::new));
+        namedWriteables.add(new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-feature-shard", RankFeatureShardResult::new));
     }
 
     public FetchPhase getFetchPhase() {

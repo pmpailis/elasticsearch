@@ -119,7 +119,7 @@ public final class RankFeaturePhase extends SearchPhase {
                 executeRankFeatureShardPhase(queryResult, counter, entry);
             }
         } else {
-            rankPhaseResults.close();
+            // rankPhaseResults.close();
             moveToNextPhase(queryPhaseResults, reducedQueryPhase);
         }
     }
@@ -201,7 +201,7 @@ public final class RankFeaturePhase extends SearchPhase {
                     reducedQueryPhase.from(),
                     reducedQueryPhase.isEmptyResult()
                 );
-                queryPhaseResults.close();
+                // queryPhaseResults.close();
                 moveToNextPhase(rankPhaseResults, reducedRankFeaturePhase);
             }
         );
