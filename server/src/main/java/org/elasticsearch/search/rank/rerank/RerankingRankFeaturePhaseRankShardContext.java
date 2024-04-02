@@ -14,6 +14,7 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.fetch.FetchContext;
 import org.elasticsearch.search.fetch.FetchPhase;
+import org.elasticsearch.search.fetch.FetchSubPhase;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchFieldsPhase;
 import org.elasticsearch.search.fetch.subphase.FieldAndFormat;
@@ -32,7 +33,9 @@ import java.util.Collections;
  */
 public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseRankShardContext {
 
-    private static final Logger LOGGER = LogManager.getLogger(RerankingRankFeaturePhaseRankShardContext.class);
+    private static final Logger logger = LogManager.getLogger(RerankingRankFeaturePhaseRankShardContext.class);
+
+    private static final FetchSubPhase fetchFieldsPhase = new FetchFieldsPhase();
 
     private final String field;
     private final SearchContext context;
@@ -55,7 +58,7 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
                 context,
                 docIds,
                 FetchPhase.Profiler.NOOP,
-                Collections.singletonList(new FetchFieldsPhase().getProcessor(fetchContext))
+                Collections.singletonList(fetchFieldsPhase.getProcessor(fetchContext))
             );
 
             RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
@@ -65,7 +68,7 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
             }
             return new RankFeatureShardResult(rankFeatureDocs);
         } catch (Exception ex) {
-            LOGGER.info("Error while fetching feature data for {field: " + field + "} and {docids: " + Arrays.toString(docIds) + "}.", ex);
+            logger.info("Error while fetching feature data for {field: " + field + "} and {docids: " + Arrays.toString(docIds) + "}.", ex);
             return null;
         } finally {
             if (hits != null) {
