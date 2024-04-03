@@ -15,6 +15,9 @@ import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import java.util.List;
 import java.util.function.Consumer;
 
+import static org.elasticsearch.search.SearchService.DEFAULT_FROM;
+import static org.elasticsearch.search.SearchService.DEFAULT_SIZE;
+
 /**
  * {@code RankFeaturePhaseRankCoordinatorContext} is a base class that runs on the coordinating node and is responsible for retrieving
  * `window_size` total results from all shards, rank them, and then produce a final paginated response of [from, from+size] results.
@@ -26,8 +29,8 @@ public abstract class RankFeaturePhaseRankCoordinatorContext implements RankFeat
     protected final int windowSize;
 
     public RankFeaturePhaseRankCoordinatorContext(int size, int from, int windowSize) {
-        this.size = size;
-        this.from = from;
+        this.size = size < 0 ? DEFAULT_SIZE : size;
+        this.from = from < 0 ? DEFAULT_FROM : from;
         this.windowSize = windowSize;
     }
 
