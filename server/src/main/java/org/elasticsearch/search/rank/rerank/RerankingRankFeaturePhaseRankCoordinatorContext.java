@@ -41,7 +41,7 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      * that is expected to execute the `onFinish` runnable once all the scores have been computed.
      */
     protected abstract void computeUpdatedScores(
-        List<String> features,
+        Map<RankKey, String> batch,
         Consumer<double[]> scoreConsumer,
         CountDown countDown,
         Runnable onFinish
@@ -64,10 +64,12 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      */
     @Override
     public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
+
         Map<RankKey, String> features = extractFeatures(rankSearchResults);
         final List<Map<RankKey, String>> documentBatches = batches(features);
         // We initialize a CountDown so that we know when all the scores have been computed
-        final CountDown countDown = new CountDown(documentBatches.size());
+        final CountDown documentCountDown = new CountDown(documentBatches.size());
+
         final Map<RankKey, RankFeatureDoc> rankMap = ConcurrentCollections.newConcurrentMap();
         for (Map<RankKey, String> batch : documentBatches) {
             final RankKey[] rankKeys = batch.keySet().toArray(new RankKey[0]);
@@ -80,7 +82,7 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
                     rankMap.put(rk, new RankFeatureDoc(rk.doc(), score, rk.shardIndex()));
                 }
             };
-            computeUpdatedScores(batch.values().stream().toList(), scoreConsumer, countDown, () -> {
+            computeUpdatedScores(batch, scoreConsumer, documentCountDown, () -> {
                 // Once we're doing computing all scores, we want to globally sort the results
                 RankFeatureDoc[] sortedResults = rankMap.values().toArray(RankFeatureDoc[]::new);
                 Arrays.sort(sortedResults, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());

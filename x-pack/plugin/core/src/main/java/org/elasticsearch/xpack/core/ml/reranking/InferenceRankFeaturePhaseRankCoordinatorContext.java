@@ -54,7 +54,13 @@ public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request ex
     }
 
     @Override
-    protected void computeUpdatedScores(List<String> features, Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
+    protected void computeUpdatedScores(
+        Map<RankDoc.RankKey, String> docFeatures,
+        Consumer<double[]> scoreConsumer,
+        CountDown countDown,
+        Runnable onFinish
+    ) {
+        List<String> features = docFeatures.values().stream().toList();
         final ActionListener<Response> actionListener = listener(scoreConsumer, countDown, onFinish);
         Request req = request(features);
         ActionType<Response> action = action();
@@ -66,10 +72,14 @@ public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request ex
             @Override
             public void onResponse(Response response) {
                 try {
-                    assert response != null;
-                    double[] scores = extractScoresFromResponse(response);
-                    scoreConsumer.accept(scores);
+                    if (response != null) {
+                        double[] scores = extractScoresFromResponse(response);
+                        scoreConsumer.accept(scores);
+                    }
                 } finally {
+                    if (response != null) {
+                        response.decRef();
+                    }
                     if (countDown.countDown()) {
                         onFinish.run();
                     }

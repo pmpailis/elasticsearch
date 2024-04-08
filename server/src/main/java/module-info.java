@@ -442,4 +442,5 @@ module org.elasticsearch.server {
     exports org.elasticsearch.lucene.spatial;
     exports org.elasticsearch.search.rank.rerank;
     exports org.elasticsearch.search.rank.feature;
+    exports org.elasticsearch.search.rank.profiler;
 }

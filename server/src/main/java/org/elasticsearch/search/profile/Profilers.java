@@ -15,6 +15,7 @@ import org.elasticsearch.search.profile.aggregation.AggregationProfiler;
 import org.elasticsearch.search.profile.dfs.DfsProfiler;
 import org.elasticsearch.search.profile.query.QueryProfileShardResult;
 import org.elasticsearch.search.profile.query.QueryProfiler;
+import org.elasticsearch.search.rank.profiler.RankProfiler;
 
 import java.util.Collections;
 
@@ -56,6 +57,10 @@ public final class Profilers {
      */
     public static FetchProfiler startProfilingFetchPhase() {
         return new FetchProfiler();
+    }
+
+    public static RankProfiler startProfilingRankPhase() {
+        return new RankProfiler();
     }
 
     /**

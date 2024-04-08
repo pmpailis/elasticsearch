@@ -406,6 +406,14 @@ final class AsyncSearchTask extends SearchTask implements AsyncTask, Releasable 
         }
 
         @Override
+        protected void onRankFeatureResult(int shardIndex) {
+            checkCancellation();
+            if (delegate != null) {
+                delegate.onRankFeatureResult(shardIndex);
+            }
+        }
+
+        @Override
         protected void onQueryFailure(int shardIndex, SearchShardTarget shardTarget, Exception exc) {
             // best effort to cancel expired tasks
             checkCancellation();
@@ -418,6 +426,13 @@ final class AsyncSearchTask extends SearchTask implements AsyncTask, Releasable 
                     // the nodeId is null if all replicas of this shard failed
                     new ShardSearchFailure(exc, shardTarget.getNodeId() != null ? shardTarget : null)
                 );
+        }
+
+        @Override
+        protected void onRankFeatureFailure(int shardIndex, SearchShardTarget shardTarget, Exception exc) {
+            // best effort to cancel expired tasks
+            checkCancellation();
+            // TODO: should we add the rank feature failures to the response?
         }
 
         @Override

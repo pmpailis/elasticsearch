@@ -26,7 +26,13 @@ public class RandomOrderRankFeaturePhaseRankCoordinatorContext extends Reranking
     }
 
     @Override
-    protected void computeUpdatedScores(List<String> features, Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
+    protected void computeUpdatedScores(
+        Map<RankKey, String> featureData,
+        Consumer<double[]> scoreConsumer,
+        CountDown countDown,
+        Runnable onFinish
+    ) {
+        List<String> features = featureData.values().stream().toList();
         double[] scores = new double[features.size()];
         for (int i = 0; i < features.size(); i++) {
             scores[i] = Math.random();

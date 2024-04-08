@@ -200,6 +200,7 @@ final class FetchSearchPhase extends SearchPhase {
         if (searchPhaseResult == null) {
             return;
         }
+        // phaseResult.getContextId() is the same for query & rank feature results
         SearchPhaseResult phaseResult = searchPhaseResult.queryResult() != null
             ? searchPhaseResult.queryResult()
             : searchPhaseResult.rankFeatureResult();
