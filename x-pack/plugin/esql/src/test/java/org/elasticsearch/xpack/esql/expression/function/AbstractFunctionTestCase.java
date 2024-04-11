@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function;
 import org.apache.lucene.document.InetAddressPoint;
 import org.apache.lucene.sandbox.document.HalfFloatPoint;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -617,7 +618,7 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
         for (Map.Entry<List<DataType>, DataType> entry : signatures.entrySet()) {
             List<DataType> types = entry.getKey();
             for (int i = 0; i < args.size() && i < types.size(); i++) {
-                typesFromSignature.get(i).add(types.get(i).esType());
+                typesFromSignature.get(i).add(signatureType(types.get(i)));
             }
             returnFromSignature.add(entry.getValue().esType());
         }
@@ -634,6 +635,10 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
         Set<String> returnTypes = Arrays.stream(description.returnType()).collect(Collectors.toCollection(() -> new TreeSet<>()));
         assertEquals(returnFromSignature, returnTypes);
 
+    }
+
+    private static String signatureType(DataType type) {
+        return type.esType() != null ? type.esType() : type.typeName();
     }
 
     /**
@@ -893,8 +898,10 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
             ),
             "numeric, date_period or time_duration"
         ),
+        Map.entry(Set.of(DataTypes.DATETIME, DataTypes.NULL), "datetime"),
         Map.entry(Set.of(DataTypes.DOUBLE, DataTypes.NULL), "double"),
         Map.entry(Set.of(DataTypes.INTEGER, DataTypes.NULL), "integer"),
+        Map.entry(Set.of(DataTypes.IP, DataTypes.NULL), "ip"),
         Map.entry(Set.of(DataTypes.LONG, DataTypes.INTEGER, DataTypes.UNSIGNED_LONG, DataTypes.DOUBLE, DataTypes.NULL), "numeric"),
         Map.entry(Set.of(DataTypes.KEYWORD, DataTypes.TEXT, DataTypes.VERSION, DataTypes.NULL), "string or version"),
         Map.entry(Set.of(DataTypes.KEYWORD, DataTypes.TEXT, DataTypes.NULL), "string"),
@@ -981,7 +988,8 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
             Set.of(EsqlDataTypes.CARTESIAN_POINT, EsqlDataTypes.CARTESIAN_SHAPE, DataTypes.KEYWORD, DataTypes.TEXT, DataTypes.NULL),
             "cartesian_point or cartesian_shape or string"
         ),
-        Map.entry(Set.of(EsqlDataTypes.GEO_POINT, EsqlDataTypes.CARTESIAN_POINT, DataTypes.NULL), "geo_point or cartesian_point")
+        Map.entry(Set.of(EsqlDataTypes.GEO_POINT, EsqlDataTypes.CARTESIAN_POINT, DataTypes.NULL), "geo_point or cartesian_point"),
+        Map.entry(Set.of(EsqlDataTypes.DATE_PERIOD, EsqlDataTypes.TIME_DURATION, DataTypes.NULL), "dateperiod or timeduration")
     );
 
     // TODO: generate this message dynamically, a la AbstractConvertFunction#supportedTypesNames()?
@@ -1147,6 +1155,7 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
 
     private static void renderParametersList(List<String> argNames, List<String> argDescriptions) throws IOException {
         StringBuilder builder = new StringBuilder();
+        builder.append(DOCS_WARNING);
         builder.append("*Parameters*\n");
         for (int a = 0; a < argNames.size(); a++) {
             builder.append("\n`").append(argNames.get(a)).append("`::\n").append(argDescriptions.get(a)).append('\n');
@@ -1161,7 +1170,7 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
             *Description*
 
             """ + description + "\n";
-        if (note != null) {
+        if (Strings.isNullOrEmpty(note) == false) {
             rendered += "\nNOTE: " + note + "\n";
         }
         LogManager.getLogger(getTestClass()).info("Writing description for [{}]:\n{}", functionName(), rendered);
@@ -1180,6 +1189,10 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
             builder.append("*Examples*\n\n");
         }
         for (Example example : info.examples()) {
+            if (example.description().length() > 0) {
+                builder.append(example.description());
+                builder.append("\n");
+            }
             builder.append("""
                 [source.merge.styled,esql]
                 ----
@@ -1220,7 +1233,7 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
         writeToTempDir("layout", rendered, "asciidoc");
     }
 
-    private static String functionName() {
+    protected static String functionName() {
         Class<?> testClass = getTestClass();
         if (testClass.isAnnotationPresent(FunctionName.class)) {
             FunctionName functionNameAnnotation = testClass.getAnnotation(FunctionName.class);
