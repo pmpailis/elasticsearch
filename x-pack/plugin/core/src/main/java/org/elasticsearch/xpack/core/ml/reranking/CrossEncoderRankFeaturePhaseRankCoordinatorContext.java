@@ -35,7 +35,7 @@ public class CrossEncoderRankFeaturePhaseRankCoordinatorContext extends Inferenc
 
     @Override
     protected InferenceAction.Request request(List<String> docFeatures) {
-        return new InferenceAction.Request(TaskType.TEXT_EMBEDDING, inferenceId, docFeatures, Map.of(), InputType.SEARCH);
+        return new InferenceAction.Request(TaskType.TEXT_EMBEDDING, inferenceId, "query", docFeatures, Map.of(), InputType.SEARCH);
     }
 
     @Override
