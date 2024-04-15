@@ -7,22 +7,23 @@
 
 package org.elasticsearch.xpack.core.ml.reranking;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 import org.elasticsearch.client.internal.Client;
-import org.elasticsearch.common.util.concurrent.CountDown;
-import org.elasticsearch.search.rank.RankDoc;
+import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordinatorContext;
 
 import java.util.List;
-import java.util.Map;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
     extends RerankingRankFeaturePhaseRankCoordinatorContext {
 
+    private static final Logger logger = LogManager.getLogger(InferenceRankFeaturePhaseRankCoordinatorContext.class);
     protected final String inferenceId;
     protected final String inferenceText;
 
@@ -46,54 +47,40 @@ public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request ex
 
     protected abstract ActionType<Response> action();
 
-    protected abstract double[] extractScoresFromResponse(Response response);
+    protected abstract void processResponse(Response response, BiConsumer<Integer, Float> scoreConsumer);
 
     @Override
-    protected List<Map<RankDoc.RankKey, String>> batches(Map<RankDoc.RankKey, String> docFeatures) {
-        return List.of(docFeatures);
-    }
-
-    @Override
-    protected void computeUpdatedScores(
-        Map<RankDoc.RankKey, String> docFeatures,
-        Consumer<double[]> scoreConsumer,
-        CountDown countDown,
-        Runnable onFinish
-    ) {
-        List<String> features = docFeatures.values().stream().toList();
-        final ActionListener<Response> actionListener = listener(scoreConsumer, countDown, onFinish);
+    protected void computeScores(List<RankFeatureDoc> featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
+        List<String> features = featureDocs.stream().map(x -> x.featureData).toList();
+        final ActionListener<Response> actionListener = listener(scoreConsumer, onFinish);
         Request req = request(features);
         ActionType<Response> action = action();
         client.execute(action, req, actionListener);
     }
 
-    private ActionListener<Response> listener(Consumer<double[]> scoreConsumer, CountDown countDown, Runnable onFinish) {
+    private ActionListener<Response> listener(BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
         return new ActionListener<>() {
             @Override
             public void onResponse(Response response) {
                 try {
                     if (response != null) {
-                        double[] scores = extractScoresFromResponse(response);
-                        scoreConsumer.accept(scores);
+                        processResponse(response, scoreConsumer);
                     }
                 } finally {
                     if (response != null) {
                         response.decRef();
                     }
-                    if (countDown.countDown()) {
-                        onFinish.run();
-                    }
+                    onFinish.run();
+
                 }
             }
 
             @Override
             public void onFailure(Exception e) {
                 try {
-                    System.out.println(e.getMessage());
+                    logger.error("Failed to process inference response", e);
                 } finally {
-                    if (countDown.countDown()) {
-                        onFinish.run();
-                    }
+                    onFinish.run();
                 }
             }
         };

@@ -128,6 +128,7 @@ public class MockNode extends Node {
                 scriptService,
                 bigArrays,
                 fetchPhase,
+                rankFeatureShardPhase,
                 responseCollectorService,
                 circuitBreakerService,
                 executorSelector,

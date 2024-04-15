@@ -17,6 +17,7 @@ import org.elasticsearch.xpack.core.ml.inference.results.TextEmbeddingResults;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 
 public class CrossEncoderRankFeaturePhaseRankCoordinatorContext extends InferenceRankFeaturePhaseRankCoordinatorContext<
     InferenceAction.Request,
@@ -44,9 +45,11 @@ public class CrossEncoderRankFeaturePhaseRankCoordinatorContext extends Inferenc
     }
 
     @Override
-    protected double[] extractScoresFromResponse(InferenceAction.Response response) {
+    protected void processResponse(InferenceAction.Response response, BiConsumer<Integer, Float> scoreConsumer) {
         InferenceServiceResults results = response.getResults();
         assert results instanceof TextEmbeddingResults;
-        return ((TextEmbeddingResults) results).getInference();
+        for (int i = 0; i < ((TextEmbeddingResults) results).getInference().length; i++) {
+            scoreConsumer.accept(i, (float) ((TextEmbeddingResults) results).getInference()[i]);
+        }
     }
 }

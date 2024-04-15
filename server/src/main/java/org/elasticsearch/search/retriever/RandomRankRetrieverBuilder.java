@@ -50,7 +50,7 @@ public final class RandomRankRetrieverBuilder extends RetrieverBuilder {
         PARSER.declareInt((r, v) -> r.windowSize = v, WINDOW_SIZE_FIELD);
 
         RetrieverBuilder.declareBaseParserFields(NAME, PARSER);
-}
+    }
 
     public static RandomRankRetrieverBuilder fromXContent(XContentParser parser, RetrieverParserContext context) throws IOException {
         if (context.clusterSupportsFeature(RANDOM_RETRIEVER_SUPPORTED) == false) {
@@ -58,6 +58,7 @@ public final class RandomRankRetrieverBuilder extends RetrieverBuilder {
         }
         return PARSER.apply(parser, context);
     }
+
     List<RetrieverBuilder> retrieverBuilders = Collections.emptyList();
     int windowSize = 100;
 
@@ -102,8 +103,7 @@ public final class RandomRankRetrieverBuilder extends RetrieverBuilder {
     @Override
     public boolean doEquals(Object o) {
         RandomRankRetrieverBuilder that = (RandomRankRetrieverBuilder) o;
-        return windowSize == that.windowSize
-            && Objects.equals(retrieverBuilders, that.retrieverBuilders);
+        return windowSize == that.windowSize && Objects.equals(retrieverBuilders, that.retrieverBuilders);
     }
 
     @Override
