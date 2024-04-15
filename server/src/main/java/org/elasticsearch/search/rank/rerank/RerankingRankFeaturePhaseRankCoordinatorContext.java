@@ -38,7 +38,7 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      * This method is responsible for computing the updated scores for a list of feature data. It also provides a {@link CountDown counter}
      * that is expected to execute the `onFinish` runnable once all the scores have been computed.
      */
-    protected abstract void computeScores(List<RankFeatureDoc> featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish);
+    protected abstract void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish);
 
     /**
      * This method is responsible for ranking the global results based on the provided rank feature results from each shard.
@@ -53,16 +53,16 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      */
     @Override
     public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
-        List<RankFeatureDoc> featureDocs = extractFeatures(rankSearchResults);
+        RankFeatureDoc[] featureDocs = extractFeatures(rankSearchResults);
         final BiConsumer<Integer, Float> scoreConsumer = (index, score) -> {
-            assert index >= 0 && index < featureDocs.size();
-            featureDocs.get(index).score = score;
+            assert index >= 0 && index < featureDocs.length;
+            featureDocs[index].score = score;
         };
         computeScores(featureDocs, scoreConsumer, () -> {
-            featureDocs.sort(Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
-            RankFeatureDoc[] topResults = new RankFeatureDoc[Math.max(0, Math.min(size, featureDocs.size() - from))];
+            Arrays.sort(featureDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
+            RankFeatureDoc[] topResults = new RankFeatureDoc[Math.max(0, Math.min(size, featureDocs.length - from))];
             for (int rank = 0; rank < topResults.length; ++rank) {
-                topResults[rank] = featureDocs.get(from + rank);
+                topResults[rank] = featureDocs[from + rank];
                 topResults[rank].rank = from + rank + 1;
             }
             // and cal the parent onFinish consumer with the final `ScoreDoc[]` results.
@@ -70,12 +70,12 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
         });
     }
 
-    private List<RankFeatureDoc> extractFeatures(List<RankFeatureResult> rankSearchResults) {
+    private RankFeatureDoc[] extractFeatures(List<RankFeatureResult> rankSearchResults) {
         List<RankFeatureDoc> docFeatures = new ArrayList<>();
         for (RankFeatureResult rankFeatureResult : rankSearchResults) {
             RankFeatureShardResult shardResult = rankFeatureResult.shardResult();
             docFeatures.addAll(Arrays.stream(shardResult.rankFeatureDocs).toList());
         }
-        return docFeatures;
+        return docFeatures.toArray(new RankFeatureDoc[0]);
     }
 }

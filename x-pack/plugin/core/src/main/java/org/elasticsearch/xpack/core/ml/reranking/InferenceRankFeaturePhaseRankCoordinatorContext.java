@@ -17,6 +17,7 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordinatorContext;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.BiConsumer;
 
@@ -50,8 +51,8 @@ public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request ex
     protected abstract void processResponse(Response response, BiConsumer<Integer, Float> scoreConsumer);
 
     @Override
-    protected void computeScores(List<RankFeatureDoc> featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
-        List<String> features = featureDocs.stream().map(x -> x.featureData).toList();
+    protected void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
+        List<String> features = Arrays.stream(featureDocs).map(x -> x.featureData).toList();
         final ActionListener<Response> actionListener = listener(scoreConsumer, onFinish);
         Request req = request(features);
         ActionType<Response> action = action();

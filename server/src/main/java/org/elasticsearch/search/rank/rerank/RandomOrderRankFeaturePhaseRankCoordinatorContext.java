@@ -10,7 +10,6 @@ package org.elasticsearch.search.rank.rerank;
 
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 
-import java.util.List;
 import java.util.function.BiConsumer;
 
 /**
@@ -23,8 +22,8 @@ public class RandomOrderRankFeaturePhaseRankCoordinatorContext extends Reranking
     }
 
     @Override
-    protected void computeScores(List<RankFeatureDoc> featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
-        for (int i = 0; i < featureDocs.size(); i++) {
+    protected void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
+        for (int i = 0; i < featureDocs.length; i++) {
             scoreConsumer.accept(i, (float) Math.random());
         }
         onFinish.run();
