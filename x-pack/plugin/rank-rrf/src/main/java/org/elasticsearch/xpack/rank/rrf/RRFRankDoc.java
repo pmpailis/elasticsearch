@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.rank.rrf;
 
+import org.apache.lucene.search.Explanation;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.rank.RankDoc;
@@ -63,6 +64,28 @@ public class RRFRankDoc extends RankDoc {
     public boolean doEquals(RankDoc rd) {
         RRFRankDoc rrfrd = (RRFRankDoc) rd;
         return Arrays.equals(positions, rrfrd.positions) && Arrays.equals(scores, rrfrd.scores);
+    }
+
+    @Override
+    public Explanation explain(Explanation explanation) {
+        Explanation rrfExplain = Explanation.match(score, "computed for initial ranks "
+            + Arrays.toString(positions)
+            + " as "
+            + " as [[1.0 / (10 + 3)]]");
+        Explanation[] details = new Explanation[positions.length];
+        for(int i = 0; i < positions.length; i++) {
+            // iterate over each of the individual queries and update explanation
+            if(positions[i] == NO_RANK) {
+                details[i] = Explanation.noMatch("RRF score: [0]; document not part of result set");
+            } else {
+                details[i] = Explanation.match(rrfScore(position[i]), "RRF score: computed for query " + i + " as [[1.0 / (10 + " + positions[i] + ")]]");
+            }
+        }
+        return explanation;
+    }
+
+    private float rrfScore(int position) {
+        return 1.0f / (rankConstant + position);
     }
 
     @Override
