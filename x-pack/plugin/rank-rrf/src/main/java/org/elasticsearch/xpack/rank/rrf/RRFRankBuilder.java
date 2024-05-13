@@ -112,6 +112,7 @@ public class RRFRankBuilder extends RankBuilder {
         assert scoreDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
         RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
         int queries = rrfRankDoc.positions.length;
+        assert queryNames.size() == queries;
         Explanation[] details = new Explanation[queries];
         int queryExplainIndex = 0;
         for (int i = 0; i < queries; i++) {

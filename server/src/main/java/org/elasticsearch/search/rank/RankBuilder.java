@@ -82,7 +82,6 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
 
     public void addExplanations(SearchHit[] hits, ScoreDoc[] scoreDocs, List<String> queryNames) {
         assert hits.length == scoreDocs.length;
-        assert queryNames.size() == hits.length;
         for (int i = 0; i < hits.length; i++) {
             SearchHit hit = hits[i];
             assert hit.getExplanation() != null : "Explanation is missing for hit: " + hit.getId();
