@@ -18,8 +18,10 @@ import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.fetch.ShardFetchSearchRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.vectors.KnnSearchBuilder;
 import org.elasticsearch.transport.Transport;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -235,10 +237,14 @@ final class FetchSearchPhase extends SearchPhase {
     ) {
         var resp = SearchPhaseController.merge(context.getRequest().scroll() != null, reducedQueryPhase, fetchResultsArr);
         if (explainRankScores(context.getRequest())) {
+            List<String> queryNames = new ArrayList<>(
+                context.getRequest().source().subSearches().stream().map(x -> x.getQueryBuilder().queryName()).toList()
+            );
+            queryNames.addAll(context.getRequest().source().knnSearch().stream().map(KnnSearchBuilder::queryName).toList());
             context.getRequest()
                 .source()
                 .rankBuilder()
-                .addExplanations(resp.hits().getHits(), reducedQueryPhase.sortedTopDocs().scoreDocs());
+                .addExplanations(resp.hits().getHits(), reducedQueryPhase.sortedTopDocs().scoreDocs(), queryNames);
         }
         context.addReleasable(resp::decRef);
         fetchResults.close();
@@ -246,9 +252,7 @@ final class FetchSearchPhase extends SearchPhase {
     }
 
     private boolean explainRankScores(SearchRequest request) {
-        return context.getRequest().source() != null
-            && context.getRequest().source().explain() != null
-            && context.getRequest().source().rankBuilder() != null;
+        return request.source() != null && request.source().explain() != null && request.source().rankBuilder() != null;
     }
 
 }

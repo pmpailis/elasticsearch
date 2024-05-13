@@ -87,7 +87,7 @@ public class TestRankBuilder extends RankBuilder {
     }
 
     @Override
-    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc) {
+    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc, List<String> queryNames) {
         // no-op
     }
 

@@ -1,0 +1,388 @@
+setup:
+  - requires:
+      cluster_features: "gte_v8.15.0"
+      reason: 'explain for rrf was added in 8.15'
+      test_runner_features: close_to
+
+  - do:
+      indices.create:
+        index: test
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+          mappings:
+            properties:
+              text:
+                type: text
+              integer:
+                type: integer
+              vector:
+                type: dense_vector
+                dims: 1
+                index: true
+                similarity: l2_norm
+                index_options:
+                  type: hnsw
+                  ef_construction: 100
+                  m: 16
+
+  - do:
+      index:
+        index: test
+        id: "1"
+        body:
+          text: "term"
+          integer: 1
+          vector: [5]
+
+  - do:
+      index:
+        index: test
+        id: "2"
+        body:
+          text: "term term"
+          integer: 2
+          vector: [4]
+
+  - do:
+      index:
+        index: test
+        id: "3"
+        body:
+          text: "term term term"
+          integer: 3
+          vector: [3]
+  - do:
+      index:
+        index: test
+        id: "4"
+        body:
+          text: "term term term term"
+          integer: 3
+
+  - do:
+      index:
+        index: test
+        id: "5"
+        body:
+          integer: 1
+          vector: [0]
+
+  - do:
+      indices.refresh: {}
+
+---
+"RRF explain - using a top level knn and query":
+
+  - do:
+      search:
+        index: test
+        body:
+          track_total_hits: false
+          fields: [ "text", "integer" ]
+          knn:
+            field: vector
+            query_vector: [3]
+            k: 5
+            num_candidates: 5
+          query:
+            term:
+              text: term
+          rank:
+            rrf:
+              rank_window_size: 5
+              rank_constant: 1
+          size: 3
+          explain: true
+
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.0._rank: 1 }
+  - match: { hits.hits.0.fields.text.0: "term term term" }
+
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.1._rank: 2 }
+  - match: { hits.hits.1.fields.text.0: "term term" }
+
+  - match: { hits.hits.2._id: "4" }
+  - match: { hits.hits.2._rank: 3 }
+  - match: { hits.hits.2.fields.text.0: "term term term term" }
+
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.0._explanation.details.0.value: 2}
+  - match: {hits.hits.0._explanation.details.0.description: 'rrf score: [0.33333334], for rank [2] in query [0] computed as [1 / (2 + 1]), for matching query with score: '}
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "rrf score: [0.5], for rank [1] in query [1] computed as [1 / (1 + 1]), for matching query with score: "}
+  - match: {hits.hits.0._explanation.details.1.details.0.description: /within top.*/}
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "rrf score: [0.5833334] computed for initial ranks [3, 2] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: 'rrf score: [0.25], for rank [3] in query [0] computed as [1 / (3 + 1]), for matching query with score: '}
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "rrf score: [0.33333334], for rank [2] in query [1] computed as [1 / (2 + 1]), for matching query with score: "}
+  - match: {hits.hits.1._explanation.details.1.details.0.description: /within top.*/}
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "rrf score: [0.5] computed for initial ranks [1, 0] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.2._explanation.details.0.value: 0.5}
+  - match: {hits.hits.2._explanation.details.0.description: 'rrf score: [0.5], for rank [1] in query [0] computed as [1 / (1 + 1]), for matching query with score: '}
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "rrf score: [0], result not found in query [1]"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}
+
+---
+"RRF explain - using sub_searches":
+
+  - do:
+      search:
+        index: test
+        body:
+          track_total_hits: false
+          fields: [ "text", "integer" ]
+          knn:
+            field: vector
+            query_vector: [3]
+            k: 5
+            num_candidates: 5
+          query:
+            term:
+              text: term
+          rank:
+            rrf:
+              rank_window_size: 5
+              rank_constant: 1
+          size: 3
+          explain: true
+
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.0._rank: 1 }
+  - match: { hits.hits.0.fields.text.0: "term term term" }
+
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.1._rank: 2 }
+  - match: { hits.hits.1.fields.text.0: "term term" }
+
+  - match: { hits.hits.2._id: "4" }
+  - match: { hits.hits.2._rank: 3 }
+  - match: { hits.hits.2.fields.text.0: "term term term term" }
+
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.0._explanation.details.0.value: 2}
+  - match: {hits.hits.0._explanation.details.0.description: 'rrf score: [0.33333334], for rank [2] in query [0] computed as [1 / (2 + 1]), for matching query with score: '}
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "rrf score: [0.5], for rank [1] in query [1] computed as [1 / (1 + 1]), for matching query with score: "}
+  - match: {hits.hits.0._explanation.details.1.details.0.description: /within top.*/}
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "rrf score: [0.5833334] computed for initial ranks [3, 2] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: 'rrf score: [0.25], for rank [3] in query [0] computed as [1 / (3 + 1]), for matching query with score: '}
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "rrf score: [0.33333334], for rank [2] in query [1] computed as [1 / (2 + 1]), for matching query with score: "}
+  - match: {hits.hits.1._explanation.details.1.details.0.description: /within top.*/}
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "rrf score: [0.5] computed for initial ranks [1, 0] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.2._explanation.details.0.value: 0.5}
+  - match: {hits.hits.2._explanation.details.0.description: 'rrf score: [0.5], for rank [1] in query [0] computed as [1 / (1 + 1]), for matching query with score: '}
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "rrf score: [0], result not found in query [1]"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}
+
+---
+"RRF explain - using named top level knn and query":
+
+  - do:
+      search:
+        index: test
+        body:
+          track_total_hits: false
+          fields: [ "text", "integer" ]
+          knn:
+            field: vector
+            query_vector: [3]
+            k: 5
+            num_candidates: 5
+          query:
+            term:
+              text: term
+          rank:
+            rrf:
+              rank_window_size: 5
+              rank_constant: 1
+          size: 3
+          explain: true
+
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.0._rank: 1 }
+  - match: { hits.hits.0.fields.text.0: "term term term" }
+
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.1._rank: 2 }
+  - match: { hits.hits.1.fields.text.0: "term term" }
+
+  - match: { hits.hits.2._id: "4" }
+  - match: { hits.hits.2._rank: 3 }
+  - match: { hits.hits.2.fields.text.0: "term term term term" }
+
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.0._explanation.details.0.value: 2}
+  - match: {hits.hits.0._explanation.details.0.description: 'rrf score: [0.33333334], for rank [2] in query [0] computed as [1 / (2 + 1]), for matching query with score: '}
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "rrf score: [0.5], for rank [1] in query [1] computed as [1 / (1 + 1]), for matching query with score: "}
+  - match: {hits.hits.0._explanation.details.1.details.0.description: /within top.*/}
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "rrf score: [0.5833334] computed for initial ranks [3, 2] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: 'rrf score: [0.25], for rank [3] in query [0] computed as [1 / (3 + 1]), for matching query with score: '}
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "rrf score: [0.33333334], for rank [2] in query [1] computed as [1 / (2 + 1]), for matching query with score: "}
+  - match: {hits.hits.1._explanation.details.1.details.0.description: /within top.*/}
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "rrf score: [0.5] computed for initial ranks [1, 0] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.2._explanation.details.0.value: 0.5}
+  - match: {hits.hits.2._explanation.details.0.description: 'rrf score: [0.5], for rank [1] in query [0] computed as [1 / (1 + 1]), for matching query with score: '}
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "rrf score: [0], result not found in query [1]"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}
+
+---
+"RRF explain - using named sub_searches":
+
+  - do:
+      search:
+        index: test
+        body:
+          track_total_hits: false
+          fields: [ "text", "integer" ]
+          knn:
+            field: vector
+            query_vector: [3]
+            k: 5
+            num_candidates: 5
+          query:
+            term:
+              text: term
+          rank:
+            rrf:
+              rank_window_size: 5
+              rank_constant: 1
+          size: 3
+          explain: true
+
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.0._rank: 1 }
+  - match: { hits.hits.0.fields.text.0: "term term term" }
+
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.1._rank: 2 }
+  - match: { hits.hits.1.fields.text.0: "term term" }
+
+  - match: { hits.hits.2._id: "4" }
+  - match: { hits.hits.2._rank: 3 }
+  - match: { hits.hits.2.fields.text.0: "term term term term" }
+
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.0._explanation.details.0.value: 2}
+  - match: {hits.hits.0._explanation.details.0.description: 'rrf score: [0.33333334], for rank [2] in query [0] computed as [1 / (2 + 1]), for matching query with score: '}
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "rrf score: [0.5], for rank [1] in query [1] computed as [1 / (1 + 1]), for matching query with score: "}
+  - match: {hits.hits.0._explanation.details.1.details.0.description: /within top.*/}
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "rrf score: [0.5833334] computed for initial ranks [3, 2] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: 'rrf score: [0.25], for rank [3] in query [0] computed as [1 / (3 + 1]), for matching query with score: '}
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "rrf score: [0.33333334], for rank [2] in query [1] computed as [1 / (2 + 1]), for matching query with score: "}
+  - match: {hits.hits.1._explanation.details.1.details.0.description: /within top.*/}
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "rrf score: [0.5] computed for initial ranks [1, 0] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.2._explanation.details.0.value: 0.5}
+  - match: {hits.hits.2._explanation.details.0.description: 'rrf score: [0.5], for rank [1] in query [0] computed as [1 / (1 + 1]), for matching query with score: '}
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "rrf score: [0], result not found in query [1]"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}
+
+---
+"RRF explain - using a mix of named and unnamed queries":
+
+  - do:
+      search:
+        index: test
+        body:
+          track_total_hits: false
+          fields: [ "text", "integer" ]
+          knn:
+            field: vector
+            query_vector: [3]
+            k: 5
+            num_candidates: 5
+          query:
+            term:
+              text: term
+          rank:
+            rrf:
+              rank_window_size: 5
+              rank_constant: 1
+          size: 3
+          explain: true
+
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.0._rank: 1 }
+  - match: { hits.hits.0.fields.text.0: "term term term" }
+
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.1._rank: 2 }
+  - match: { hits.hits.1.fields.text.0: "term term" }
+
+  - match: { hits.hits.2._id: "4" }
+  - match: { hits.hits.2._rank: 3 }
+  - match: { hits.hits.2.fields.text.0: "term term term term" }
+
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.0._explanation.details.0.value: 2}
+  - match: {hits.hits.0._explanation.details.0.description: 'rrf score: [0.33333334], for rank [2] in query [0] computed as [1 / (2 + 1]), for matching query with score: '}
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "rrf score: [0.5], for rank [1] in query [1] computed as [1 / (1 + 1]), for matching query with score: "}
+  - match: {hits.hits.0._explanation.details.1.details.0.description: /within top.*/}
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "rrf score: [0.5833334] computed for initial ranks [3, 2] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: 'rrf score: [0.25], for rank [3] in query [0] computed as [1 / (3 + 1]), for matching query with score: '}
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "rrf score: [0.33333334], for rank [2] in query [1] computed as [1 / (2 + 1]), for matching query with score: "}
+  - match: {hits.hits.1._explanation.details.1.details.0.description: /within top.*/}
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "rrf score: [0.5] computed for initial ranks [1, 0] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query"}
+  - match: {hits.hits.2._explanation.details.0.value: 0.5}
+  - match: {hits.hits.2._explanation.details.0.description: 'rrf score: [0.5], for rank [1] in query [0] computed as [1 / (1 + 1]), for matching query with score: '}
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term/"}
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "rrf score: [0], result not found in query [1]"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}

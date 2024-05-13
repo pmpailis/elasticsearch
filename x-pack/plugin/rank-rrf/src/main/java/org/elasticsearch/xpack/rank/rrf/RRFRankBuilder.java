@@ -108,15 +108,17 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc) {
+    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc, List<String> queryNames) {
         assert scoreDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
         RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
         int queries = rrfRankDoc.positions.length;
         Explanation[] details = new Explanation[queries];
         int queryExplainIndex = 0;
         for (int i = 0; i < queries; i++) {
+            final String queryName = queryNames.get(i) != null ? "[" + queryNames.get(i) + "]" : "at index [" + i + "]";
             if (rrfRankDoc.positions[i] == RRFRankDoc.NO_RANK) {
-                details[i] = Explanation.noMatch("rrf score: [0], result not found in query [" + i + "]");
+                final String description = "rrf score: [0], result not found in query " + queryName;
+                details[i] = Explanation.noMatch(description);
             } else {
                 final int rank = rrfRankDoc.positions[i] + 1;
                 details[i] = Explanation.match(
@@ -126,9 +128,9 @@ public class RRFRankBuilder extends RankBuilder {
                         + "], "
                         + "for rank ["
                         + (rank)
-                        + "] in query ["
-                        + i
-                        + "] computed as [1 / ("
+                        + "] in query "
+                        + queryName
+                        + " computed as [1 / ("
                         + (rank)
                         + " + "
                         + rankConstant

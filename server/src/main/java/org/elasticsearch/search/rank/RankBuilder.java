@@ -80,16 +80,17 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
      */
     public abstract QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
 
-    public void addExplanations(SearchHit[] hits, ScoreDoc[] scoreDocs) {
+    public void addExplanations(SearchHit[] hits, ScoreDoc[] scoreDocs, List<String> queryNames) {
         assert hits.length == scoreDocs.length;
+        assert queryNames.size() == hits.length;
         for (int i = 0; i < hits.length; i++) {
             SearchHit hit = hits[i];
             assert hit.getExplanation() != null : "Explanation is missing for hit: " + hit.getId();
-            explainHit(hit, scoreDocs[i]);
+            explainHit(hit, scoreDocs[i], queryNames);
         }
     }
 
-    protected abstract void explainHit(SearchHit hit, ScoreDoc scoreDoc);
+    protected abstract void explainHit(SearchHit hit, ScoreDoc scoreDoc, List<String> queryNames);
 
     @Override
     public final boolean equals(Object obj) {

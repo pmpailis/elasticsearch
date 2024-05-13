@@ -115,7 +115,6 @@ The `rrf` retriever does not currently support:
 * <<search-suggesters, suggesters>>
 * <<highlighting, highlighting>>
 * <<collapse-search-results, collapse>>
-* <<request-body-search-explain, explain>>
 * <<profiling-queries, profiling>>
 
 Using unsupported features as part of a search with an `rrf` retriever results
