@@ -252,7 +252,10 @@ final class FetchSearchPhase extends SearchPhase {
     }
 
     private boolean explainRankScores(SearchRequest request) {
-        return request.source() != null && request.source().explain() && request.source().rankBuilder() != null;
+        return request.source() != null
+            && request.source().explain() != null
+            && request.source().explain()
+            && request.source().rankBuilder() != null;
     }
 
 }

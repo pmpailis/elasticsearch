@@ -79,7 +79,6 @@ setup:
       search:
         index: test
         body:
-          track_total_hits: false
           fields: [ "text", "integer" ]
           knn:
             field: vector
@@ -134,7 +133,6 @@ setup:
       search:
         index: test
         body:
-          track_total_hits: false
           fields: [ "text", "integer" ]
           sub_searches: [
             {
@@ -200,7 +198,6 @@ setup:
       search:
         index: test
         body:
-          track_total_hits: false
           fields: [ "text", "integer" ]
           knn:
             field: vector
@@ -258,7 +255,6 @@ setup:
       search:
         index: test
         body:
-          track_total_hits: false
           fields: [ "text", "integer" ]
           sub_searches: [
             {
@@ -328,7 +324,6 @@ setup:
       search:
         index: test
         body:
-          track_total_hits: false
           fields: [ "text", "integer" ]
           sub_searches: [
             {
