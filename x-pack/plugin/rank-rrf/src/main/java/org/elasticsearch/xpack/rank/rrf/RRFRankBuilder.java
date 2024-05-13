@@ -113,6 +113,7 @@ public class RRFRankBuilder extends RankBuilder {
         RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
         int queries = rrfRankDoc.positions.length;
         Explanation[] details = new Explanation[queries];
+        int queryExplainIndex = 0;
         for (int i = 0; i < queries; i++) {
             if (rrfRankDoc.positions[i] == RRFRankDoc.NO_RANK) {
                 details[i] = Explanation.noMatch("rrf score: [0], result not found in query [" + i + "]");
@@ -121,18 +122,18 @@ public class RRFRankBuilder extends RankBuilder {
                 details[i] = Explanation.match(
                     rank,
                     "rrf score: ["
-                        + rrfRankDoc.scores[i]
-                        + "] + "
+                        + (1f / (rank + rankConstant))
+                        + "], "
                         + "for rank ["
                         + (rank)
                         + "] in query ["
                         + i
-                        + "] computed as 1 / ("
+                        + "] computed as [1 / ("
                         + (rank)
                         + " + "
                         + rankConstant
-                        + ")",
-                    hit.getExplanation().getDetails()[i]
+                        + "]), for matching query with score: ",
+                    hit.getExplanation().getDetails()[queryExplainIndex++]
                 );
             }
         }
