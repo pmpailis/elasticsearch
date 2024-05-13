@@ -8,7 +8,6 @@
 
 package org.elasticsearch.search.rank;
 
-import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -63,8 +62,6 @@ public abstract class RankDoc extends ScoreDoc implements Writeable {
     }
 
     protected abstract boolean doEquals(RankDoc rd);
-
-    public abstract Explanation explain(Explanation explanation);
 
     @Override
     public final int hashCode() {

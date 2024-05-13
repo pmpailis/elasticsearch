@@ -9,10 +9,12 @@
 package org.elasticsearch.search.rank;
 
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
@@ -82,6 +84,11 @@ public class TestRankBuilder extends RankBuilder {
     @Override
     public QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc) {
+        // no-op
     }
 
     @Override

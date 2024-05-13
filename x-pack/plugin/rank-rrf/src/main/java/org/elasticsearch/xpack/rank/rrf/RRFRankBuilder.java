@@ -7,12 +7,15 @@
 
 package org.elasticsearch.xpack.rank.rrf;
 
+import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.license.LicenseUtils;
+import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
@@ -23,6 +26,7 @@ import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xpack.core.XPackPlugin;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -101,6 +105,50 @@ public class RRFRankBuilder extends RankBuilder {
     @Override
     public QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
         return new RRFQueryPhaseRankCoordinatorContext(size, from, rankWindowSize(), rankConstant);
+    }
+
+    @Override
+    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc) {
+        assert scoreDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
+        RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
+        int queries = rrfRankDoc.positions.length;
+        Explanation[] details = new Explanation[queries];
+        for (int i = 0; i < queries; i++) {
+            if (rrfRankDoc.positions[i] == RRFRankDoc.NO_RANK) {
+                details[i] = Explanation.noMatch("rrf score: [0], result not found in query [" + i + "]");
+            } else {
+                final int rank = rrfRankDoc.positions[i] + 1;
+                details[i] = Explanation.match(
+                    rank,
+                    "rrf score: ["
+                        + rrfRankDoc.scores[i]
+                        + "] + "
+                        + "for rank ["
+                        + (rank)
+                        + "] in query ["
+                        + i
+                        + "] computed as 1 / ("
+                        + (rank)
+                        + " + "
+                        + rankConstant
+                        + ")",
+                    hit.getExplanation().getDetails()[i]
+                );
+            }
+        }
+        hit.explanation(
+            Explanation.match(
+                rrfRankDoc.score,
+                "rrf score: ["
+                    + rrfRankDoc.score
+                    + "] computed for initial ranks "
+                    + Arrays.toString(Arrays.stream(rrfRankDoc.positions).map(x -> x + 1).toArray())
+                    + " with rankConstant: ["
+                    + rankConstant
+                    + "] as sum of [1 / (rank + rankConstant)] for each query",
+                details
+            )
+        );
     }
 
     @Override

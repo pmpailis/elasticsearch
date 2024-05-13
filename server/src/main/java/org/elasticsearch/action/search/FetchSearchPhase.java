@@ -11,7 +11,6 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.AtomicArray;
-import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.dfs.AggregatedDfs;
@@ -235,8 +234,21 @@ final class FetchSearchPhase extends SearchPhase {
         AtomicArray<? extends SearchPhaseResult> fetchResultsArr
     ) {
         var resp = SearchPhaseController.merge(context.getRequest().scroll() != null, reducedQueryPhase, fetchResultsArr);
+        if (explainRankScores(context.getRequest())) {
+            context.getRequest()
+                .source()
+                .rankBuilder()
+                .addExplanations(resp.hits().getHits(), reducedQueryPhase.sortedTopDocs().scoreDocs());
+        }
         context.addReleasable(resp::decRef);
         fetchResults.close();
         context.executeNextPhase(this, nextPhaseFactory.apply(resp, queryResults));
     }
+
+    private boolean explainRankScores(SearchRequest request) {
+        return context.getRequest().source() != null
+            && context.getRequest().source().explain() != null
+            && context.getRequest().source().rankBuilder() != null;
+    }
+
 }
