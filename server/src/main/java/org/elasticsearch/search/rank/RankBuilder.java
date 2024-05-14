@@ -8,13 +8,13 @@
 
 package org.elasticsearch.search.rank;
 
+import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.VersionedNamedWriteable;
-import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchService;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
@@ -80,16 +80,7 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
      */
     public abstract QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
 
-    public void addExplanations(SearchHit[] hits, ScoreDoc[] scoreDocs, List<String> queryNames) {
-        assert hits.length == scoreDocs.length;
-        for (int i = 0; i < hits.length; i++) {
-            SearchHit hit = hits[i];
-            assert hit.getExplanation() != null : "Explanation is missing for hit: " + hit.getId();
-            explainHit(hit, scoreDocs[i], queryNames);
-        }
-    }
-
-    protected abstract void explainHit(SearchHit hit, ScoreDoc scoreDoc, List<String> queryNames);
+    public abstract Explanation explainHit(Explanation baseExplanation, ScoreDoc scoreDoc, List<String> queryNames);
 
     @Override
     public final boolean equals(Object obj) {

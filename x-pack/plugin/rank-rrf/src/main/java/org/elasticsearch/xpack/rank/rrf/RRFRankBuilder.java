@@ -15,7 +15,6 @@ import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.license.LicenseUtils;
-import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
@@ -108,7 +107,10 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    protected void explainHit(SearchHit hit, ScoreDoc scoreDoc, List<String> queryNames) {
+    public Explanation explainHit(Explanation baseExplanation, ScoreDoc scoreDoc, List<String> queryNames) {
+        if (scoreDoc == null) {
+            return baseExplanation;
+        }
         assert scoreDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
         RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
         int queries = rrfRankDoc.positions.length;
@@ -136,22 +138,20 @@ public class RRFRankBuilder extends RankBuilder {
                         + " + "
                         + rankConstant
                         + "]), for matching query with score: ",
-                    hit.getExplanation().getDetails()[queryExplainIndex++]
+                    baseExplanation.getDetails()[queryExplainIndex++]
                 );
             }
         }
-        hit.explanation(
-            Explanation.match(
-                rrfRankDoc.score,
-                "rrf score: ["
-                    + rrfRankDoc.score
-                    + "] computed for initial ranks "
-                    + Arrays.toString(Arrays.stream(rrfRankDoc.positions).map(x -> x + 1).toArray())
-                    + " with rankConstant: ["
-                    + rankConstant
-                    + "] as sum of [1 / (rank + rankConstant)] for each query",
-                details
-            )
+        return Explanation.match(
+            rrfRankDoc.score,
+            "rrf score: ["
+                + rrfRankDoc.score
+                + "] computed for initial ranks "
+                + Arrays.toString(Arrays.stream(rrfRankDoc.positions).map(x -> x + 1).toArray())
+                + " with rankConstant: ["
+                + rankConstant
+                + "] as sum of [1 / (rank + rankConstant)] for each query",
+            details
         );
     }
 

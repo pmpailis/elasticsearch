@@ -163,6 +163,12 @@ public class FetchContext {
         return searchContext.request().source() == null ? null : searchContext.request().source().rankBuilder();
     }
 
+    public List<String> queryNames() {
+        return searchContext.request().source() == null
+            ? Collections.emptyList()
+            : searchContext.request().source().subSearches().stream().map(x -> x.getQueryBuilder().queryName()).toList();
+    }
+
     /**
      * Should the response include sequence number and primary term metadata
      */

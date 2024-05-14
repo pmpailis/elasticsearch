@@ -37,7 +37,7 @@ public abstract class RankDoc extends ScoreDoc implements Writeable {
         super(doc, score, shardIndex);
     }
 
-    protected RankDoc(StreamInput in) throws IOException {
+    public RankDoc(StreamInput in) throws IOException {
         super(in.readVInt(), in.readFloat(), in.readVInt());
         rank = in.readVInt();
     }
