@@ -236,22 +236,28 @@ final class FetchSearchPhase extends SearchPhase {
         AtomicArray<? extends SearchPhaseResult> fetchResultsArr
     ) {
         var resp = SearchPhaseController.merge(context.getRequest().scroll() != null, reducedQueryPhase, fetchResultsArr);
-        if (explainRankScores(context.getRequest())) {
+        addRankExplain(resp);
+        context.addReleasable(resp::decRef);
+        fetchResults.close();
+        context.executeNextPhase(this, nextPhaseFactory.apply(resp, queryResults));
+    }
+
+    private void addRankExplain(SearchResponseSections resp) {
+        if (shouldExplainRankScores(context.getRequest())) {
             List<String> queryNames = new ArrayList<>(
                 context.getRequest().source().subSearches().stream().map(x -> x.getQueryBuilder().queryName()).toList()
             );
+            // top-level kNN search is exported to sub-searches only on the shard level as part of its rewrite process,
+            // so we need to add it here explicitly
             queryNames.addAll(context.getRequest().source().knnSearch().stream().map(KnnSearchBuilder::queryName).toList());
             context.getRequest()
                 .source()
                 .rankBuilder()
                 .addExplanations(resp.hits().getHits(), reducedQueryPhase.sortedTopDocs().scoreDocs(), queryNames);
         }
-        context.addReleasable(resp::decRef);
-        fetchResults.close();
-        context.executeNextPhase(this, nextPhaseFactory.apply(resp, queryResults));
     }
 
-    private boolean explainRankScores(SearchRequest request) {
+    private boolean shouldExplainRankScores(SearchRequest request) {
         return request.source() != null
             && request.source().explain() != null
             && request.source().explain()
