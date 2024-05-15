@@ -10,6 +10,7 @@ package org.elasticsearch.search.rank.rerank;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.elasticsearch.common.document.DocumentField;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.rank.RankShardResult;
@@ -33,7 +34,10 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
             RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
             for (int i = 0; i < hits.getHits().length; i++) {
                 rankFeatureDocs[i] = new RankFeatureDoc(hits.getHits()[i].docId(), hits.getHits()[i].getScore(), shardId);
-                rankFeatureDocs[i].featureData(hits.getHits()[i].field(field).getValue());
+                DocumentField docField = hits.getHits()[i].field(field);
+                if (docField != null) {
+                    rankFeatureDocs[i].featureData(docField.getValue());
+                }
             }
             return new RankFeatureShardResult(rankFeatureDocs);
         } catch (Exception ex) {
