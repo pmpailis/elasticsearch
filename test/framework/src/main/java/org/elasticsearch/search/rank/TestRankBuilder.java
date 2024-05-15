@@ -10,7 +10,6 @@ package org.elasticsearch.search.rank;
 
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -87,7 +86,7 @@ public class TestRankBuilder extends RankBuilder {
     }
 
     @Override
-    public Explanation explainHit(Explanation baseExplanation, ScoreDoc scoreDoc, List<String> queryNames) {
+    public Explanation explainHit(Explanation baseExplanation, RankDoc rankDoc, List<String> queryNames) {
         return baseExplanation;
     }
 

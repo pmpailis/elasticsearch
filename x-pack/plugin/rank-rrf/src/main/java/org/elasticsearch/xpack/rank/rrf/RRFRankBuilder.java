@@ -9,13 +9,13 @@ package org.elasticsearch.xpack.rank.rrf;
 
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.license.LicenseUtils;
 import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
@@ -107,12 +107,19 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    public Explanation explainHit(Explanation baseExplanation, ScoreDoc scoreDoc, List<String> queryNames) {
-        if (scoreDoc == null) {
+    public Explanation explainHit(Explanation baseExplanation, RankDoc rankDoc, List<String> queryNames) {
+        if (rankDoc == null) {
             return baseExplanation;
         }
-        assert scoreDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
-        RRFRankDoc rrfRankDoc = (RRFRankDoc) scoreDoc;
+        if (false == baseExplanation.isMatch()) {
+            return baseExplanation;
+        }
+        final Explanation hitExplanation = baseExplanation.getDetails().length == 0
+            ? Explanation.match(baseExplanation.getValue(), baseExplanation.getDescription(), baseExplanation)
+            : baseExplanation;
+
+        assert rankDoc instanceof RRFRankDoc : "ScoreDoc is not an instance of RRFRankDoc";
+        RRFRankDoc rrfRankDoc = (RRFRankDoc) rankDoc;
         int queries = rrfRankDoc.positions.length;
         assert queryNames.size() == queries;
         Explanation[] details = new Explanation[queries];
@@ -138,7 +145,7 @@ public class RRFRankBuilder extends RankBuilder {
                         + " + "
                         + rankConstant
                         + "]), for matching query with score: ",
-                    baseExplanation.getDetails()[queryExplainIndex++]
+                    hitExplanation.getDetails()[queryExplainIndex++]
                 );
             }
         }

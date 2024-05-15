@@ -138,7 +138,7 @@ final class FetchSearchPhase extends SearchPhase {
                 );
                 for (int i = 0; i < docIdsToLoad.length; i++) {
                     List<Integer> entry = docIdsToLoad[i];
-                    Map<Integer, RankDoc> shardDocs = rankDocsPerShard == null || rankDocsPerShard.get(i).isEmpty()
+                    Map<Integer, RankDoc> rankDocs = rankDocsPerShard == null || rankDocsPerShard.get(i).isEmpty()
                         ? null
                         : rankDocsPerShard.get(i);
                     SearchPhaseResult queryResult = queryResults.get(i);
@@ -157,7 +157,7 @@ final class FetchSearchPhase extends SearchPhase {
                             queryResult,
                             counter,
                             entry,
-                            shardDocs,
+                            rankDocs,
                             (lastEmittedDocPerShard != null) ? lastEmittedDocPerShard[i] : null
                         );
                     }
@@ -173,7 +173,7 @@ final class FetchSearchPhase extends SearchPhase {
         }
         for (ScoreDoc scoreDoc : scoreDocs) {
             assert scoreDoc instanceof RankDoc : "ScoreDoc is not a RankDoc";
-            assert scoreDoc.shardIndex <= numShards;
+            assert scoreDoc.shardIndex >= 0 && scoreDoc.shardIndex <= numShards;
             RankDoc rankDoc = (RankDoc) scoreDoc;
             Map<Integer, RankDoc> shardScoreDocs = rankDocsPerShard.get(rankDoc.shardIndex);
             shardScoreDocs.put(rankDoc.doc, rankDoc);
@@ -192,7 +192,7 @@ final class FetchSearchPhase extends SearchPhase {
         SearchPhaseResult queryResult,
         final CountedCollector<FetchSearchResult> counter,
         final List<Integer> entry,
-        final Map<Integer, RankDoc> shardDocs,
+        final Map<Integer, RankDoc> rankDocs,
         ScoreDoc lastEmittedDocForShard
     ) {
         final SearchShardTarget shardTarget = queryResult.getSearchShardTarget();
@@ -206,7 +206,7 @@ final class FetchSearchPhase extends SearchPhase {
                     contextId,
                     queryResult.getShardSearchRequest(),
                     entry,
-                    shardDocs,
+                    rankDocs,
                     lastEmittedDocForShard,
                     queryResult.getRescoreDocIds(),
                     aggregatedDfs

@@ -10,7 +10,6 @@ package org.elasticsearch.search.rank;
 
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -80,7 +79,7 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
      */
     public abstract QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from);
 
-    public abstract Explanation explainHit(Explanation baseExplanation, ScoreDoc scoreDoc, List<String> queryNames);
+    public abstract Explanation explainHit(Explanation baseExplanation, RankDoc scoreDoc, List<String> queryNames);
 
     @Override
     public final boolean equals(Object obj) {

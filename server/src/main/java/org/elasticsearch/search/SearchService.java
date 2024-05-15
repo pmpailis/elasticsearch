@@ -871,7 +871,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 try (
                     SearchOperationListenerExecutor executor = new SearchOperationListenerExecutor(searchContext, true, System.nanoTime())
                 ) {
-                    fetchPhase.execute(searchContext, request.docIds(), request.getShardDocs());
+                    fetchPhase.execute(searchContext, request.docIds(), request.getRankDocks());
                     if (readerContext.singleSession()) {
                         freeReaderContext(request.contextId());
                     }

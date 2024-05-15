@@ -121,7 +121,7 @@ public class ShardFetchRequest extends TransportRequest {
     }
 
     @Nullable
-    public Map<Integer, RankDoc> getShardDocs() {
+    public Map<Integer, RankDoc> getRankDocks() {
         return null;
     }
 }
