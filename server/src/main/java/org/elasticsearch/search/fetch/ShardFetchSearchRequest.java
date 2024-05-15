@@ -9,7 +9,7 @@
 package org.elasticsearch.search.fetch;
 
 import org.apache.lucene.search.ScoreDoc;
-import org.elasticsearch.TransportVersion;
+import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.OriginalIndices;
 import org.elasticsearch.action.support.IndicesOptions;
@@ -61,7 +61,7 @@ public class ShardFetchSearchRequest extends ShardFetchRequest implements Indice
         shardSearchRequest = in.readOptionalWriteable(ShardSearchRequest::new);
         rescoreDocIds = new RescoreDocIds(in);
         aggregatedDfs = in.readOptionalWriteable(AggregatedDfs::new);
-        if (in.getTransportVersion().onOrAfter(TransportVersion.current())) {
+        if (in.getTransportVersion().onOrAfter(TransportVersions.RANK_DOC_IN_SHARD_FETCH_REQUEST)) {
             boolean hasShardDocs = in.readBoolean();
             if (hasShardDocs) {
                 this.rankDocs = in.readMap(StreamInput::readVInt, v -> in.readNamedWriteable(RankDoc.class));
@@ -80,7 +80,7 @@ public class ShardFetchSearchRequest extends ShardFetchRequest implements Indice
         out.writeOptionalWriteable(shardSearchRequest);
         rescoreDocIds.writeTo(out);
         out.writeOptionalWriteable(aggregatedDfs);
-        if (out.getTransportVersion().onOrAfter(TransportVersion.current())) {
+        if (out.getTransportVersion().onOrAfter(TransportVersions.RANK_DOC_IN_SHARD_FETCH_REQUEST)) {
             if (rankDocs != null) {
                 out.writeBoolean(true);
                 out.writeMap(rankDocs, StreamOutput::writeVInt, StreamOutput::writeNamedWriteable);

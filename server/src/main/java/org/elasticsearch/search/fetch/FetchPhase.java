@@ -167,7 +167,7 @@ public final class FetchPhase {
                     ctx,
                     leafSourceLoader,
                     leafIdLoader,
-                    rankDocs == null ? null : rankDocs.getOrDefault(doc, null)
+                    rankDocs == null ? null : rankDocs.get(doc)
                 );
                 sourceProvider.source = hit.source();
                 fieldLookupProvider.setPreloadedStoredFieldValues(hit.hit().getId(), hit.loadedFields());
