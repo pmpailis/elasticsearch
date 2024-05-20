@@ -11,10 +11,7 @@ package org.elasticsearch.search.rank;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.TransportVersion;
-<<<<<<< HEAD
 import org.elasticsearch.client.internal.Client;
-=======
->>>>>>> global_reranker/add_new_rank_feature_phase_impl
 import org.elasticsearch.common.document.DocumentField;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.index.Index;
@@ -163,11 +160,7 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
 
             // no work to be done on the coordinator node for the rank feature phase
             @Override
-<<<<<<< HEAD
             public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
-=======
-            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
->>>>>>> global_reranker/add_new_rank_feature_phase_impl
                 return null;
             }
 
@@ -302,11 +295,7 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
                 fieldName,
                 new DocumentField(fieldName, Collections.singletonList(expectedFieldData.get(numDocs - 1)))
             );
-<<<<<<< HEAD
-            searchHits = new SearchHits(hits, new TotalHits(3, TotalHits.Relation.EQUAL_TO), 1.0f);
-=======
             searchHits = SearchHits.unpooled(hits, new TotalHits(3, TotalHits.Relation.EQUAL_TO), 1.0f);
->>>>>>> global_reranker/add_new_rank_feature_phase_impl
             searchContext.fetchResult().shardResult(searchHits, null);
             when(searchContext.isCancelled()).thenReturn(false);
             when(searchContext.request()).thenReturn(searchRequest);
@@ -353,11 +342,8 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
         try (SearchContext searchContext = spy(getSearchContext())) {
             searchContext.addFetchResult();
             SearchHit[] hits = new SearchHit[0];
-<<<<<<< HEAD
-            searchHits = new SearchHits(hits, new TotalHits(0, TotalHits.Relation.EQUAL_TO), 1.0f);
-=======
+
             searchHits = SearchHits.unpooled(hits, new TotalHits(0, TotalHits.Relation.EQUAL_TO), 1.0f);
->>>>>>> global_reranker/add_new_rank_feature_phase_impl
             searchContext.fetchResult().shardResult(searchHits, null);
             when(searchContext.isCancelled()).thenReturn(false);
             when(searchContext.request()).thenReturn(searchRequest);
@@ -402,11 +388,7 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
         try (SearchContext searchContext = spy(getSearchContext())) {
             searchContext.addFetchResult();
             SearchHit[] hits = new SearchHit[0];
-<<<<<<< HEAD
-            searchHits = new SearchHits(hits, new TotalHits(0, TotalHits.Relation.EQUAL_TO), 1.0f);
-=======
             searchHits = SearchHits.unpooled(hits, new TotalHits(0, TotalHits.Relation.EQUAL_TO), 1.0f);
->>>>>>> global_reranker/add_new_rank_feature_phase_impl
             searchContext.fetchResult().shardResult(searchHits, null);
             when(searchContext.isCancelled()).thenReturn(true);
             when(searchContext.request()).thenReturn(searchRequest);

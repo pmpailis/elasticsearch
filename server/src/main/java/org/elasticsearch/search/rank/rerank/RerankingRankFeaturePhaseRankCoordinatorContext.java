@@ -24,7 +24,7 @@ import java.util.function.Consumer;
 /**
  * Abstract class that provides the logic for reranking the top `rank_window_size` results from all shards,
  * based on the provided {@link RankFeatureResult} from the {@link org.elasticsearch.action.search.RankFeaturePhase} execution.
- * The computation is done in an async manner so that we can also facilitate potential call to external services if needed.
+ * The computation is done in an async manner so that we can also facilitate potential calls to external services if needed.
  */
 public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends RankFeaturePhaseRankCoordinatorContext {
 
@@ -33,16 +33,16 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
     }
 
     /**
-     * This method is responsible for computing the updated scores for a list of feature data. Once done, the `onFinish` should be called
-     * to continue execution to the next phase.
+     * This method is responsible for computing the updated scores for a list of features (i.e. document-based data).
+     * Once done, the `onFinish` should be called to continue execution to the next phase.
      */
     protected abstract void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish);
 
     /**
      * This method is responsible for ranking the global results based on the provided rank feature results from each shard.
      * <p>
-     * We first start by extracting ordered feature data accessed through a {@code List<RankFeatureDoc>}
-     * from the provided rankSearchResults, and then compute the updated scores for each batch of documents.
+     * We first start by extracting ordered feature data through a {@code List<RankFeatureDoc>}
+     * from the provided rankSearchResults, and then compute the updated score for each of the documents.
      * Once all the scores have been computed, we sort the results, perform any pagination needed, and then call the `onFinish` consumer
      * with the final array of {@link ScoreDoc} results.
      *

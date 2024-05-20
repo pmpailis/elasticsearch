@@ -22,6 +22,15 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.function.BiConsumer;
 
+/**
+ * A global reranker that computes the updated scores for the top-K results from all shards, through an inference service.
+ * This coordinator context, that's executed at the end of the {@link org.elasticsearch.action.search.RankFeaturePhase},
+ * needs an {@code inferenceId} and {@code inferenceText} to generate the request to the inference service
+ * and then iterates over the results to update the scores in-place.
+ * The call to the inference service is done in a non-blocking async manner, through the use of a {@code Client}.
+ * Each implementation of this class needs to define the request generation logic, the action type, and how to actually read the scores
+ * from the service's response.
+ */
 public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
     extends RerankingRankFeaturePhaseRankCoordinatorContext {
 
@@ -45,10 +54,22 @@ public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request ex
         this.inferenceText = inferenceText;
     }
 
+    /**
+     * This generates the appropriate {@code Request} to be passed to the {@code Client} for making a proper call
+     * to the specified inference service.
+     */
     protected abstract Request generateRequest(List<String> docFeatures);
 
+    /**
+     * The {@code ActionType} that is used to make the call to the inference service.
+     */
     protected abstract ActionType<Response> actionType();
 
+    /**
+     * This method is responsible for extracting the scores from the response of the inference service.
+     * This should return a {@code float[]} whose length should be equal to the number of documents in the {@code featureDocs},
+     * and {@code scores[i]} should be the score computed for document at position {@code i} in {@code featureDocs}.
+     */
     protected abstract float[] extractScoresFromResponse(Response response);
 
     @Override
