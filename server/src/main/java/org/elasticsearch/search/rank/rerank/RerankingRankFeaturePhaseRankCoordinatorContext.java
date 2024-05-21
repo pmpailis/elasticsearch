@@ -18,7 +18,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -36,7 +35,7 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      * This method is responsible for computing the updated scores for a list of features (i.e. document-based data).
      * Once done, the `onFinish` should be called to continue execution to the next phase.
      */
-    protected abstract void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish);
+    protected abstract void computeScores(RankFeatureDoc[] featureDocs, Runnable onFinish);
 
     /**
      * This method is responsible for ranking the global results based on the provided rank feature results from each shard.
@@ -54,16 +53,10 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
         // extract feature data from each shard rank-feature phase result
         RankFeatureDoc[] featureDocs = extractFeatureDocs(rankSearchResults);
 
-        // once we have an update score, provide a function to store that score based on the index of the feature doc
-        final BiConsumer<Integer, Float> scoreConsumer = (index, score) -> {
-            assert index >= 0 && index < featureDocs.length;
-            featureDocs[index].score = score;
-        };
-
         // compute the scores for the feature docs based on the extracted data, and once done
         // generate the final `topResults` paginated results, and pass them to fetch phase through the
         // `onFinish` consumer.
-        computeScores(featureDocs, scoreConsumer, () -> {
+        computeScores(featureDocs, () -> {
             Arrays.sort(featureDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
             RankFeatureDoc[] topResults = new RankFeatureDoc[Math.max(0, Math.min(size, featureDocs.length - from))];
             for (int rank = 0; rank < topResults.length; ++rank) {

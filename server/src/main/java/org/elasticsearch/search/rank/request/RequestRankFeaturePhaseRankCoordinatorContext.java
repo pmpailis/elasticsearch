@@ -20,7 +20,6 @@ import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordin
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.function.BiConsumer;
 
 /**
  * A global reranker that computes the updated scores for the top-K results from all shards, through an inference service.
@@ -73,20 +72,16 @@ public abstract class RequestRankFeaturePhaseRankCoordinatorContext<Request exte
     protected abstract float[] extractScoresFromResponse(Response response);
 
     @Override
-    protected void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
+    protected void computeScores(RankFeatureDoc[] featureDocs, Runnable onFinish) {
         final ActionListener<Response> actionListener = ActionListener.runAfter(new ActionListener<>() {
             @Override
             public void onResponse(Response response) {
-                try {
-                    if (response != null) {
-                        float[] scores = extractScoresFromResponse(response);
-                        for (int i = 0; i < scores.length; i++) {
-                            scoreConsumer.accept(i, scores[i]);
-                        }
-                    }
-                } finally {
-                    if (response != null) {
-                        response.decRef();
+                // closing the response is already handled by the caller for TransportSearchAction
+                if (response != null) {
+                    float[] scores = extractScoresFromResponse(response);
+                    assert scores.length == featureDocs.length;
+                    for (int index = 0; index < scores.length; index++) {
+                        featureDocs[index].score = scores[index];
                     }
                 }
             }
