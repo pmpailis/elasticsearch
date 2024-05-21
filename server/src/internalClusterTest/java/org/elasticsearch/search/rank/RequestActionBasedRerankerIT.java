@@ -114,10 +114,6 @@ public class RequestActionBasedRerankerIT extends ESIntegTestCase {
 
     }
 
-    public void testEnsureNonBlockingRerankingRequest() throws Exception {
-
-    }
-
     public void testUnknownExternalService() throws Exception {
 
     }
