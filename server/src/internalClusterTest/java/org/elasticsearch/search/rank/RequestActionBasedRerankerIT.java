@@ -32,10 +32,10 @@ import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
+import org.elasticsearch.search.rank.request.RequestRankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankShardContext;
-import org.elasticsearch.search.rank.semantic.InferenceRankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.transport.TransportService;
@@ -61,16 +61,16 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
 @ESIntegTestCase.ClusterScope(minNumDataNodes = 3)
-public class InferenceBasedRerankerIT extends ESIntegTestCase {
+public class RequestActionBasedRerankerIT extends ESIntegTestCase {
 
     private static final TestRerankingActionType TEST_RERANKING_ACTION_TYPE = new TestRerankingActionType("internal:test_reranking_action");
 
-    public void testInferenceBasedRanker() throws Exception {
+    public void testRequestBasedReranker() throws Exception {
         final String indexName = "test_index";
         final String rankFeatureField = "rankFeatureField";
         final String searchField = "searchField";
         final String inferenceId = "inferenceId";
-        final String inferenceText = "inferenceText";
+        final String inferenceText = "some query text";
         final int rankWindowSize = 10;
 
         createIndex(indexName);
@@ -108,6 +108,22 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
                 }
             }
         );
+    }
+
+    public void testExternalServiceThrowsAnException() throws Exception {
+
+    }
+
+    public void testEnsureNonBlockingRerankingRequest() throws Exception {
+
+    }
+
+    public void testUnknownExternalService() throws Exception {
+
+    }
+
+    public void testPaginatingResults() throws Exception {
+
     }
 
     public static class RerankerServicePlugin extends Plugin implements ActionPlugin {
@@ -155,12 +171,22 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
 
     public static class TestRerankingActionRequest extends ActionRequest {
 
-        public TestRerankingActionRequest() {
+        private final List<String> docFeatures;
+
+        public TestRerankingActionRequest(List<String> docFeatures) {
             super();
+            this.docFeatures = docFeatures;
         }
 
         public TestRerankingActionRequest(StreamInput in) throws IOException {
             super(in);
+            this.docFeatures = in.readCollectionAsList(StreamInput::readString);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            out.writeCollection(docFeatures, StreamOutput::writeString);
         }
 
         @Override
@@ -171,9 +197,21 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
 
     public static class TestRerankingActionResponse extends ActionResponse {
 
+        private final List<Float> scores;
+
+        public TestRerankingActionResponse(List<Float> scores) {
+            super();
+            this.scores = scores;
+        }
+
+        public TestRerankingActionResponse(StreamInput in) throws IOException {
+            super(in);
+            this.scores = in.readCollectionAsList(StreamInput::readFloat);
+        }
+
         @Override
         public void writeTo(StreamOutput out) throws IOException {
-            // no-op
+            out.writeCollection(scores, StreamOutput::writeFloat);
         }
     }
 
@@ -193,11 +231,13 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
 
         @Override
         protected void doExecute(Task task, TestRerankingActionRequest request, ActionListener<TestRerankingActionResponse> listener) {
-            listener.onResponse(new TestRerankingActionResponse());
+            List<String> featureData = request.docFeatures;
+            List<Float> scores = featureData.stream().map(Float::parseFloat).toList();
+            listener.onResponse(new TestRerankingActionResponse(scores));
         }
     }
 
-    public static class TestRerankingRankFeaturePhaseRankCoordinatorContext extends InferenceRankFeaturePhaseRankCoordinatorContext<
+    public static class TestRerankingRankFeaturePhaseRankCoordinatorContext extends RequestRankFeaturePhaseRankCoordinatorContext<
         TestRerankingActionRequest,
         TestRerankingActionResponse> {
 
@@ -214,7 +254,7 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
 
         @Override
         protected TestRerankingActionRequest generateRequest(List<String> docFeatures) {
-            return new TestRerankingActionRequest();
+            return new TestRerankingActionRequest(docFeatures);
         }
 
         @Override
@@ -224,7 +264,11 @@ public class InferenceBasedRerankerIT extends ESIntegTestCase {
 
         @Override
         protected float[] extractScoresFromResponse(TestRerankingActionResponse response) {
-            return new float[0];
+            float[] scores = new float[response.scores.size()];
+            for (int i = 0; i < response.scores.size(); i++) {
+                scores[i] = response.scores.get(i);
+            }
+            return scores;
         }
     }
 

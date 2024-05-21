@@ -6,7 +6,7 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank.semantic;
+package org.elasticsearch.search.rank.request;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -31,16 +31,16 @@ import java.util.function.BiConsumer;
  * Each implementation of this class needs to define the request generation logic, the action type, and how to actually read the scores
  * from the service's response.
  */
-public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
-    extends RerankingRankFeaturePhaseRankCoordinatorContext {
+public abstract class RequestRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse> extends
+    RerankingRankFeaturePhaseRankCoordinatorContext {
 
-    private static final Logger logger = LogManager.getLogger(InferenceRankFeaturePhaseRankCoordinatorContext.class);
+    private static final Logger logger = LogManager.getLogger(RequestRankFeaturePhaseRankCoordinatorContext.class);
     protected final String inferenceId;
     protected final String inferenceText;
 
     protected final Client client;
 
-    public InferenceRankFeaturePhaseRankCoordinatorContext(
+    public RequestRankFeaturePhaseRankCoordinatorContext(
         int size,
         int from,
         int windowSize,
