@@ -1,0 +1,108 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
+ */
+
+package org.elasticsearch.search.rank.semantic;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.ActionRequest;
+import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.ActionType;
+import org.elasticsearch.client.internal.Client;
+import org.elasticsearch.search.rank.feature.RankFeatureDoc;
+import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordinatorContext;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.function.BiConsumer;
+
+/**
+ * A global reranker that computes the updated scores for the top-K results from all shards, through an inference service.
+ * This coordinator context, that's executed at the end of the {@link org.elasticsearch.action.search.RankFeaturePhase},
+ * needs an {@code inferenceId} and {@code inferenceText} to generate the request to the inference service
+ * and then iterates over the results to update the scores in-place.
+ * The call to the inference service is done in a non-blocking async manner, through the use of a {@code Client}.
+ * Each implementation of this class needs to define the request generation logic, the action type, and how to actually read the scores
+ * from the service's response.
+ */
+public abstract class InferenceRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
+    extends RerankingRankFeaturePhaseRankCoordinatorContext {
+
+    private static final Logger logger = LogManager.getLogger(InferenceRankFeaturePhaseRankCoordinatorContext.class);
+    protected final String inferenceId;
+    protected final String inferenceText;
+
+    protected final Client client;
+
+    public InferenceRankFeaturePhaseRankCoordinatorContext(
+        int size,
+        int from,
+        int windowSize,
+        Client client,
+        String inferenceId,
+        String inferenceText
+    ) {
+        super(size, from, windowSize);
+        this.client = client;
+        this.inferenceId = inferenceId;
+        this.inferenceText = inferenceText;
+    }
+
+    /**
+     * This generates the appropriate {@code Request} to be passed to the {@code Client} for making a proper call
+     * to the specified inference service.
+     */
+    protected abstract Request generateRequest(List<String> docFeatures);
+
+    /**
+     * The {@code ActionType} that is used to make the call to the inference service.
+     */
+    protected abstract ActionType<Response> actionType();
+
+    /**
+     * This method is responsible for extracting the scores from the response of the inference service.
+     * This should return a {@code float[]} whose length should be equal to the number of documents in the {@code featureDocs},
+     * and {@code scores[i]} should be the score computed for document at position {@code i} in {@code featureDocs}.
+     */
+    protected abstract float[] extractScoresFromResponse(Response response);
+
+    @Override
+    protected void computeScores(RankFeatureDoc[] featureDocs, BiConsumer<Integer, Float> scoreConsumer, Runnable onFinish) {
+        final ActionListener<Response> actionListener = ActionListener.runAfter(new ActionListener<>() {
+            @Override
+            public void onResponse(Response response) {
+                try {
+                    if (response != null) {
+                        float[] scores = extractScoresFromResponse(response);
+                        for (int i = 0; i < scores.length; i++) {
+                            scoreConsumer.accept(i, scores[i]);
+                        }
+                    }
+                } finally {
+                    if (response != null) {
+                        response.decRef();
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                assert false : e;
+                logger.warn(
+                    () -> "failed to generate response for inferenceId: [" + inferenceId + "] and inferenceText: [" + inferenceText + "].",
+                    e
+                );
+            }
+        }, onFinish);
+        List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData).toList();
+        Request request = generateRequest(featureData);
+        ActionType<Response> action = actionType();
+        client.execute(action, request, actionListener);
+    }
+}

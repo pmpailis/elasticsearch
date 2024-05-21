@@ -11,6 +11,7 @@ package org.elasticsearch.search.rank;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.TransportVersion;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.document.DocumentField;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.index.Index;
@@ -159,7 +160,7 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
 
             // no work to be done on the coordinator node for the rank feature phase
             @Override
-            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
                 return null;
             }
 
@@ -341,6 +342,7 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
         try (SearchContext searchContext = spy(getSearchContext())) {
             searchContext.addFetchResult();
             SearchHit[] hits = new SearchHit[0];
+
             searchHits = SearchHits.unpooled(hits, new TotalHits(0, TotalHits.Relation.EQUAL_TO), 1.0f);
             searchContext.fetchResult().shardResult(searchHits, null);
             when(searchContext.isCancelled()).thenReturn(false);
