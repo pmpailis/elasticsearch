@@ -215,9 +215,9 @@ PUT example-index
                 "dims": 1,
                 "index": true,
                 "similarity": "l2_norm",
-                "index_options": {
-                    "type": "hnsw"
-                }
+                 "index_options": {
+                     "type": "hnsw"
+                 }
             },
             "integer" : {
                 "type" : "integer"
@@ -309,7 +309,8 @@ GET example-index/_search
 // TEST[continued]
 
 And we receive the response with ranked `hits` and the terms
-aggregation result. We have both the ranker's `score` and the  `_rank` option to show our top-ranked documents.
+aggregation result. We have both the ranker's `score`
+and the `_rank` option to show our top-ranked documents.
 
 [source,console-response]
 ----
