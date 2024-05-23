@@ -6,8 +6,14 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank;
+package org.elasticsearch.search.rank.rerank;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Query;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.action.ActionListener;
@@ -22,105 +28,142 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
+import org.elasticsearch.common.util.concurrent.ThreadContext;
+import org.elasticsearch.mocksocket.MockHttpServer;
 import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.SearchPlugin;
-import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
 import org.elasticsearch.search.rank.request.RequestRankFeaturePhaseRankCoordinatorContext;
-import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseRankCoordinatorContext;
-import org.elasticsearch.search.rank.rerank.RerankingQueryPhaseRankShardContext;
-import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankShardContext;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.test.ESIntegTestCase;
+import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.Before;
+import org.junit.BeforeClass;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
-import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
-import static org.elasticsearch.index.query.QueryBuilders.constantScoreQuery;
-import static org.elasticsearch.index.query.QueryBuilders.matchQuery;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailuresAndResponse;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.hasId;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.hasRank;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
 @ESIntegTestCase.ClusterScope(minNumDataNodes = 3)
-public class RequestActionBasedRerankerIT extends ESIntegTestCase {
+public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
+
+    private static final Logger log = LogManager.getLogger(RemotelyExecutedServiceRerankerIT.class);
 
     private static final TestRerankingActionType TEST_RERANKING_ACTION_TYPE = new TestRerankingActionType("internal:test_reranking_action");
 
-    public void testRequestBasedReranker() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final String inferenceId = "inferenceId";
-        final String inferenceText = "some query text";
-        final int rankWindowSize = 10;
+    private static HttpServer httpServer;
+    private static ExecutorService executorService;
+    protected Map<String, HttpHandler> handlers;
 
-        createIndex(indexName);
-        indexRandom(
+    @BeforeClass
+    public static void startHttpServer() throws Exception {
+        httpServer = MockHttpServer.createHttp(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        ThreadFactory threadFactory = EsExecutors.daemonThreadFactory("[" + RemotelyExecutedServiceRerankerIT.class.getName() + "]");
+        // the EncryptedRepository can require more than one connection open at one time
+        executorService = EsExecutors.newScaling(
+            RemotelyExecutedServiceRerankerIT.class.getName(),
+            0,
+            2,
+            60,
+            TimeUnit.SECONDS,
             true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
+            threadFactory,
+            new ThreadContext(Settings.EMPTY)
         );
-
-        assertNoFailuresAndResponse(
-            prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new RerankerBasedRankBuilder(rankWindowSize, rankFeatureField, inferenceId, inferenceText))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(10),
-            response -> {
-                assertHitCount(response, 5L);
-                int rank = 1;
-                for (SearchHit searchHit : response.getHits().getHits()) {
-                    assertThat(searchHit, hasId(String.valueOf(5 - (rank - 1))));
-                    assertEquals(searchHit.getScore(), (0.5f - ((rank - 1) * 0.1f)), 1e-5f);
-                    assertThat(searchHit, hasRank(rank));
-                    assertNotNull(searchHit.getFields().get(searchField));
-                    rank++;
+        httpServer.setExecutor(r -> {
+            executorService.execute(() -> {
+                try {
+                    r.run();
+                } catch (Throwable t) {
+                    log.error("Error in execution on mock http server IO thread", t);
+                    throw t;
                 }
+            });
+        });
+        httpServer.start();
+    }
+
+    @Before
+    public void setUpHttpServer() {
+        handlers = new HashMap<>(createHttpHandlers());
+        handlers.forEach(httpServer::createContext);
+    }
+
+    @AfterClass
+    public static void stopHttpServer() {
+        httpServer.stop(0);
+        ThreadPool.terminate(executorService, 10, TimeUnit.SECONDS);
+        httpServer = null;
+    }
+
+    @After
+    public void tearDownHttpServer() {
+        if (handlers != null) {
+            for (Map.Entry<String, HttpHandler> handler : handlers.entrySet()) {
+                httpServer.removeContext(handler.getKey());
             }
+        }
+    }
+
+    protected Map<String, HttpHandler> createHttpHandlers() {
+        return Map.of(
+            "/rerank", new MockedInferenceHandler(),
+            "/rerank_throwing", new ThrowingInferenceHandler()
         );
     }
 
-    public void testExternalServiceThrowsAnException() throws Exception {
+    static class MockedInferenceHandler implements HttpHandler {
 
+        @Override
+        public void handle(HttpExchange exchange) {
+            try {
+                final String request = exchange.getRequestMethod();
+            } finally {
+                exchange.close();
+            }
+        }
     }
 
-    public void testUnknownExternalService() throws Exception {
+    static class ThrowingInferenceHandler implements HttpHandler {
 
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                throw new UnsupportedOperationException("simulated failure");
+            } finally {
+                exchange.close();
+            }
+        }
     }
 
-    public void testPaginatingResults() throws Exception {
-
-    }
 
     public static class RerankerServicePlugin extends Plugin implements ActionPlugin {
 

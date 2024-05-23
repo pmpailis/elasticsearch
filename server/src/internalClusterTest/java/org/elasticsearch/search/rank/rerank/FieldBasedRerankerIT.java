@@ -6,13 +6,11 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank;
+package org.elasticsearch.search.rank.rerank;
 
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.action.search.SearchPhaseController;
 import org.elasticsearch.action.search.SearchPhaseExecutionException;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
@@ -24,7 +22,8 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.SearchPlugin;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
-import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.rank.RankBuilder;
+import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
@@ -44,9 +43,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -354,76 +351,17 @@ public class FieldBasedRerankerIT extends ESIntegTestCase {
 
         @Override
         public QueryPhaseRankShardContext buildQueryPhaseShardContext(List<Query> queries, int from) {
-            return new QueryPhaseRankShardContext(queries, rankWindowSize()) {
-                @Override
-                public RankShardResult combineQueryPhaseResults(List<TopDocs> rankResults) {
-                    Map<Integer, RankFeatureDoc> rankDocs = new HashMap<>();
-                    rankResults.forEach(topDocs -> {
-                        for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
-                            rankDocs.compute(scoreDoc.doc, (key, value) -> {
-                                if (value == null) {
-                                    return new RankFeatureDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex);
-                                } else {
-                                    value.score = Math.max(scoreDoc.score, rankDocs.get(scoreDoc.doc).score);
-                                    return value;
-                                }
-                            });
-                        }
-                    });
-                    RankFeatureDoc[] sortedResults = rankDocs.values().toArray(RankFeatureDoc[]::new);
-                    Arrays.sort(sortedResults, (o1, o2) -> Float.compare(o2.score, o1.score));
-                    return new RankFeatureShardResult(sortedResults);
-                }
-            };
+            return new RerankingQueryPhaseRankShardContext(queries, rankWindowSize());
         }
 
         @Override
         public QueryPhaseRankCoordinatorContext buildQueryPhaseCoordinatorContext(int size, int from) {
-            return new QueryPhaseRankCoordinatorContext(rankWindowSize()) {
-                @Override
-                public ScoreDoc[] rankQueryPhaseResults(
-                    List<QuerySearchResult> querySearchResults,
-                    SearchPhaseController.TopDocsStats topDocStats
-                ) {
-                    List<RankFeatureDoc> rankDocs = new ArrayList<>();
-                    for (int i = 0; i < querySearchResults.size(); i++) {
-                        QuerySearchResult querySearchResult = querySearchResults.get(i);
-                        RankFeatureShardResult shardResult = (RankFeatureShardResult) querySearchResult.getRankShardResult();
-                        for (RankFeatureDoc frd : shardResult.rankFeatureDocs) {
-                            frd.shardIndex = i;
-                            rankDocs.add(frd);
-                        }
-                    }
-                    // no support for sort field atm
-                    // should pass needed info to make use of org.elasticsearch.action.search.SearchPhaseController.sortDocs?
-                    rankDocs.sort(Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
-                    RankFeatureDoc[] topResults = rankDocs.stream().limit(rankWindowSize).toArray(RankFeatureDoc[]::new);
-
-                    assert topDocStats.fetchHits == 0;
-                    topDocStats.fetchHits = topResults.length;
-
-                    return topResults;
-                }
-            };
+            return new RerankingQueryPhaseRankCoordinatorContext(rankWindowSize());
         }
 
         @Override
         public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-            return new RankFeaturePhaseRankShardContext(field) {
-                @Override
-                public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
-                    try {
-                        RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
-                        for (int i = 0; i < hits.getHits().length; i++) {
-                            rankFeatureDocs[i] = new RankFeatureDoc(hits.getHits()[i].docId(), hits.getHits()[i].getScore(), shardId);
-                            rankFeatureDocs[i].featureData(hits.getHits()[i].field(field).getValue().toString());
-                        }
-                        return new RankFeatureShardResult(rankFeatureDocs);
-                    } catch (Exception ex) {
-                        throw ex;
-                    }
-                }
-            };
+            return new RerankingRankFeaturePhaseRankShardContext(field);
         }
 
         @Override
