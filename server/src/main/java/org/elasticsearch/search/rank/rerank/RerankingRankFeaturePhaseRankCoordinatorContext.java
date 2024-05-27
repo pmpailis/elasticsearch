@@ -9,6 +9,7 @@
 package org.elasticsearch.search.rank.rerank;
 
 import org.apache.lucene.search.ScoreDoc;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
@@ -18,7 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.Consumer;
+import java.util.Objects;
 
 /**
  * Abstract class that provides the logic for reranking the top `rank_window_size` results from all shards,
@@ -33,9 +34,9 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
 
     /**
      * This method is responsible for computing the updated scores for a list of features (i.e. document-based data).
-     * Once done, the `onFinish` should be called to continue execution to the next phase.
+     * We pass along an ActionListener that should be called with the updated scores computed, to continue execution to the next phase
      */
-    protected abstract void computeScores(RankFeatureDoc[] featureDocs, Runnable onFinish);
+    protected abstract void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener);
 
     /**
      * This method is responsible for ranking the global results based on the provided rank feature results from each shard.
@@ -46,17 +47,19 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
      * with the final array of {@link ScoreDoc} results.
      *
      * @param rankSearchResults a list of rank feature results from each shard
-     * @param onFinish          a consumer to be called once the global ranking is complete
+     * @param rankListener      a rankListener to handle the global ranking result
      */
     @Override
-    public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
+    public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, ActionListener<RankFeatureDoc[]> rankListener) {
         // extract feature data from each shard rank-feature phase result
         RankFeatureDoc[] featureDocs = extractFeatureDocs(rankSearchResults);
 
         // compute the scores for the feature docs based on the extracted data, and once done
-        // generate the final `topResults` paginated results, and pass them to fetch phase through the
-        // `onFinish` consumer.
-        computeScores(featureDocs, () -> {
+        // generate the final `topResults` paginated results, and pass them to fetch phase through the `rankListener`
+        computeScores(featureDocs, rankListener.delegateFailureAndWrap((l, r) -> {
+            for (int i = 0; i < featureDocs.length; i++) {
+                featureDocs[i].score = r[i];
+            }
             Arrays.sort(featureDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
             RankFeatureDoc[] topResults = new RankFeatureDoc[Math.max(0, Math.min(size, featureDocs.length - from))];
             for (int rank = 0; rank < topResults.length; ++rank) {
@@ -64,15 +67,15 @@ public abstract class RerankingRankFeaturePhaseRankCoordinatorContext extends Ra
                 topResults[rank].rank = from + rank + 1;
             }
             // and call the parent onFinish consumer with the final `ScoreDoc[]` results.
-            onFinish.accept(topResults);
-        });
+            l.onResponse(topResults);
+        }));
     }
 
     private RankFeatureDoc[] extractFeatureDocs(List<RankFeatureResult> rankSearchResults) {
         List<RankFeatureDoc> docFeatures = new ArrayList<>();
         for (RankFeatureResult rankFeatureResult : rankSearchResults) {
             RankFeatureShardResult shardResult = rankFeatureResult.shardResult();
-            docFeatures.addAll(Arrays.stream(shardResult.rankFeatureDocs).toList());
+            docFeatures.addAll(Arrays.stream(shardResult.rankFeatureDocs).filter(x -> Objects.nonNull(x.featureData)).toList());
         }
         return docFeatures.toArray(new RankFeatureDoc[0]);
     }

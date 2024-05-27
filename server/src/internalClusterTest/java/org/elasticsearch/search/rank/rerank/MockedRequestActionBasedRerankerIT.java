@@ -8,12 +8,6 @@
 
 package org.elasticsearch.search.rank.rerank;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Query;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.action.ActionListener;
@@ -28,13 +22,11 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
-import org.elasticsearch.common.util.concurrent.ThreadContext;
-import org.elasticsearch.mocksocket.MockHttpServer;
 import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.SearchPlugin;
+import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
@@ -42,128 +34,48 @@ import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
-import org.elasticsearch.search.rank.request.RequestRankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.tasks.Task;
-import org.elasticsearch.test.ESIntegTestCase;
-import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
 
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
-@ESIntegTestCase.ClusterScope(minNumDataNodes = 3)
-public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
-
-    private static final Logger log = LogManager.getLogger(RemotelyExecutedServiceRerankerIT.class);
+public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
 
     private static final TestRerankingActionType TEST_RERANKING_ACTION_TYPE = new TestRerankingActionType("internal:test_reranking_action");
 
-    private static HttpServer httpServer;
-    private static ExecutorService executorService;
-    protected Map<String, HttpHandler> handlers;
+    private static final String inferenceId = "inference-id";
+    private static final String inferenceText = "inference-text";
 
-    @BeforeClass
-    public static void startHttpServer() throws Exception {
-        httpServer = MockHttpServer.createHttp(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        ThreadFactory threadFactory = EsExecutors.daemonThreadFactory("[" + RemotelyExecutedServiceRerankerIT.class.getName() + "]");
-        // the EncryptedRepository can require more than one connection open at one time
-        executorService = EsExecutors.newScaling(
-            RemotelyExecutedServiceRerankerIT.class.getName(),
-            0,
-            2,
-            60,
-            TimeUnit.SECONDS,
-            true,
-            threadFactory,
-            new ThreadContext(Settings.EMPTY)
-        );
-        httpServer.setExecutor(r -> {
-            executorService.execute(() -> {
-                try {
-                    r.run();
-                } catch (Throwable t) {
-                    log.error("Error in execution on mock http server IO thread", t);
-                    throw t;
-                }
-            });
-        });
-        httpServer.start();
+    @Override
+    protected RankBuilder getRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new MockRequestActionBasedRankBuilder(rankWindowSize, rankFeatureField, inferenceId, inferenceText);
     }
 
-    @Before
-    public void setUpHttpServer() {
-        handlers = new HashMap<>(createHttpHandlers());
-        handlers.forEach(httpServer::createContext);
+    @Override
+    protected RankBuilder getShardThrowingRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new ShardThrowingMockRequestActionBasedRankBuilder(rankWindowSize, rankFeatureField, inferenceId, inferenceText);
     }
 
-    @AfterClass
-    public static void stopHttpServer() {
-        httpServer.stop(0);
-        ThreadPool.terminate(executorService, 10, TimeUnit.SECONDS);
-        httpServer = null;
+    @Override
+    protected RankBuilder getCoordinatorThrowingRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new CoordinatorThrowingMockRequestActionBasedRankBuilder(rankWindowSize, rankFeatureField, inferenceId, inferenceText);
     }
 
-    @After
-    public void tearDownHttpServer() {
-        if (handlers != null) {
-            for (Map.Entry<String, HttpHandler> handler : handlers.entrySet()) {
-                httpServer.removeContext(handler.getKey());
-            }
-        }
+    @Override
+    protected Collection<Class<? extends Plugin>> pluginsNeeded() {
+        return List.of(RerankerServicePlugin.class, RequestActionBasedRerankerPlugin.class);
     }
-
-    protected Map<String, HttpHandler> createHttpHandlers() {
-        return Map.of(
-            "/rerank", new MockedInferenceHandler(),
-            "/rerank_throwing", new ThrowingInferenceHandler()
-        );
-    }
-
-    static class MockedInferenceHandler implements HttpHandler {
-
-        @Override
-        public void handle(HttpExchange exchange) {
-            try {
-                final String request = exchange.getRequestMethod();
-            } finally {
-                exchange.close();
-            }
-        }
-    }
-
-    static class ThrowingInferenceHandler implements HttpHandler {
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            try {
-                throw new UnsupportedOperationException("simulated failure");
-            } finally {
-                exchange.close();
-            }
-        }
-    }
-
 
     public static class RerankerServicePlugin extends Plugin implements ActionPlugin {
 
@@ -173,14 +85,31 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
         }
     }
 
-    public static class InferenceBasedRerankerPlugin extends Plugin implements SearchPlugin {
+    public static class RequestActionBasedRerankerPlugin extends Plugin implements SearchPlugin {
 
-        private static final String INFERENCE_BASED_RANK_BUILDER_NAME = "inference-based-rank";
+        private static final String REQUEST_ACTION_BASED_RANK_BUILDER_NAME = "request-action-based-rank";
+        private static final String SHARD_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME = "shard-throwing-request-action-based-rank";
+        private static final String COORDINATOR_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME =
+            "coordinator-throwing-request-action-based-rank";
 
         @Override
         public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
             return List.of(
-                new NamedWriteableRegistry.Entry(RankBuilder.class, INFERENCE_BASED_RANK_BUILDER_NAME, RerankerBasedRankBuilder::new),
+                new NamedWriteableRegistry.Entry(
+                    RankBuilder.class,
+                    REQUEST_ACTION_BASED_RANK_BUILDER_NAME,
+                    MockRequestActionBasedRankBuilder::new
+                ),
+                new NamedWriteableRegistry.Entry(
+                    RankBuilder.class,
+                    SHARD_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME,
+                    ShardThrowingMockRequestActionBasedRankBuilder::new
+                ),
+                new NamedWriteableRegistry.Entry(
+                    RankBuilder.class,
+                    COORDINATOR_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME,
+                    CoordinatorThrowingMockRequestActionBasedRankBuilder::new
+                ),
                 new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-feature-shard", RankFeatureShardResult::new)
             );
         }
@@ -190,16 +119,21 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
             return List.of(
                 new NamedXContentRegistry.Entry(
                     RankBuilder.class,
-                    new ParseField(INFERENCE_BASED_RANK_BUILDER_NAME),
-                    RerankerBasedRankBuilder::fromXContent
+                    new ParseField(REQUEST_ACTION_BASED_RANK_BUILDER_NAME),
+                    MockRequestActionBasedRankBuilder::fromXContent
+                ),
+                new NamedXContentRegistry.Entry(
+                    RankBuilder.class,
+                    new ParseField(SHARD_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME),
+                    ShardThrowingMockRequestActionBasedRankBuilder::fromXContent
+                ),
+                new NamedXContentRegistry.Entry(
+                    RankBuilder.class,
+                    new ParseField(COORDINATOR_THROWING_REQUEST_ACTION_BASED_RANK_BUILDER_NAME),
+                    CoordinatorThrowingMockRequestActionBasedRankBuilder::fromXContent
                 )
             );
         }
-    }
-
-    @Override
-    protected Collection<Class<? extends Plugin>> nodePlugins() {
-        return List.of(RerankerServicePlugin.class, InferenceBasedRerankerPlugin.class);
     }
 
     public static class TestRerankingActionType extends ActionType<TestRerankingActionResponse> {
@@ -231,6 +165,26 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
         @Override
         public ActionRequestValidationException validate() {
             return null;
+        }
+
+        public boolean shouldFail() {
+            return false;
+        }
+    }
+
+    public static class TestThrowingRerankingActionRequest extends TestRerankingActionRequest {
+
+        public TestThrowingRerankingActionRequest(List<String> docFeatures) {
+            super(docFeatures);
+        }
+
+        public TestThrowingRerankingActionRequest(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public boolean shouldFail() {
+            return true;
         }
     }
 
@@ -270,13 +224,16 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
 
         @Override
         protected void doExecute(Task task, TestRerankingActionRequest request, ActionListener<TestRerankingActionResponse> listener) {
+            if (request.shouldFail()) {
+                throw new UnsupportedOperationException("simulated failure");
+            }
             List<String> featureData = request.docFeatures;
             List<Float> scores = featureData.stream().map(Float::parseFloat).toList();
             listener.onResponse(new TestRerankingActionResponse(scores));
         }
     }
 
-    public static class TestRerankingRankFeaturePhaseRankCoordinatorContext extends RequestRankFeaturePhaseRankCoordinatorContext<
+    public static class TestRerankingRankFeaturePhaseRankCoordinatorContext extends ActionRequestRankFeaturePhaseRankCoordinatorContext<
         TestRerankingActionRequest,
         TestRerankingActionResponse> {
 
@@ -311,13 +268,13 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
         }
     }
 
-    public static class RerankerBasedRankBuilder extends RankBuilder {
+    public static class MockRequestActionBasedRankBuilder extends RankBuilder {
 
         public static final ParseField FIELD_FIELD = new ParseField("field");
         public static final ParseField INFERENCE_ID = new ParseField("inference_id");
         public static final ParseField INFERENCE_TEXT = new ParseField("inference_text");
-        static final ConstructingObjectParser<RerankerBasedRankBuilder, Void> PARSER = new ConstructingObjectParser<>(
-            "field-based-rank",
+        static final ConstructingObjectParser<MockRequestActionBasedRankBuilder, Void> PARSER = new ConstructingObjectParser<>(
+            "request-action-based-rank",
             args -> {
                 int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
                 String field = (String) args[1];
@@ -326,7 +283,7 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
                 }
                 final String inferenceId = (String) args[2];
                 final String inferenceText = (String) args[3];
-                return new RerankerBasedRankBuilder(rankWindowSize, field, inferenceId, inferenceText);
+                return new MockRequestActionBasedRankBuilder(rankWindowSize, field, inferenceId, inferenceText);
             }
         );
 
@@ -341,11 +298,11 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
         protected final String inferenceId;
         protected final String inferenceText;
 
-        public static RerankerBasedRankBuilder fromXContent(XContentParser parser) throws IOException {
+        public static MockRequestActionBasedRankBuilder fromXContent(XContentParser parser) throws IOException {
             return PARSER.parse(parser, null);
         }
 
-        public RerankerBasedRankBuilder(
+        public MockRequestActionBasedRankBuilder(
             final int rankWindowSize,
             final String field,
             final String inferenceId,
@@ -357,7 +314,7 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
             this.inferenceText = inferenceText;
         }
 
-        public RerankerBasedRankBuilder(StreamInput in) throws IOException {
+        public MockRequestActionBasedRankBuilder(StreamInput in) throws IOException {
             super(in);
             this.field = in.readString();
             this.inferenceId = in.readString();
@@ -412,7 +369,8 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
 
         @Override
         protected boolean doEquals(RankBuilder other) {
-            return other instanceof RerankerBasedRankBuilder && Objects.equals(field, ((RerankerBasedRankBuilder) other).field);
+            return other instanceof MockRequestActionBasedRankBuilder
+                && Objects.equals(field, ((MockRequestActionBasedRankBuilder) other).field);
         }
 
         @Override
@@ -422,12 +380,135 @@ public class RemotelyExecutedServiceRerankerIT extends ESIntegTestCase {
 
         @Override
         public String getWriteableName() {
-            return "inference-based-rank";
+            return "request-action-based-rank";
         }
 
         @Override
         public TransportVersion getMinimalSupportedVersion() {
             return TransportVersion.current();
+        }
+    }
+
+    public static class ShardThrowingMockRequestActionBasedRankBuilder extends MockRequestActionBasedRankBuilder {
+
+        public static final ParseField FIELD_FIELD = new ParseField("field");
+        public static final ParseField INFERENCE_ID = new ParseField("inference_id");
+        public static final ParseField INFERENCE_TEXT = new ParseField("inference_text");
+        static final ConstructingObjectParser<ShardThrowingMockRequestActionBasedRankBuilder, Void> PARSER = new ConstructingObjectParser<>(
+            "shard-throwing-request-action-based-rank",
+            args -> {
+                int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
+                String field = (String) args[1];
+                if (field == null || field.isEmpty()) {
+                    throw new IllegalArgumentException("Field cannot be null or empty");
+                }
+                final String inferenceId = (String) args[2];
+                final String inferenceText = (String) args[3];
+                return new ShardThrowingMockRequestActionBasedRankBuilder(rankWindowSize, field, inferenceId, inferenceText);
+            }
+        );
+
+        static {
+            PARSER.declareInt(optionalConstructorArg(), RANK_WINDOW_SIZE_FIELD);
+            PARSER.declareString(constructorArg(), FIELD_FIELD);
+            PARSER.declareString(constructorArg(), INFERENCE_ID);
+            PARSER.declareString(constructorArg(), INFERENCE_TEXT);
+        }
+
+        public static ShardThrowingMockRequestActionBasedRankBuilder fromXContent(XContentParser parser) throws IOException {
+            return PARSER.parse(parser, null);
+        }
+
+        public ShardThrowingMockRequestActionBasedRankBuilder(
+            final int rankWindowSize,
+            final String field,
+            final String inferenceId,
+            final String inferenceText
+        ) {
+            super(rankWindowSize, field, inferenceId, inferenceText);
+        }
+
+        public ShardThrowingMockRequestActionBasedRankBuilder(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
+            return new RankFeaturePhaseRankShardContext(field) {
+                @Override
+                public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
+                    throw new IllegalArgumentException("This rank builder throws an exception");
+                }
+            };
+        }
+
+        @Override
+        public String getWriteableName() {
+            return "shard-throwing-request-action-based-rank";
+        }
+    }
+
+    public static class CoordinatorThrowingMockRequestActionBasedRankBuilder extends MockRequestActionBasedRankBuilder {
+
+        public static final ParseField FIELD_FIELD = new ParseField("field");
+        public static final ParseField INFERENCE_ID = new ParseField("inference_id");
+        public static final ParseField INFERENCE_TEXT = new ParseField("inference_text");
+        static final ConstructingObjectParser<CoordinatorThrowingMockRequestActionBasedRankBuilder, Void> PARSER =
+            new ConstructingObjectParser<>("coordinator-throwing-request-action-based-rank", args -> {
+                int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
+                String field = (String) args[1];
+                if (field == null || field.isEmpty()) {
+                    throw new IllegalArgumentException("Field cannot be null or empty");
+                }
+                final String inferenceId = (String) args[2];
+                final String inferenceText = (String) args[3];
+                return new CoordinatorThrowingMockRequestActionBasedRankBuilder(rankWindowSize, field, inferenceId, inferenceText);
+            });
+
+        static {
+            PARSER.declareInt(optionalConstructorArg(), RANK_WINDOW_SIZE_FIELD);
+            PARSER.declareString(constructorArg(), FIELD_FIELD);
+            PARSER.declareString(constructorArg(), INFERENCE_ID);
+            PARSER.declareString(constructorArg(), INFERENCE_TEXT);
+        }
+
+        public static CoordinatorThrowingMockRequestActionBasedRankBuilder fromXContent(XContentParser parser) throws IOException {
+            return PARSER.parse(parser, null);
+        }
+
+        public CoordinatorThrowingMockRequestActionBasedRankBuilder(
+            final int rankWindowSize,
+            final String field,
+            final String inferenceId,
+            final String inferenceText
+        ) {
+            super(rankWindowSize, field, inferenceId, inferenceText);
+        }
+
+        public CoordinatorThrowingMockRequestActionBasedRankBuilder(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+            return new TestRerankingRankFeaturePhaseRankCoordinatorContext(
+                size,
+                from,
+                rankWindowSize(),
+                client,
+                inferenceId,
+                inferenceText
+            ) {
+                @Override
+                protected TestRerankingActionRequest generateRequest(List<String> docFeatures) {
+                    return new TestThrowingRerankingActionRequest(docFeatures);
+                }
+            };
+        }
+
+        @Override
+        public String getWriteableName() {
+            return "coordinator-throwing-request-action-based-rank";
         }
     }
 }

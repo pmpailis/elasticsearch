@@ -9,18 +9,14 @@
 package org.elasticsearch.search.rank.rerank;
 
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.action.search.SearchPhaseExecutionException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.client.internal.Client;
-import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.SearchPlugin;
-import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankShardResult;
@@ -29,9 +25,7 @@ import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankShardContext;
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
-import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
-import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
 import org.elasticsearch.xcontent.ParseField;
@@ -39,263 +33,33 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Consumer;
 
-import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
-import static org.elasticsearch.index.query.QueryBuilders.constantScoreQuery;
-import static org.elasticsearch.index.query.QueryBuilders.matchQuery;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailuresAndResponse;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertResponse;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.hasId;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.hasRank;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
-@ESIntegTestCase.ClusterScope(minNumDataNodes = 3)
-public class FieldBasedRerankerIT extends ESIntegTestCase {
+public class FieldBasedRerankerIT extends AbstractRerankerIT {
 
     @Override
-    protected Collection<Class<? extends Plugin>> nodePlugins() {
+    protected Collection<Class<? extends Plugin>> pluginsNeeded() {
         return List.of(FieldBasedRerankerPlugin.class);
     }
 
-    public void testFieldBasedReranker() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        createIndex(indexName);
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        assertNoFailuresAndResponse(
-            prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new FieldBasedRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(10),
-            response -> {
-                assertHitCount(response, 5L);
-                int rank = 1;
-                for (SearchHit searchHit : response.getHits().getHits()) {
-                    assertThat(searchHit, hasId(String.valueOf(5 - (rank - 1))));
-                    assertEquals(searchHit.getScore(), (0.5f - ((rank - 1) * 0.1f)), 1e-5f);
-                    assertThat(searchHit, hasRank(rank));
-                    assertNotNull(searchHit.getFields().get(searchField));
-                    rank++;
-                }
-            }
-        );
+    @Override
+    protected RankBuilder getRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new FieldBasedRankBuilder(rankWindowSize, rankFeatureField);
     }
 
-    public void testFieldBasedRerankerPagination() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        createIndex(indexName);
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        assertResponse(
-            prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new FieldBasedRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(2)
-                .setFrom(2),
-            response -> {
-                assertHitCount(response, 5L);
-                int rank = 3;
-                for (SearchHit searchHit : response.getHits().getHits()) {
-                    assertThat(searchHit, hasId(String.valueOf(5 - (rank - 1))));
-                    assertEquals(searchHit.getScore(), (0.5f - ((rank - 1) * 0.1f)), 1e-5f);
-                    assertThat(searchHit, hasRank(rank));
-                    assertNotNull(searchHit.getFields().get(searchField));
-                    rank++;
-                }
-            }
-        );
+    @Override
+    protected RankBuilder getShardThrowingRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new ShardThrowingRankBuilder(rankWindowSize, rankFeatureField);
     }
 
-    public void testFieldBasedRerankerPaginationOutsideOfBounds() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        createIndex(indexName);
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        assertNoFailuresAndResponse(
-            prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new FieldBasedRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(2)
-                .setFrom(10),
-            response -> {
-                assertHitCount(response, 5L);
-                assertEquals(0, response.getHits().getHits().length);
-            }
-        );
-    }
-
-    public void testFieldBasedRerankerNoMatchingDocs() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        createIndex(indexName);
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        assertNoFailuresAndResponse(
-            prepareSearch().setQuery(boolQuery().should(constantScoreQuery(matchQuery(searchField, "F")).boost(randomFloat())))
-                .setRankBuilder(new FieldBasedRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(10),
-            response -> {
-                assertHitCount(response, 0L);
-            }
-        );
-    }
-
-    public void testThrowingRankBuilderAllContextsAreClosedPartialFailures() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        // we have less than the max number of nodes here, so not all shards will have failed and "partial" results can be
-        // returned
-        createIndex(indexName, Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 10).build());
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        // we have 10 shards and 2 documents, so when the exception is thrown we know that not all shards will report failures
-        assertResponse(
-            prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new ThrowingRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(10),
-            response -> {
-                assertTrue(response.getFailedShards() > 0);
-                assertTrue(
-                    Arrays.stream(response.getShardFailures())
-                        .allMatch(failure -> failure.getCause().getMessage().equals("This rank builder throws an exception"))
-                );
-                assertHitCount(response, 5);
-                assertTrue(response.getHits().getHits().length == 0);
-            }
-        );
-    }
-
-    public void testThrowingRankBuilderAllContextsAreClosedAllShardsFail() throws Exception {
-        final String indexName = "test_index";
-        final String rankFeatureField = "rankFeatureField";
-        final String searchField = "searchField";
-        final int rankWindowSize = 10;
-
-        // we have 1 shard and 2 documents, so when the exception is thrown we know that all shards will have failed
-        createIndex(indexName, Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1).build());
-        indexRandom(
-            true,
-            prepareIndex(indexName).setId("1").setSource(rankFeatureField, 0.1, searchField, "A"),
-            prepareIndex(indexName).setId("2").setSource(rankFeatureField, 0.2, searchField, "B"),
-            prepareIndex(indexName).setId("3").setSource(rankFeatureField, 0.3, searchField, "C"),
-            prepareIndex(indexName).setId("4").setSource(rankFeatureField, 0.4, searchField, "D"),
-            prepareIndex(indexName).setId("5").setSource(rankFeatureField, 0.5, searchField, "E")
-        );
-
-        expectThrows(
-            SearchPhaseExecutionException.class,
-            () -> prepareSearch().setQuery(
-                boolQuery().should(constantScoreQuery(matchQuery(searchField, "A")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "B")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "C")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "D")).boost(randomFloat()))
-                    .should(constantScoreQuery(matchQuery(searchField, "E")).boost(randomFloat()))
-            )
-                .setRankBuilder(new ThrowingRankBuilder(rankWindowSize, rankFeatureField))
-                .addFetchField(searchField)
-                .setTrackTotalHits(true)
-                .setAllowPartialSearchResults(true)
-                .setSize(10)
-                .get()
-        );
+    @Override
+    protected RankBuilder getCoordinatorThrowingRankBuilder(int rankWindowSize, String rankFeatureField) {
+        return new CoordinatorThrowingRankBuilder(rankWindowSize, rankFeatureField);
     }
 
     public static class FieldBasedRankBuilder extends RankBuilder {
@@ -366,30 +130,14 @@ public class FieldBasedRerankerIT extends ESIntegTestCase {
 
         @Override
         public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
-            return new RankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize()) {
+            return new RerankingRankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize()) {
                 @Override
-                public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
-                    RankFeatureDoc[] featureDocs = extractFeatures(rankSearchResults);
-                    for (RankFeatureDoc featureDoc : featureDocs) {
-                        featureDoc.score = Float.parseFloat(featureDoc.featureData);
+                protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> onFinish) {
+                    float[] rankScores = new float[featureDocs.length];
+                    for (int i = 0; i < rankScores.length; i++) {
+                        rankScores[i] = featureDocs[i].featureData == null ? 0f : Float.parseFloat(featureDocs[i].featureData);
                     }
-                    Arrays.sort(featureDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
-                    RankFeatureDoc[] topResults = new RankFeatureDoc[Math.max(0, Math.min(size, featureDocs.length - from))];
-                    for (int rank = 0; rank < topResults.length; ++rank) {
-                        topResults[rank] = featureDocs[from + rank];
-                        topResults[rank].rank = from + rank + 1;
-                    }
-                    // and call the parent onFinish consumer with the final `ScoreDoc[]` results.
-                    onFinish.accept(topResults);
-                }
-
-                private RankFeatureDoc[] extractFeatures(List<RankFeatureResult> rankSearchResults) {
-                    List<RankFeatureDoc> docFeatures = new ArrayList<>();
-                    for (RankFeatureResult rankFeatureResult : rankSearchResults) {
-                        RankFeatureShardResult shardResult = rankFeatureResult.shardResult();
-                        docFeatures.addAll(Arrays.stream(shardResult.rankFeatureDocs).toList());
-                    }
-                    return docFeatures.toArray(new RankFeatureDoc[0]);
+                    onFinish.onResponse(rankScores);
                 }
             };
         }
@@ -415,38 +163,41 @@ public class FieldBasedRerankerIT extends ESIntegTestCase {
         }
     }
 
-    public static class ThrowingRankBuilder extends FieldBasedRankBuilder {
+    public static class ShardThrowingRankBuilder extends FieldBasedRankBuilder {
 
         public static final ParseField FIELD_FIELD = new ParseField("field");
-        static final ConstructingObjectParser<ThrowingRankBuilder, Void> PARSER = new ConstructingObjectParser<>("throwing-rank", args -> {
-            int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
-            String field = (String) args[1];
-            if (field == null || field.isEmpty()) {
-                throw new IllegalArgumentException("Field cannot be null or empty");
+        static final ConstructingObjectParser<ShardThrowingRankBuilder, Void> PARSER = new ConstructingObjectParser<>(
+            "shard-throwing-rank",
+            args -> {
+                int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
+                String field = (String) args[1];
+                if (field == null || field.isEmpty()) {
+                    throw new IllegalArgumentException("Field cannot be null or empty");
+                }
+                return new ShardThrowingRankBuilder(rankWindowSize, field);
             }
-            return new ThrowingRankBuilder(rankWindowSize, field);
-        });
+        );
 
         static {
             PARSER.declareInt(optionalConstructorArg(), RANK_WINDOW_SIZE_FIELD);
             PARSER.declareString(constructorArg(), FIELD_FIELD);
         }
 
-        public static FieldBasedRankBuilder fromXContent(XContentParser parser) throws IOException {
+        public static ShardThrowingRankBuilder fromXContent(XContentParser parser) throws IOException {
             return PARSER.parse(parser, null);
         }
 
-        public ThrowingRankBuilder(final int rankWindowSize, final String field) {
+        public ShardThrowingRankBuilder(final int rankWindowSize, final String field) {
             super(rankWindowSize, field);
         }
 
-        public ThrowingRankBuilder(StreamInput in) throws IOException {
+        public ShardThrowingRankBuilder(StreamInput in) throws IOException {
             super(in);
         }
 
         @Override
         public String getWriteableName() {
-            return "throwing-rank";
+            return "shard-throwing-rank";
         }
 
         @Override
@@ -460,16 +211,70 @@ public class FieldBasedRerankerIT extends ESIntegTestCase {
         }
     }
 
+    public static class CoordinatorThrowingRankBuilder extends FieldBasedRankBuilder {
+
+        public static final ParseField FIELD_FIELD = new ParseField("field");
+        static final ConstructingObjectParser<CoordinatorThrowingRankBuilder, Void> PARSER = new ConstructingObjectParser<>(
+            "coordinator-throwing-rank",
+            args -> {
+                int rankWindowSize = args[0] == null ? DEFAULT_RANK_WINDOW_SIZE : (int) args[0];
+                String field = (String) args[1];
+                if (field == null || field.isEmpty()) {
+                    throw new IllegalArgumentException("Field cannot be null or empty");
+                }
+                return new CoordinatorThrowingRankBuilder(rankWindowSize, field);
+            }
+        );
+
+        static {
+            PARSER.declareInt(optionalConstructorArg(), RANK_WINDOW_SIZE_FIELD);
+            PARSER.declareString(constructorArg(), FIELD_FIELD);
+        }
+
+        public static CoordinatorThrowingRankBuilder fromXContent(XContentParser parser) throws IOException {
+            return PARSER.parse(parser, null);
+        }
+
+        public CoordinatorThrowingRankBuilder(final int rankWindowSize, final String field) {
+            super(rankWindowSize, field);
+        }
+
+        public CoordinatorThrowingRankBuilder(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public String getWriteableName() {
+            return "coordinator-throwing-rank";
+        }
+
+        @Override
+        public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+            return new RerankingRankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize()) {
+                @Override
+                protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> onFinish) {
+                    throw new UnsupportedOperationException("simulated-failure");
+                }
+            };
+        }
+    }
+
     public static class FieldBasedRerankerPlugin extends Plugin implements SearchPlugin {
 
         private static final String FIELD_BASED_RANK_BUILDER_NAME = "field-based-rank";
-        private static final String THROWING_RANK_BUILDER_NAME = "throwing-rank";
+        private static final String SHARD_THROWING_RANK_BUILDER_NAME = "shard-throwing-rank";
+        private static final String COORDINATOR_THROWING_RANK_BUILDER_NAME = "coordinator-throwing-rank";
 
         @Override
         public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
             return List.of(
                 new NamedWriteableRegistry.Entry(RankBuilder.class, FIELD_BASED_RANK_BUILDER_NAME, FieldBasedRankBuilder::new),
-                new NamedWriteableRegistry.Entry(RankBuilder.class, THROWING_RANK_BUILDER_NAME, ThrowingRankBuilder::new),
+                new NamedWriteableRegistry.Entry(RankBuilder.class, SHARD_THROWING_RANK_BUILDER_NAME, ShardThrowingRankBuilder::new),
+                new NamedWriteableRegistry.Entry(
+                    RankBuilder.class,
+                    COORDINATOR_THROWING_RANK_BUILDER_NAME,
+                    CoordinatorThrowingRankBuilder::new
+                ),
                 new NamedWriteableRegistry.Entry(RankShardResult.class, "rank-feature-shard", RankFeatureShardResult::new)
             );
         }
@@ -484,8 +289,13 @@ public class FieldBasedRerankerIT extends ESIntegTestCase {
                 ),
                 new NamedXContentRegistry.Entry(
                     RankBuilder.class,
-                    new ParseField(THROWING_RANK_BUILDER_NAME),
-                    ThrowingRankBuilder::fromXContent
+                    new ParseField(SHARD_THROWING_RANK_BUILDER_NAME),
+                    ShardThrowingRankBuilder::fromXContent
+                ),
+                new NamedXContentRegistry.Entry(
+                    RankBuilder.class,
+                    new ParseField(COORDINATOR_THROWING_RANK_BUILDER_NAME),
+                    CoordinatorThrowingRankBuilder::fromXContent
                 )
             );
         }

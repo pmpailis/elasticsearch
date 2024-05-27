@@ -6,17 +6,14 @@
  * Side Public License, v 1.
  */
 
-package org.elasticsearch.search.rank.request;
+package org.elasticsearch.search.rank.rerank;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
-import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankCoordinatorContext;
 
 import java.util.Arrays;
 import java.util.List;
@@ -30,16 +27,15 @@ import java.util.List;
  * Each implementation of this class needs to define the request generation logic, the action type, and how to actually read the scores
  * from the service's response.
  */
-public abstract class RequestRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse> extends
-    RerankingRankFeaturePhaseRankCoordinatorContext {
+public abstract class ActionRequestRankFeaturePhaseRankCoordinatorContext<Request extends ActionRequest, Response extends ActionResponse>
+    extends RerankingRankFeaturePhaseRankCoordinatorContext {
 
-    private static final Logger logger = LogManager.getLogger(RequestRankFeaturePhaseRankCoordinatorContext.class);
     protected final String inferenceId;
     protected final String inferenceText;
 
     protected final Client client;
 
-    public RequestRankFeaturePhaseRankCoordinatorContext(
+    public ActionRequestRankFeaturePhaseRankCoordinatorContext(
         int size,
         int from,
         int windowSize,
@@ -72,32 +68,24 @@ public abstract class RequestRankFeaturePhaseRankCoordinatorContext<Request exte
     protected abstract float[] extractScoresFromResponse(Response response);
 
     @Override
-    protected void computeScores(RankFeatureDoc[] featureDocs, Runnable onFinish) {
-        final ActionListener<Response> actionListener = ActionListener.runAfter(new ActionListener<>() {
-            @Override
-            public void onResponse(Response response) {
-                // closing the response is already handled by the caller for TransportSearchAction
-                if (response != null) {
-                    float[] scores = extractScoresFromResponse(response);
-                    assert scores.length == featureDocs.length;
-                    for (int index = 0; index < scores.length; index++) {
-                        featureDocs[index].score = scores[index];
-                    }
-                }
-            }
+    protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+        // Wrap the provided rankListener to an ActionListener that would handle the response from the inference service
+        // and then pass the results
+        final ActionListener<Response> actionListener = scoreListener.delegateFailureAndWrap((l, r) -> {
+            float[] scores = extractScoresFromResponse(r);
+            assert scores.length == featureDocs.length;
+            l.onResponse(scores);
+        });
 
-            @Override
-            public void onFailure(Exception e) {
-                assert false : e;
-                logger.warn(
-                    () -> "failed to generate response for inferenceId: [" + inferenceId + "] and inferenceText: [" + inferenceText + "].",
-                    e
-                );
-            }
-        }, onFinish);
         List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData).toList();
         Request request = generateRequest(featureData);
-        ActionType<Response> action = actionType();
-        client.execute(action, request, actionListener);
+        try {
+            ActionType<Response> action = actionType();
+            client.execute(action, request, actionListener);
+        } finally {
+            if (request != null) {
+                request.decRef();
+            }
+        }
     }
 }

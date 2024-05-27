@@ -684,7 +684,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> onFinish
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -704,7 +704,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            onFinish.onResponse(topResults);
                                         }
                                     };
                                 }
@@ -845,7 +845,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                     @Override
                                     public void rankGlobalResults(
                                         List<RankFeatureResult> rankSearchResults,
-                                        Consumer<ScoreDoc[]> onFinish
+                                        ActionListener<RankFeatureDoc[]> onFinish
                                     ) {
                                         throw new IllegalStateException("should have failed earlier");
                                     }
@@ -964,7 +964,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> onFinish
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -984,7 +984,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            onFinish.onResponse(topResults);
                                         }
                                     };
                                 }
@@ -1109,7 +1109,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> rankListener
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -1129,7 +1129,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            rankListener.onResponse(topResults);
                                         }
                                     };
                                 }
