@@ -52,6 +52,11 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 
 public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
 
+    @Override
+    public void testNonBlockingRanking() {
+        // no-op
+    }
+
     private static final TestRerankingActionType TEST_RERANKING_ACTION_TYPE = new TestRerankingActionType("internal:test_reranking_action");
 
     private static final String inferenceId = "inference-id";

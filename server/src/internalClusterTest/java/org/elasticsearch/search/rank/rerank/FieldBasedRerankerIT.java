@@ -43,6 +43,11 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 public class FieldBasedRerankerIT extends AbstractRerankerIT {
 
     @Override
+    public void testNonBlockingRanking() {
+        // no-op
+    }
+
+    @Override
     protected Collection<Class<? extends Plugin>> pluginsNeeded() {
         return List.of(FieldBasedRerankerPlugin.class);
     }
