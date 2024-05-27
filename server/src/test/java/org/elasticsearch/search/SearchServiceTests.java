@@ -42,6 +42,7 @@ import org.elasticsearch.action.search.TransportSearchAction;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.WriteRequest;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
@@ -674,12 +675,16 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 }
 
                                 @Override
-                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(
+                                    int size,
+                                    int from,
+                                    Client client
+                                ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> onFinish
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -699,7 +704,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            onFinish.onResponse(topResults);
                                         }
                                     };
                                 }
@@ -831,12 +836,16 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                             }
 
                             @Override
-                            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+                            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(
+                                int size,
+                                int from,
+                                Client client
+                            ) {
                                 return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                     @Override
                                     public void rankGlobalResults(
                                         List<RankFeatureResult> rankSearchResults,
-                                        Consumer<ScoreDoc[]> onFinish
+                                        ActionListener<RankFeatureDoc[]> onFinish
                                     ) {
                                         throw new IllegalStateException("should have failed earlier");
                                     }
@@ -946,12 +955,16 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 }
 
                                 @Override
-                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(
+                                    int size,
+                                    int from,
+                                    Client client
+                                ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> onFinish
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -971,7 +984,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            onFinish.onResponse(topResults);
                                         }
                                     };
                                 }
@@ -1087,12 +1100,16 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 }
 
                                 @Override
-                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+                                public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(
+                                    int size,
+                                    int from,
+                                    Client client
+                                ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
                                         public void rankGlobalResults(
                                             List<RankFeatureResult> rankSearchResults,
-                                            Consumer<ScoreDoc[]> onFinish
+                                            ActionListener<RankFeatureDoc[]> rankListener
                                         ) {
                                             List<RankFeatureDoc> features = new ArrayList<>();
                                             for (RankFeatureResult rankFeatureResult : rankSearchResults) {
@@ -1112,7 +1129,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                                                 topResults[rank].rank = from + rank + 1;
                                             }
-                                            onFinish.accept(topResults);
+                                            rankListener.onResponse(topResults);
                                         }
                                     };
                                 }

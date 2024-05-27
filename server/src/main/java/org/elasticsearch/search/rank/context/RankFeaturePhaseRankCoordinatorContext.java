@@ -9,10 +9,11 @@
 package org.elasticsearch.search.rank.context;
 
 import org.apache.lucene.search.ScoreDoc;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 
 import java.util.List;
-import java.util.function.Consumer;
 
 import static org.elasticsearch.search.SearchService.DEFAULT_FROM;
 import static org.elasticsearch.search.SearchService.DEFAULT_SIZE;
@@ -41,7 +42,7 @@ public abstract class RankFeaturePhaseRankCoordinatorContext {
      * to the {@param onFinish} consumer to proceed with the next steps, as defined by the caller.
      *
      * @param phaseResultsPerShard a list of the appropriate phase results from each shard
-     * @param onFinish a consumer to be called once the global ranking is complete
+     * @param onFinish an ActionListener to be called once the final global_ranking is computed
      */
-    public abstract void rankGlobalResults(List<RankFeatureResult> phaseResultsPerShard, Consumer<ScoreDoc[]> onFinish);
+    public abstract void rankGlobalResults(List<RankFeatureResult> phaseResultsPerShard, ActionListener<RankFeatureDoc[]> onFinish);
 }

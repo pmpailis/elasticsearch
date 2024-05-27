@@ -19,6 +19,7 @@ import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.ChannelActionListener;
 import org.elasticsearch.action.support.HandledTransportAction;
 import org.elasticsearch.action.support.IndicesOptions;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.routing.GroupShardsIterator;
 import org.elasticsearch.common.inject.Inject;
@@ -62,6 +63,7 @@ public class TransportOpenPointInTimeAction extends HandledTransportAction<OpenP
     private final NamedWriteableRegistry namedWriteableRegistry;
     private final TransportService transportService;
     private final SearchService searchService;
+    private final Client client;
 
     @Inject
     public TransportOpenPointInTimeAction(
@@ -70,7 +72,8 @@ public class TransportOpenPointInTimeAction extends HandledTransportAction<OpenP
         ActionFilters actionFilters,
         TransportSearchAction transportSearchAction,
         SearchTransportService searchTransportService,
-        NamedWriteableRegistry namedWriteableRegistry
+        NamedWriteableRegistry namedWriteableRegistry,
+        Client client
     ) {
         super(TYPE.name(), transportService, actionFilters, OpenPointInTimeRequest::new, EsExecutors.DIRECT_EXECUTOR_SERVICE);
         this.transportService = transportService;
@@ -90,6 +93,7 @@ public class TransportOpenPointInTimeAction extends HandledTransportAction<OpenP
             false,
             TransportOpenPointInTimeAction.ShardOpenReaderResponse::new
         );
+        this.client = client;
     }
 
     @Override
@@ -211,7 +215,8 @@ public class TransportOpenPointInTimeAction extends HandledTransportAction<OpenP
                 task,
                 new ArraySearchPhaseResults<>(shardIterators.size()),
                 searchRequest.getMaxConcurrentShardRequests(),
-                clusters
+                clusters,
+                client
             ) {
                 @Override
                 protected void executePhaseOnShard(

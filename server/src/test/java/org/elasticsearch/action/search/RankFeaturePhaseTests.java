@@ -14,6 +14,8 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.tests.store.MockDirectoryWrapper;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.TransportVersions;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
@@ -52,7 +54,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 
 public class RankFeaturePhaseTests extends ESTestCase {
 
@@ -536,7 +537,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
                 queryResult.decRef();
             }
             // override the RankFeaturePhase to raise an exception
-            RankFeaturePhase rankFeaturePhase = new RankFeaturePhase(results, null, mockSearchPhaseContext) {
+            RankFeaturePhase rankFeaturePhase = new RankFeaturePhase(results, null, mockSearchPhaseContext, null) {
                 @Override
                 void innerRun() {
                     throw new IllegalArgumentException("simulated failure");
@@ -859,7 +860,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
     private RankFeaturePhaseRankCoordinatorContext defaultRankFeaturePhaseRankCoordinatorContext(int size, int from, int rankWindowSize) {
         return new RankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize) {
             @Override
-            public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, Consumer<ScoreDoc[]> onFinish) {
+            public void rankGlobalResults(List<RankFeatureResult> rankSearchResults, ActionListener<RankFeatureDoc[]> rankListener) {
                 List<RankFeatureDoc> features = new ArrayList<>();
                 for (RankFeatureResult rankFeatureResult : rankSearchResults) {
                     RankFeatureShardResult shardResult = rankFeatureResult.shardResult();
@@ -875,7 +876,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
                     topResults[rank] = new RankFeatureDoc(rfd.doc, rfd.score, rfd.shardIndex);
                     topResults[rank].rank = from + rank + 1;
                 }
-                onFinish.accept(topResults);
+                rankListener.onResponse(topResults);
             }
         };
     }
@@ -1005,7 +1006,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
             }
 
             @Override
-            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from) {
+            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
                 return rankFeaturePhaseRankCoordinatorContext;
             }
 
@@ -1118,7 +1119,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
         AtomicBoolean phaseDone
     ) {
         // override the RankFeaturePhase to skip moving to next phase
-        return new RankFeaturePhase(results, null, mockSearchPhaseContext) {
+        return new RankFeaturePhase(results, null, mockSearchPhaseContext, null) {
             @Override
             public void moveToNextPhase(
                 SearchPhaseResults<SearchPhaseResult> phaseResults,
