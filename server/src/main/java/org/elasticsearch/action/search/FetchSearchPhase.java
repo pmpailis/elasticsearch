@@ -19,8 +19,10 @@ import org.elasticsearch.search.fetch.ShardFetchSearchRequest;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.RankDocShardInfo;
+import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -108,7 +110,8 @@ final class FetchSearchPhase extends SearchPhase {
         // still use DFS_QUERY_THEN_FETCH, which does not perform the "query and fetch" optimization during the query phase.
         final boolean queryAndFetchOptimization = searchPhaseShardResults.length() == 1
             && context.getRequest().hasKnnSearch() == false
-            && reducedQueryPhase.queryPhaseRankCoordinatorContext() == null;
+            && reducedQueryPhase.queryPhaseRankCoordinatorContext() == null
+            && Arrays.stream(reducedQueryPhase.sortedTopDocs().scoreDocs()).noneMatch(x-> x instanceof RankFeatureDoc);
         if (queryAndFetchOptimization) {
             assert assertConsistentWithQueryAndFetchOptimization();
             // query AND fetch optimization

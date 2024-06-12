@@ -26,7 +26,7 @@ import org.elasticsearch.action.admin.cluster.shards.TransportClusterSearchShard
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.HandledTransportAction;
 import org.elasticsearch.action.support.IndicesOptions;
-import org.elasticsearch.client.internal.node.NodeClient;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
@@ -153,7 +153,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
     private final int defaultPreFilterShardSize;
     private final boolean ccsCheckCompatibility;
     private final SearchResponseMetrics searchResponseMetrics;
-    private final NodeClient nodeClient;
+    private final Client client;
 
     @Inject
     public TransportSearchAction(
@@ -170,7 +170,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         ExecutorSelector executorSelector,
         SearchTransportAPMMetrics searchTransportMetrics,
         SearchResponseMetrics searchResponseMetrics,
-        NodeClient nodeClient
+        Client client
     ) {
         super(TYPE.name(), transportService, actionFilters, SearchRequest::new, EsExecutors.DIRECT_EXECUTOR_SERVICE);
         this.threadPool = threadPool;
@@ -188,7 +188,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         this.defaultPreFilterShardSize = DEFAULT_PRE_FILTER_SHARD_SIZE.get(clusterService.getSettings());
         this.ccsCheckCompatibility = SearchService.CCS_VERSION_CHECK_SETTING.get(clusterService.getSettings());
         this.searchResponseMetrics = searchResponseMetrics;
-        this.nodeClient = nodeClient;
+        this.client = client;
     }
 
     private Map<String, OriginalIndices> buildPerIndexOriginalIndices(
@@ -482,7 +482,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             OpenPointInTimeRequest pitReq = new OpenPointInTimeRequest(searchRequest.indices()).indicesOptions(
                 searchRequest.indicesOptions()
             ).preference(searchRequest.preference()).routing(searchRequest.routing()).keepAlive(TimeValue.ONE_MINUTE);
-            nodeClient.execute(TransportOpenPointInTimeAction.TYPE, pitReq, new ActionListener<>() {
+            client.execute(TransportOpenPointInTimeAction.TYPE, pitReq, new ActionListener<>() {
                 @Override
                 public void onResponse(OpenPointInTimeResponse resp) {
                     source.pointInTimeBuilder(new PointInTimeBuilder(resp.getPointInTimeId()));
@@ -517,7 +517,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         if (pit == null) {
             return;
         }
-        nodeClient.execute(TransportClosePointInTimeAction.TYPE, new ClosePointInTimeRequest(pit.getEncodedId()), new ActionListener<>() {
+        client.execute(TransportClosePointInTimeAction.TYPE, new ClosePointInTimeRequest(pit.getEncodedId()), new ActionListener<>() {
             @Override
             public void onResponse(ClosePointInTimeResponse resp) {}
 
@@ -1414,7 +1414,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         timeProvider,
                         clusterState,
                         task,
-                        clusters
+                        clusters,
+                        client
                     );
                 } else {
                     assert searchRequest.searchType() == QUERY_THEN_FETCH : searchRequest.searchType();
@@ -1433,7 +1434,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         timeProvider,
                         clusterState,
                         task,
-                        clusters
+                        clusters,
+                        client
                     );
                 }
                 success = true;

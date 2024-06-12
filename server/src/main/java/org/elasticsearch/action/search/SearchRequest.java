@@ -419,9 +419,9 @@ public class SearchRequest extends ActionRequest implements IndicesRequest.Repla
                 if (source.rescores() != null && source.rescores().isEmpty() == false) {
                     validationException = addValidationError("[rank] cannot be used with [rescore]", validationException);
                 }
-                if (source.sorts() != null && source.sorts().isEmpty() == false) {
-                    validationException = addValidationError("[rank] cannot be used with [sort]", validationException);
-                }
+                // if (source.sorts() != null && source.sorts().isEmpty() == false) {
+                // validationException = addValidationError("[rank] cannot be used with [sort]", validationException);
+                // }
                 if (source.collapse() != null) {
                     validationException = addValidationError("[rank] cannot be used with [collapse]", validationException);
                 }
@@ -431,9 +431,9 @@ public class SearchRequest extends ActionRequest implements IndicesRequest.Repla
                 if (source.highlighter() != null) {
                     validationException = addValidationError("[rank] cannot be used with [highlighter]", validationException);
                 }
-                if (source.pointInTimeBuilder() != null) {
-                    validationException = addValidationError("[rank] cannot be used with [point in time]", validationException);
-                }
+                // if (source.pointInTimeBuilder() != null) {
+                // validationException = addValidationError("[rank] cannot be used with [point in time]", validationException);
+                // }
             }
             if (source.rescores() != null) {
                 for (@SuppressWarnings("rawtypes")

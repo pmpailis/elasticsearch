@@ -25,6 +25,7 @@ public class RankFeatureDoc extends RankDoc {
 
     // todo: update to support more than 1 fields; and not restrict to string data
     public String featureData;
+    public Object[] fields;
 
     public RankFeatureDoc(int doc, float score, int shardIndex) {
         super(doc, score, shardIndex);

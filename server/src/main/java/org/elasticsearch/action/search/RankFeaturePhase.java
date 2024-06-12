@@ -9,9 +9,11 @@ package org.elasticsearch.action.search;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ThreadedActionListener;
+import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchShardTarget;
@@ -23,7 +25,9 @@ import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
 import org.elasticsearch.search.rank.feature.RankFeatureShardRequest;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * This search phase is responsible for executing any re-ranking needed for the given search request, iff that is applicable.
@@ -40,8 +44,14 @@ public class RankFeaturePhase extends SearchPhase {
     final SearchPhaseResults<SearchPhaseResult> rankPhaseResults;
     private final AggregatedDfs aggregatedDfs;
     private final SearchProgressListener progressListener;
+    private final Client client;
 
-    RankFeaturePhase(SearchPhaseResults<SearchPhaseResult> queryPhaseResults, AggregatedDfs aggregatedDfs, SearchPhaseContext context) {
+    RankFeaturePhase(
+        SearchPhaseResults<SearchPhaseResult> queryPhaseResults,
+        AggregatedDfs aggregatedDfs,
+        SearchPhaseContext context,
+        Client client
+    ) {
         super("rank-feature");
         if (context.getNumShards() != queryPhaseResults.getNumShards()) {
             throw new IllegalStateException(
@@ -57,6 +67,7 @@ public class RankFeaturePhase extends SearchPhase {
         this.rankPhaseResults = new ArraySearchPhaseResults<>(context.getNumShards());
         context.addReleasable(rankPhaseResults);
         this.progressListener = context.getTask().getProgressListener();
+        this.client = client;
     }
 
     @Override
@@ -118,7 +129,11 @@ public class RankFeaturePhase extends SearchPhase {
             : context.getRequest()
                 .source()
                 .rankBuilder()
-                .buildRankFeaturePhaseCoordinatorContext(context.getRequest().source().size(), context.getRequest().source().from());
+                .buildRankFeaturePhaseCoordinatorContext(
+                    context.getRequest().source().size(),
+                    context.getRequest().source().from(),
+                    client
+                );
     }
 
     private void executeRankFeatureShardPhase(
@@ -185,7 +200,7 @@ public class RankFeaturePhase extends SearchPhase {
                 context.onPhaseFailure(RankFeaturePhase.this, "Computing updated ranks for results failed", e);
             }
         });
-        rankFeaturePhaseRankCoordinatorContext.rankGlobalResults(
+        rankFeaturePhaseRankCoordinatorContext.computeRankScoresForGlobalResults(
             rankPhaseResults.getAtomicArray().asList().stream().map(SearchPhaseResult::rankFeatureResult).toList(),
             rankResultListener
         );
@@ -195,7 +210,7 @@ public class RankFeaturePhase extends SearchPhase {
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase,
         ScoreDoc[] scoreDocs
     ) {
-
+        addFieldsToScoreDocs(scoreDocs, reducedQueryPhase.sortedTopDocs().scoreDocs());
         return new SearchPhaseController.ReducedQueryPhase(
             reducedQueryPhase.totalHits(),
             reducedQueryPhase.fetchHits(),
@@ -205,7 +220,14 @@ public class RankFeaturePhase extends SearchPhase {
             reducedQueryPhase.suggest(),
             reducedQueryPhase.aggregations(),
             reducedQueryPhase.profileBuilder(),
-            new SearchPhaseController.SortedTopDocs(scoreDocs, false, null, null, null, 0),
+            new SearchPhaseController.SortedTopDocs(
+                scoreDocs,
+                reducedQueryPhase.sortedTopDocs().isSortedByField(),
+                reducedQueryPhase.sortedTopDocs().sortFields(),
+                reducedQueryPhase.sortedTopDocs().collapseField(),
+                reducedQueryPhase.sortedTopDocs().collapseValues(),
+                reducedQueryPhase.sortedTopDocs().numberOfCompletionsSuggestions()
+            ),
             reducedQueryPhase.sortValueFormats(),
             reducedQueryPhase.queryPhaseRankCoordinatorContext(),
             reducedQueryPhase.numReducePhases(),
@@ -213,6 +235,19 @@ public class RankFeaturePhase extends SearchPhase {
             reducedQueryPhase.from(),
             reducedQueryPhase.isEmptyResult()
         );
+    }
+
+    private void addFieldsToScoreDocs(ScoreDoc[] rerankedDocs, ScoreDoc[] originalDocs){
+        Map<Integer, Map<Integer, Object[]>> docAndShardToFields = new HashMap<>();
+        for(ScoreDoc doc : originalDocs) {
+            assert doc instanceof FieldDoc;
+            docAndShardToFields.computeIfAbsent(doc.doc, k -> new HashMap<>());
+            docAndShardToFields.get(doc.doc).put(doc.shardIndex, ((FieldDoc)doc).fields);
+        }
+        for(ScoreDoc doc : rerankedDocs) {
+            assert doc instanceof RankFeatureDoc;
+            ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex);
+        }
     }
 
     private float maxScore(ScoreDoc[] scoreDocs) {

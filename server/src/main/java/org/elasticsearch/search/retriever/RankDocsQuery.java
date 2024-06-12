@@ -126,7 +126,7 @@ public class RankDocsQuery extends Query {
 
                     @Override
                     public float score() {
-                        return 0;
+                        return 0; //docs[upTo].score;
                     }
 
                     @Override
