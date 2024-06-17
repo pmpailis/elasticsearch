@@ -25,6 +25,7 @@ import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.test.ESTestCase.randomIntBetween;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
@@ -104,7 +105,12 @@ public class TestRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+    public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+        int size,
+        int from,
+        Client client,
+        Supplier<RankFeaturePhaseRankCoordinatorContext> delegate
+    ) {
         throw new UnsupportedOperationException();
     }
 

@@ -11,7 +11,6 @@ package org.elasticsearch.action.search;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.FieldDoc;
-import org.apache.lucene.search.Pruning;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
@@ -49,8 +48,6 @@ import org.elasticsearch.search.profile.SearchProfileResultsBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
-import org.elasticsearch.search.rank.feature.RankFeatureDoc;
-import org.elasticsearch.search.sort.ShardDocSortField;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
@@ -464,16 +461,17 @@ public final class SearchPhaseController {
                     searchHit.setRank(((RankDoc) shardDoc).rank);
                     searchHit.score(shardDoc.score);
                 } else if (sortedTopDocs.isSortedByField) {
-                    if(shardDoc instanceof FieldDoc fieldDoc) {
+                    if (shardDoc instanceof FieldDoc fieldDoc) {
                         searchHit.sortValues(fieldDoc.fields, reducedQueryPhase.sortValueFormats);
                         if (sortScoreIndex != -1) {
                             searchHit.score(((Number) fieldDoc.fields[sortScoreIndex]).floatValue());
                         }
-                    }else if(shardDoc instanceof RankFeatureDoc){
-                        searchHit.score(shardDoc.score);
-                        searchHit.setRank(((RankFeatureDoc) shardDoc).rank);
-                        searchHit.sortValues(((RankFeatureDoc) shardDoc).fields, reducedQueryPhase.sortValueFormats);
                     }
+                    // }else if(shardDoc instanceof RankFeatureDoc){
+                    // searchHit.score(shardDoc.score);
+                    // searchHit.setRank(((RankFeatureDoc) shardDoc).rank);
+                    // searchHit.sortValues(((RankFeatureDoc) shardDoc).fields, reducedQueryPhase.sortValueFormats);
+                    // }
                 } else {
                     searchHit.score(shardDoc.score);
                 }

@@ -14,6 +14,8 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.rank.RankDoc;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -23,26 +25,25 @@ public class RankFeatureDoc extends RankDoc {
 
     public static final String NAME = "rank_feature_doc";
 
-    // todo: update to support more than 1 fields; and not restrict to string data
-    public String featureData;
-    public Object[] fields;
+    public Map<String, Object> featureData;
 
     public RankFeatureDoc(int doc, float score, int shardIndex) {
         super(doc, score, shardIndex);
+        this.featureData = new HashMap<>();
     }
 
     public RankFeatureDoc(StreamInput in) throws IOException {
         super(in);
-        featureData = in.readOptionalString();
+        featureData = in.readGenericMap();
     }
 
-    public void featureData(String featureData) {
-        this.featureData = featureData;
+    public void featureData(String key, Object val) {
+        this.featureData.put(key, val);
     }
 
     @Override
     protected void doWriteTo(StreamOutput out) throws IOException {
-        out.writeOptionalString(featureData);
+        out.writeGenericMap(featureData);
     }
 
     @Override

@@ -53,8 +53,10 @@ import org.elasticsearch.xcontent.XContentParser;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
@@ -372,11 +374,16 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
 
         @Override
         public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-            return new RerankingRankFeaturePhaseRankShardContext(field);
+            return new RerankingRankFeaturePhaseRankShardContext(Collections.singletonList(field));
         }
 
         @Override
-        public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+        public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+            int size,
+            int from,
+            Client client,
+            Supplier<RankFeaturePhaseRankCoordinatorContext> delegate
+        ) {
             return new TestRerankingRankFeaturePhaseRankCoordinatorContext(
                 size,
                 from,
@@ -506,7 +513,7 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
         @Override
         public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
             if (this.throwingRankBuilderType == ThrowingRankBuilderType.THROWING_RANK_FEATURE_PHASE_SHARD_CONTEXT)
-                return new RankFeaturePhaseRankShardContext(field) {
+                return new RankFeaturePhaseRankShardContext(Collections.singletonList(field)) {
                     @Override
                     public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                         throw new UnsupportedOperationException("rfs - simulated failure");

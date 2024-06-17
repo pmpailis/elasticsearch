@@ -27,6 +27,7 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * {@code RankBuilder} is used as a base class to manage input, parsing, and subsequent generation of appropriate contexts
@@ -40,16 +41,20 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
 
     private final int rankWindowSize;
 
+    protected RankBuilder delegateRankBuilder;
+
     public RankBuilder(int rankWindowSize) {
         this.rankWindowSize = rankWindowSize;
     }
 
     public RankBuilder(StreamInput in) throws IOException {
         rankWindowSize = in.readVInt();
+        delegateRankBuilder = in.readOptionalNamedWriteable(RankBuilder.class);
     }
 
     public final void writeTo(StreamOutput out) throws IOException {
         out.writeVInt(rankWindowSize);
+        out.writeOptionalNamedWriteable(delegateRankBuilder);
         doWriteTo(out);
     }
 
@@ -106,7 +111,21 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
      * on the coordinator based on all the individual shard results. The output of this will be a `size` ranked list of ordered results,
      * which will then be passed to fetch phase.
      */
-    public abstract RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client);
+    public abstract RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+        int size,
+        int from,
+        Client client,
+        Supplier<RankFeaturePhaseRankCoordinatorContext> delegateRankBuilder
+    );
+
+    public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+        return doBuildRankFeaturePhaseCoordinatorContext(
+            size,
+            from,
+            client,
+            () -> delegateRankBuilder == null ? null : delegateRankBuilder.doBuildRankFeaturePhaseCoordinatorContext(size, from, client, null)
+        );
+    }
 
     @Override
     public final boolean equals(Object obj) {
@@ -133,5 +152,22 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
     @Override
     public String toString() {
         return Strings.toString(this, true, true);
+    }
+
+    public RankBuilder delegateRankBuilder(){
+        return this.delegateRankBuilder;
+    }
+
+    public void delegate(RankBuilder rankBuilder) {
+        if (delegateRankBuilder != null) {
+            delegateRankBuilder.delegate(rankBuilder);
+        } else {
+            this.delegateRankBuilder = rankBuilder;
+        }
+    }
+
+    public RankBuilder wrap(RankBuilder rankBuilder) {
+        delegate(rankBuilder);
+        return this;
     }
 }

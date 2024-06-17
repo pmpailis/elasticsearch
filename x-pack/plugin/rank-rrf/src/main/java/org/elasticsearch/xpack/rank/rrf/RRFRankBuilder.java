@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
@@ -176,7 +177,12 @@ public class RRFRankBuilder extends RankBuilder {
     }
 
     @Override
-    public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+    public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+        int size,
+        int from,
+        Client client,
+        Supplier<RankFeaturePhaseRankCoordinatorContext> delegate
+    ) {
         return null;
     }
 

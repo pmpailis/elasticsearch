@@ -19,6 +19,7 @@ import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.feature.RankFeatureShardResult;
 
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The {@code ReRankingRankFeaturePhaseRankShardContext} is handles the {@code SearchHits} generated from the {@code RankFeatureShardPhase}
@@ -29,8 +30,8 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
 
     private static final Logger logger = LogManager.getLogger(RerankingRankFeaturePhaseRankShardContext.class);
 
-    public RerankingRankFeaturePhaseRankShardContext(String field) {
-        super(field);
+    public RerankingRankFeaturePhaseRankShardContext(List<String> fields) {
+        super(fields);
     }
 
     @Override
@@ -39,16 +40,18 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
             RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
             for (int i = 0; i < hits.getHits().length; i++) {
                 rankFeatureDocs[i] = new RankFeatureDoc(hits.getHits()[i].docId(), hits.getHits()[i].getScore(), shardId);
-                DocumentField docField = hits.getHits()[i].field(field);
-                if (docField != null) {
-                    rankFeatureDocs[i].featureData(docField.getValue().toString());
+                for (String field : fields) {
+                    DocumentField docField = hits.getHits()[i].field(field);
+                    if (docField != null) {
+                        rankFeatureDocs[i].featureData(field, docField.getValue().toString());
+                    }
                 }
             }
             return new RankFeatureShardResult(rankFeatureDocs);
         } catch (Exception ex) {
             logger.warn(
-                "Error while fetching feature data for {field: ["
-                    + field
+                "Error while fetching feature data for {fields: ["
+                    + fields
                     + "]} and {docids: ["
                     + Arrays.stream(hits.getHits()).map(SearchHit::docId).toList()
                     + "]}.",

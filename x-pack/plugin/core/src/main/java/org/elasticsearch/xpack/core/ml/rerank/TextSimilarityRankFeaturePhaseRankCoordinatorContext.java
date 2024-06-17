@@ -27,6 +27,7 @@ public class TextSimilarityRankFeaturePhaseRankCoordinatorContext extends RankFe
     private final String inferenceText;
     private final String inferenceId;
     private final Client client;
+    private final String field;
 
     public TextSimilarityRankFeaturePhaseRankCoordinatorContext(
         int size,
@@ -35,12 +36,15 @@ public class TextSimilarityRankFeaturePhaseRankCoordinatorContext extends RankFe
         Client client,
         String inferenceId,
         String inferenceText,
-        float minScore
+        float minScore,
+        String field,
+        RankFeaturePhaseRankCoordinatorContext delegate
     ) {
-        super(size, from, windowSize);
+        super(size, from, windowSize, delegate);
         this.client = client;
         this.inferenceId = inferenceId;
         this.inferenceText = inferenceText;
+        this.field = field;
     }
 
     protected InferenceAction.Request generateRequest(List<String> docFeatures) {
@@ -82,7 +86,7 @@ public class TextSimilarityRankFeaturePhaseRankCoordinatorContext extends RankFe
             l.onResponse(scores);
         });
 
-        List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData).toList();
+        List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData.get(field).toString()).toList();
         InferenceAction.Request request = generateRequest(featureData);
         try {
             ActionType<InferenceAction.Response> action = actionType();

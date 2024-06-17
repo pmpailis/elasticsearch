@@ -20,6 +20,7 @@ import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.dfs.AggregatedDfs;
 import org.elasticsearch.search.internal.ShardSearchContextId;
+import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.context.RankFeaturePhaseRankCoordinatorContext;
 import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.rank.feature.RankFeatureResult;
@@ -124,16 +125,17 @@ public class RankFeaturePhase extends SearchPhase {
     }
 
     private RankFeaturePhaseRankCoordinatorContext coordinatorContext(SearchSourceBuilder source) {
-        return source == null || source.rankBuilder() == null
+        if (source == null || source.rankBuilder() == null) {
+            return null;
+        }
+        RankBuilder rankBuilder = context.getRequest().source().rankBuilder();
+        return rankBuilder == null
             ? null
-            : context.getRequest()
-                .source()
-                .rankBuilder()
-                .buildRankFeaturePhaseCoordinatorContext(
-                    context.getRequest().source().size(),
-                    context.getRequest().source().from(),
-                    client
-                );
+            : rankBuilder.buildRankFeaturePhaseCoordinatorContext(
+                context.getRequest().source().size(),
+                context.getRequest().source().from(),
+                client
+            );
     }
 
     private void executeRankFeatureShardPhase(
@@ -210,7 +212,6 @@ public class RankFeaturePhase extends SearchPhase {
         SearchPhaseController.ReducedQueryPhase reducedQueryPhase,
         ScoreDoc[] scoreDocs
     ) {
-        addFieldsToScoreDocs(scoreDocs, reducedQueryPhase.sortedTopDocs().scoreDocs());
         return new SearchPhaseController.ReducedQueryPhase(
             reducedQueryPhase.totalHits(),
             reducedQueryPhase.fetchHits(),
@@ -237,17 +238,17 @@ public class RankFeaturePhase extends SearchPhase {
         );
     }
 
-    private void addFieldsToScoreDocs(ScoreDoc[] rerankedDocs, ScoreDoc[] originalDocs){
+    private void addFieldsToScoreDocs(ScoreDoc[] rerankedDocs, ScoreDoc[] originalDocs) {
         Map<Integer, Map<Integer, Object[]>> docAndShardToFields = new HashMap<>();
-        for(ScoreDoc doc : originalDocs) {
+        for (ScoreDoc doc : originalDocs) {
             assert doc instanceof FieldDoc;
             docAndShardToFields.computeIfAbsent(doc.doc, k -> new HashMap<>());
-            docAndShardToFields.get(doc.doc).put(doc.shardIndex, ((FieldDoc)doc).fields);
+            docAndShardToFields.get(doc.doc).put(doc.shardIndex, ((FieldDoc) doc).fields);
         }
-        for(ScoreDoc doc : rerankedDocs) {
-            assert doc instanceof RankFeatureDoc;
-            ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex);
-        }
+//        for (ScoreDoc doc : rerankedDocs) {
+//            assert doc instanceof RankFeatureDoc;
+//            ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex).f;
+//        }
     }
 
     private float maxScore(ScoreDoc[] scoreDocs) {

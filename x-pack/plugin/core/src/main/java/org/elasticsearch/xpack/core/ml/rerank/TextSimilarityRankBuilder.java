@@ -24,7 +24,9 @@ import org.elasticsearch.search.rank.rerank.RerankingRankFeaturePhaseRankShardCo
 import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 public class TextSimilarityRankBuilder extends RankBuilder {
 
@@ -92,13 +94,27 @@ public class TextSimilarityRankBuilder extends RankBuilder {
         return null; // new RerankingQueryPhaseRankCoordinatorContext(rankWindowSize());
     }
 
-    @Override
-    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-        return new RerankingRankFeaturePhaseRankShardContext(field);
+    private List<String> getFields() {
+        List<String> fields = new ArrayList<>();
+        fields.add(field);
+        if (delegateRankBuilder != null) {
+            fields.addAll(((TextSimilarityRankBuilder) delegateRankBuilder).getFields());
+        }
+        return fields;
     }
 
     @Override
-    public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+    public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
+        return new RerankingRankFeaturePhaseRankShardContext(getFields());
+    }
+
+    @Override
+    public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+        int size,
+        int from,
+        Client client,
+        Supplier<RankFeaturePhaseRankCoordinatorContext> delegate
+    ) {
         return new TextSimilarityRankFeaturePhaseRankCoordinatorContext(
             size,
             from,
@@ -106,7 +122,9 @@ public class TextSimilarityRankBuilder extends RankBuilder {
             client,
             inferenceId,
             inferenceText,
-            minScore
+            minScore,
+            field,
+            delegate == null ? null : delegate.get()
         );
     }
 

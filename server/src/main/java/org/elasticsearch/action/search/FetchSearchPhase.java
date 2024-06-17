@@ -111,7 +111,7 @@ final class FetchSearchPhase extends SearchPhase {
         final boolean queryAndFetchOptimization = searchPhaseShardResults.length() == 1
             && context.getRequest().hasKnnSearch() == false
             && reducedQueryPhase.queryPhaseRankCoordinatorContext() == null
-            && Arrays.stream(reducedQueryPhase.sortedTopDocs().scoreDocs()).noneMatch(x-> x instanceof RankFeatureDoc);
+            && Arrays.stream(reducedQueryPhase.sortedTopDocs().scoreDocs()).noneMatch(x -> x instanceof RankFeatureDoc);
         if (queryAndFetchOptimization) {
             assert assertConsistentWithQueryAndFetchOptimization();
             // query AND fetch optimization

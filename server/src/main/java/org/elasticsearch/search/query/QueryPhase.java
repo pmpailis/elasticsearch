@@ -36,6 +36,7 @@ import org.elasticsearch.search.aggregations.AggregationPhase;
 import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.internal.ScrollContext;
 import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.rank.RankBuilder;
 import org.elasticsearch.search.rank.RankSearchContext;
 import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rescore.RescorePhase;
@@ -60,6 +61,15 @@ public class QueryPhase {
 
     public static void execute(SearchContext searchContext) throws QueryPhaseExecutionException {
         if (searchContext.queryPhaseRankShardContext() == null) {
+            if (searchContext.request().source().rankBuilder() != null) {
+                RankBuilder rb = searchContext.request().source().rankBuilder();
+                int size = rb.rankWindowSize();
+                while (rb != null) {
+                    size = rb.rankWindowSize();
+                    rb = rb.delegateRankBuilder();
+                }
+                searchContext.size(size);
+            }
             executeQuery(searchContext);
         } else {
             executeRank(searchContext);

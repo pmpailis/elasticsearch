@@ -47,6 +47,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
@@ -203,7 +204,12 @@ public class FieldBasedRerankerIT extends AbstractRerankerIT {
         }
 
         @Override
-        public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+        public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+            int size,
+            int from,
+            Client client,
+            Supplier<RankFeaturePhaseRankCoordinatorContext> delegate
+        ) {
             return new RankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize()) {
                 @Override
                 protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {

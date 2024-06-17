@@ -457,7 +457,11 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     }
 
     public SearchSourceBuilder rankBuilder(RankBuilder rankBuilder) {
-        this.rankBuilder = rankBuilder;
+        if (this.rankBuilder != null) {
+            this.rankBuilder = rankBuilder.wrap(this.rankBuilder);
+        } else {
+            this.rankBuilder = rankBuilder;
+        }
         return this;
     }
 

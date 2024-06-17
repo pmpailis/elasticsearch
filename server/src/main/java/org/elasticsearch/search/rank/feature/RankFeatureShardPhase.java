@@ -47,9 +47,12 @@ public final class RankFeatureShardPhase {
 
         RankFeaturePhaseRankShardContext rankFeaturePhaseRankShardContext = shardContext(searchContext);
         if (rankFeaturePhaseRankShardContext != null) {
-            assert rankFeaturePhaseRankShardContext.getField() != null : "field must not be null";
+            assert rankFeaturePhaseRankShardContext.getFields() != null && false == rankFeaturePhaseRankShardContext.getFields().isEmpty()
+                : "fields must not be null or empty";
             searchContext.fetchFieldsContext(
-                new FetchFieldsContext(Collections.singletonList(new FieldAndFormat(rankFeaturePhaseRankShardContext.getField(), null)))
+                new FetchFieldsContext(
+                    rankFeaturePhaseRankShardContext.getFields().stream().map(field -> new FieldAndFormat(field, null)).toList()
+                )
             );
             searchContext.storedFieldsContext(StoredFieldsContext.fromList(Collections.singletonList(StoredFieldsContext._NONE_)));
             searchContext.addFetchResult();

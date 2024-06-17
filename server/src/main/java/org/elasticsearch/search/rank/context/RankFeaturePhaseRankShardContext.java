@@ -12,6 +12,8 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.rank.RankShardResult;
 
+import java.util.List;
+
 /**
  * {@link RankFeaturePhaseRankShardContext} is a base class used to execute the RankFeature phase on each shard.
  * In this class, we can fetch the feature data for a given set of documents and pass them back to the coordinator
@@ -19,14 +21,14 @@ import org.elasticsearch.search.rank.RankShardResult;
  */
 public abstract class RankFeaturePhaseRankShardContext {
 
-    protected final String field;
+    protected final List<String> fields;
 
-    public RankFeaturePhaseRankShardContext(final String field) {
-        this.field = field;
+    public RankFeaturePhaseRankShardContext(final List<String> fields) {
+        this.fields = fields;
     }
 
-    public String getField() {
-        return field;
+    public List<String> getFields() {
+        return fields;
     }
 
     /**

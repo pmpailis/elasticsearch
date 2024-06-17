@@ -7,41 +7,21 @@
 
 package org.elasticsearch.xpack.core.ml.rerank;
 
-import org.apache.lucene.util.SetOnce;
-import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.search.SearchRequest;
-import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.action.search.TransportSearchAction;
 import org.elasticsearch.common.ParsingException;
-import org.elasticsearch.common.xcontent.SuggestingErrorOnUnknown;
 import org.elasticsearch.features.NodeFeature;
-import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
-import org.elasticsearch.search.fetch.StoredFieldsContext;
-import org.elasticsearch.search.rank.RankDoc;
-import org.elasticsearch.search.retriever.RankDocsRetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverParserContext;
-import org.elasticsearch.search.sort.FieldSortBuilder;
-import org.elasticsearch.search.sort.ScoreSortBuilder;
-import org.elasticsearch.search.sort.ShardDocSortField;
-import org.elasticsearch.search.sort.SortBuilder;
-import org.elasticsearch.xcontent.NamedObjectNotFoundException;
 import org.elasticsearch.xcontent.ObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
-import org.elasticsearch.xcontent.XContentLocation;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xpack.core.XPackField;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
 
 import static org.elasticsearch.search.rank.RankBuilder.DEFAULT_RANK_WINDOW_SIZE;
 
@@ -143,7 +123,7 @@ public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public boolean isCompound() {
-        return true;
+        return retrieverBuilder.isCompound();
     }
 
     @Override
@@ -153,10 +133,6 @@ public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
-        if (ctx.pointInTimeBuilder() == null) {
-            throw new IllegalStateException("PIT is required");
-        }
-
         // Rewrite prefilters
         boolean hasChanged = false;
         var newPreFilters = rewritePreFilters(ctx);
@@ -168,74 +144,11 @@ public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
             return new TextSimilarityRankRetrieverBuilder(this, field, inferenceText, inferenceId, newRetriever, newPreFilters);
         }
         return this;
-
-        // execute search
-//        final SetOnce<RankDoc[]> results = new SetOnce<>();
-//        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder().pointInTimeBuilder(ctx.pointInTimeBuilder())
-//            .trackTotalHits(false)
-//            .storedFields(new StoredFieldsContext(false))
-//            .size(windowSize);
-//        // apply the pre-filters
-//        if (false == preFilterQueryBuilders.isEmpty()) {
-//            QueryBuilder query = searchSourceBuilder.query();
-//            BoolQueryBuilder newQuery = new BoolQueryBuilder();
-//            if (query != null) {
-//                newQuery.must(query);
-//            }
-//            preFilterQueryBuilders.forEach(newQuery::filter);
-//            searchSourceBuilder.query(newQuery);
-//        }
-//        retrieverBuilder.extractToSearchSourceBuilder(searchSourceBuilder, false);
-//        List<SortBuilder<?>> sortBuilders = new ArrayList<>();
-//        sortBuilders.add(new ScoreSortBuilder());
-//        sortBuilders.add(new FieldSortBuilder(FieldSortBuilder.SHARD_DOC_FIELD_NAME));
-//        searchSourceBuilder.sort(sortBuilders);
-//        searchSourceBuilder.rankBuilder(
-//            new TextSimilarityRankBuilder(this.field, this.inferenceId, this.inferenceText, this.windowSize, this.minScore)
-//        );
-//        SearchRequest searchRequest = new SearchRequest().source(searchSourceBuilder);
-//        // The can match phase can reorder shards, so we disable it to ensure the stable ordering
-//        searchRequest.setPreFilterShardSize(Integer.MAX_VALUE);
-//        ctx.registerAsyncAction((client, listener) -> {
-//            client.execute(TransportSearchAction.TYPE, searchRequest, new ActionListener<>() {
-//                @Override
-//                public void onResponse(SearchResponse response) {
-//                    RankDoc[] topDocs = getTopDocs(response);
-//                    results.set(topDocs);
-//                    listener.onResponse(null);
-//                }
-//
-//                @Override
-//                public void onFailure(Exception e) {
-//                    listener.onFailure(e);
-//                }
-//            });
-//        });
-//
-//        return new RankDocsRetrieverBuilder(windowSize, Collections.singletonList(newRetriever), results::get, newPreFilters);
     }
-
-//    private RankDoc[] getTopDocs(SearchResponse searchResponse) {
-//        int size = Math.min(windowSize, searchResponse.getHits().getHits().length);
-//        RankDoc[] docs = new RankDoc[size];
-//        for (int i = 0; i < size; i++) {
-//            var hit = searchResponse.getHits().getAt(i);
-//            long sortValue = (long) hit.getRawSortValues()[hit.getRawSortValues().length - 1];
-//            int doc = ShardDocSortField.decodeDoc(sortValue);
-//            int shardRequestIndex = ShardDocSortField.decodeShardRequestIndex(sortValue);
-//            docs[i] = new TextSimilarityRankDoc(doc, hit.getScore(), shardRequestIndex);
-//            docs[i].rank = hit.getRank();
-//        }
-//        return docs;
-//    }
 
     @Override
     public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         retrieverBuilder.extractToSearchSourceBuilder(searchSourceBuilder, false);
-//        List<SortBuilder<?>> sortBuilders = new ArrayList<>();
-//        sortBuilders.add(new ScoreSortBuilder());
-//        sortBuilders.add(new FieldSortBuilder(FieldSortBuilder.SHARD_DOC_FIELD_NAME));
-//        searchSourceBuilder.sort(sortBuilders);
         searchSourceBuilder.rankBuilder(
             new TextSimilarityRankBuilder(this.field, this.inferenceId, this.inferenceText, this.windowSize, this.minScore)
         );
