@@ -156,7 +156,7 @@ public class RankDocsQuery extends Query {
 
     @Override
     public String toString(String field) {
-        return "ScoreAndDocQuery";
+        return "RankDocsQuery";
     }
 
     @Override

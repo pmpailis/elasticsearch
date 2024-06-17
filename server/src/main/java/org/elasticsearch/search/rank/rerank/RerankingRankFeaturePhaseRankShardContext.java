@@ -52,6 +52,7 @@ public class RerankingRankFeaturePhaseRankShardContext extends RankFeaturePhaseR
             logger.warn(
                 "Error while fetching feature data for {fields: ["
                     + fields
+
                     + "]} and {docids: ["
                     + Arrays.stream(hits.getHits()).map(SearchHit::docId).toList()
                     + "]}.",

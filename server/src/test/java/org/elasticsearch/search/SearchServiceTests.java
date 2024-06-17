@@ -510,14 +510,17 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
                             @Override
                             public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                                return new RankFeaturePhaseRankShardContext(rankFeatureFieldName) {
+                                return new RankFeaturePhaseRankShardContext(Collections.singletonList(rankFeatureFieldName)) {
                                     @Override
                                     public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                                         RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
                                         for (int i = 0; i < hits.getHits().length; i++) {
                                             SearchHit hit = hits.getHits()[i];
                                             rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
-                                            rankFeatureDocs[i].featureData(hit.getFields().get(rankFeatureFieldName).getValue());
+                                            rankFeatureDocs[i].featureData(
+                                                rankFeatureFieldName,
+                                                hit.getFields().get(rankFeatureFieldName).getValue()
+                                            );
                                             rankFeatureDocs[i].score = (numDocs - i) + randomFloat();
                                             rankFeatureDocs[i].rank = i + 1;
                                         }
@@ -743,14 +746,17 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
                                 @Override
                                 public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                                    return new RankFeaturePhaseRankShardContext(rankFeatureFieldName) {
+                                    return new RankFeaturePhaseRankShardContext(Collections.singletonList(rankFeatureFieldName)) {
                                         @Override
                                         public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                                             RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
                                             for (int i = 0; i < hits.getHits().length; i++) {
                                                 SearchHit hit = hits.getHits()[i];
                                                 rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
-                                                rankFeatureDocs[i].featureData(hit.getFields().get(rankFeatureFieldName).getValue());
+                                                rankFeatureDocs[i].featureData(
+                                                    rankFeatureFieldName,
+                                                    hit.getFields().get(rankFeatureFieldName).getValue()
+                                                );
                                                 rankFeatureDocs[i].score = randomFloat();
                                                 rankFeatureDocs[i].rank = i + 1;
                                             }
@@ -870,14 +876,17 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
                             @Override
                             public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                                return new RankFeaturePhaseRankShardContext(rankFeatureFieldName) {
+                                return new RankFeaturePhaseRankShardContext(Collections.singletonList(rankFeatureFieldName)) {
                                     @Override
                                     public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                                         RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
                                         for (int i = 0; i < hits.getHits().length; i++) {
                                             SearchHit hit = hits.getHits()[i];
                                             rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
-                                            rankFeatureDocs[i].featureData(hit.getFields().get(rankFeatureFieldName).getValue());
+                                            rankFeatureDocs[i].featureData(
+                                                rankFeatureFieldName,
+                                                hit.getFields().get(rankFeatureFieldName).getValue()
+                                            );
                                             rankFeatureDocs[i].score = randomFloat();
                                             rankFeatureDocs[i].rank = i + 1;
                                         }
@@ -1003,7 +1012,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
                                 @Override
                                 public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                                    return new RankFeaturePhaseRankShardContext(rankFeatureFieldName) {
+                                    return new RankFeaturePhaseRankShardContext(Collections.singletonList(rankFeatureFieldName)) {
                                         @Override
                                         public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                                             throw new UnsupportedOperationException("simulated failure");
@@ -1131,7 +1140,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
                                 @Override
                                 public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                                    return new RankFeaturePhaseRankShardContext(rankFeatureFieldName) {
+                                    return new RankFeaturePhaseRankShardContext(Collections.singletonList(rankFeatureFieldName)) {
                                         @Override
                                         public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                                             if (shardId == 0) {
@@ -1141,7 +1150,10 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                                 for (int i = 0; i < hits.getHits().length; i++) {
                                                     SearchHit hit = hits.getHits()[i];
                                                     rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
-                                                    rankFeatureDocs[i].featureData(hit.getFields().get(rankFeatureFieldName).getValue());
+                                                    rankFeatureDocs[i].featureData(
+                                                        rankFeatureFieldName,
+                                                        hit.getFields().get(rankFeatureFieldName).getValue()
+                                                    );
                                                     rankFeatureDocs[i].score = randomFloat();
                                                     rankFeatureDocs[i].rank = i + 1;
                                                 }

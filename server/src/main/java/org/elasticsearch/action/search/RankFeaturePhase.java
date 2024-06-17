@@ -245,10 +245,10 @@ public class RankFeaturePhase extends SearchPhase {
             docAndShardToFields.computeIfAbsent(doc.doc, k -> new HashMap<>());
             docAndShardToFields.get(doc.doc).put(doc.shardIndex, ((FieldDoc) doc).fields);
         }
-//        for (ScoreDoc doc : rerankedDocs) {
-//            assert doc instanceof RankFeatureDoc;
-//            ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex).f;
-//        }
+        // for (ScoreDoc doc : rerankedDocs) {
+        // assert doc instanceof RankFeatureDoc;
+        // ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex).f;
+        // }
     }
 
     private float maxScore(ScoreDoc[] scoreDocs) {

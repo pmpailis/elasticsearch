@@ -469,7 +469,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         });
 
         final SearchSourceBuilder source = searchRequest.source();
-        if (source != null && source.retrieverBuilder() == null) {
+        if (source == null || source.retrieverBuilder() == null) {
             Rewriteable.rewriteAndFetch(
                 searchRequest,
                 searchService.getRewriteContext(timeProvider::absoluteStartMillis, resolvedIndices),
@@ -477,15 +477,19 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             );
             return;
         }
+
         final RetrieverBuilder retriever = source.retrieverBuilder();
-        if (retriever != null && retriever.isCompound() && source.pointInTimeBuilder() == null) {
+        if (retriever.isCompound() && source.pointInTimeBuilder() == null) {
             OpenPointInTimeRequest pitReq = new OpenPointInTimeRequest(searchRequest.indices()).indicesOptions(
                 searchRequest.indicesOptions()
-            ).preference(searchRequest.preference()).routing(searchRequest.routing()).keepAlive(TimeValue.ONE_MINUTE);
+            )
+                .preference(searchRequest.preference())
+                .routing(searchRequest.routing())
+                .keepAlive(TimeValue.timeValueMillis(searchService.getDefaultKeepAliveInMillis()));
             client.execute(TransportOpenPointInTimeAction.TYPE, pitReq, new ActionListener<>() {
                 @Override
                 public void onResponse(OpenPointInTimeResponse resp) {
-                    source.pointInTimeBuilder(new PointInTimeBuilder(resp.getPointInTimeId()));
+                    source.pointInTimeBuilder(new PointInTimeBuilder(resp.getPointInTimeId()).setKeepAlive(TimeValue.MINUS_ONE));
                     executeRequest(
                         task,
                         searchRequest,

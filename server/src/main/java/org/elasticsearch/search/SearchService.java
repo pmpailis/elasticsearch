@@ -1836,6 +1836,10 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         return indicesService;
     }
 
+    public long getDefaultKeepAliveInMillis() {
+        return defaultKeepAlive;
+    }
+
     /**
      * Returns a builder for {@link AggregationReduceContext}.
      */

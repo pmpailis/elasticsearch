@@ -136,6 +136,10 @@ public final class PointInTimeBuilder implements Writeable, ToXContentFragment {
         return keepAlive;
     }
 
+    public boolean shouldReport() {
+        return keepAlive == null || TimeValue.MINUS_ONE.equals(keepAlive) == false;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

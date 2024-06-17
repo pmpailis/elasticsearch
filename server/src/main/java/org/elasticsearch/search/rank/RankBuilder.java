@@ -123,7 +123,9 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
             size,
             from,
             client,
-            () -> delegateRankBuilder == null ? null : delegateRankBuilder.doBuildRankFeaturePhaseCoordinatorContext(size, from, client, null)
+            () -> delegateRankBuilder == null
+                ? null
+                : delegateRankBuilder.doBuildRankFeaturePhaseCoordinatorContext(size, from, client, null)
         );
     }
 
@@ -154,7 +156,7 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
         return Strings.toString(this, true, true);
     }
 
-    public RankBuilder delegateRankBuilder(){
+    public RankBuilder delegateRankBuilder() {
         return this.delegateRankBuilder;
     }
 

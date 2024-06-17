@@ -231,6 +231,7 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
 
         private final String inferenceId;
         private final String inferenceText;
+        private final String field;
         private final Client client;
 
         TestRerankingRankFeaturePhaseRankCoordinatorContext(
@@ -239,12 +240,14 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
             int windowSize,
             Client client,
             String inferenceId,
-            String inferenceText
+            String inferenceText,
+            String field
         ) {
             super(size, from, windowSize);
             this.client = client;
             this.inferenceId = inferenceId;
             this.inferenceText = inferenceText;
+            this.field = field;
         }
 
         protected TestRerankingActionRequest generateRequest(List<String> docFeatures) {
@@ -272,7 +275,7 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
                 l.onResponse(scores);
             });
 
-            List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData).toList();
+            List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData.get(field).toString()).toList();
             TestRerankingActionRequest request = generateRequest(featureData);
             try {
                 ActionType<TestRerankingActionResponse> action = actionType();
@@ -390,7 +393,8 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
                 rankWindowSize(),
                 client,
                 inferenceId,
-                inferenceText
+                inferenceText,
+                field
             );
         }
 
@@ -533,7 +537,8 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
                     rankWindowSize(),
                     client,
                     inferenceId,
-                    inferenceText
+                    inferenceText,
+                    field
                 ) {
                     @Override
                     protected TestRerankingActionRequest generateRequest(List<String> docFeatures) {

@@ -56,6 +56,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 public class RankFeaturePhaseTests extends ESTestCase {
 
@@ -920,7 +921,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
     }
 
     private RankFeaturePhaseRankShardContext defaultRankFeaturePhaseRankShardContext(String field) {
-        return new RankFeaturePhaseRankShardContext(field) {
+        return new RankFeaturePhaseRankShardContext(Collections.singletonList(field)) {
             @Override
             public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                 RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
@@ -928,7 +929,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
                     SearchHit hit = hits.getHits()[i];
                     rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
                     rankFeatureDocs[i].score += 100f;
-                    rankFeatureDocs[i].featureData("ranked_" + hit.docId());
+                    rankFeatureDocs[i].featureData(field, "ranked_" + hit.docId());
                     rankFeatureDocs[i].rank = i + 1;
                 }
                 return new RankFeatureShardResult(rankFeatureDocs);
@@ -1020,7 +1021,12 @@ public class RankFeaturePhaseTests extends ESTestCase {
             }
 
             @Override
-            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+            public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+                int size,
+                int from,
+                Client client,
+                Supplier<RankFeaturePhaseRankCoordinatorContext> rankFeaturePhaseRankCoordinatorContextSupplier
+            ) {
                 return rankFeaturePhaseRankCoordinatorContext;
             }
 

@@ -47,6 +47,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.search.rank.RankBuilder.DEFAULT_RANK_WINDOW_SIZE;
 import static org.mockito.Mockito.mock;
@@ -151,14 +152,14 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
 
             @Override
             public RankFeaturePhaseRankShardContext buildRankFeaturePhaseShardContext() {
-                return new RankFeaturePhaseRankShardContext(field) {
+                return new RankFeaturePhaseRankShardContext(Collections.singletonList(field)) {
                     @Override
                     public RankShardResult buildRankFeatureShardResult(SearchHits hits, int shardId) {
                         RankFeatureDoc[] rankFeatureDocs = new RankFeatureDoc[hits.getHits().length];
                         for (int i = 0; i < hits.getHits().length; i++) {
                             SearchHit hit = hits.getHits()[i];
                             rankFeatureDocs[i] = new RankFeatureDoc(hit.docId(), hit.getScore(), shardId);
-                            rankFeatureDocs[i].featureData(hit.getFields().get(field).getValue());
+                            rankFeatureDocs[i].featureData(field, hit.getFields().get(field).getValue());
                             rankFeatureDocs[i].rank = i + 1;
                         }
                         return new RankFeatureShardResult(rankFeatureDocs);
@@ -168,7 +169,12 @@ public class RankFeatureShardPhaseTests extends ESTestCase {
 
             // no work to be done on the coordinator node for the rank feature phase
             @Override
-            public RankFeaturePhaseRankCoordinatorContext buildRankFeaturePhaseCoordinatorContext(int size, int from, Client client) {
+            public RankFeaturePhaseRankCoordinatorContext doBuildRankFeaturePhaseCoordinatorContext(
+                int size,
+                int from,
+                Client client,
+                Supplier<RankFeaturePhaseRankCoordinatorContext> rankFeaturePhaseRankCoordinatorContext
+            ) {
                 return null;
             }
 
