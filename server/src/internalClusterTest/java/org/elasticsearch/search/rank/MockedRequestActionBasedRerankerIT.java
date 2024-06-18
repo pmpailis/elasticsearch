@@ -266,13 +266,16 @@ public class MockedRequestActionBasedRerankerIT extends AbstractRerankerIT {
             return scores;
         }
 
-        protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+        protected void doComputeScores(RankFeatureDoc[] featureDocs, ActionListener<RankFeatureDoc[]> rankDocListener) {
             // Wrap the provided rankListener to an ActionListener that would handle the response from the inference service
             // and then pass the results
-            final ActionListener<TestRerankingActionResponse> actionListener = scoreListener.delegateFailureAndWrap((l, r) -> {
+            final ActionListener<TestRerankingActionResponse> actionListener = rankDocListener.delegateFailureAndWrap((l, r) -> {
                 float[] scores = extractScoresFromResponse(r);
                 assert scores.length == featureDocs.length;
-                l.onResponse(scores);
+                for (int i = 0; i < featureDocs.length; i++) {
+                    featureDocs[i].score = scores[i];
+                }
+                l.onResponse(featureDocs);
             });
 
             List<String> featureData = Arrays.stream(featureDocs).map(x -> x.featureData.get(field).toString()).toList();

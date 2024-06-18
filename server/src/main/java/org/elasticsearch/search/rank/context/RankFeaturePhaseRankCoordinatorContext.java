@@ -48,7 +48,26 @@ public abstract class RankFeaturePhaseRankCoordinatorContext {
      * Computes the updated scores for a list of features (i.e. document-based data). We also pass along an ActionListener
      * that should be called with the new scores, and will continue execution to the next phase
      */
-    protected abstract void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener);
+    protected abstract void doComputeScores(RankFeatureDoc[] featureDocs, ActionListener<RankFeatureDoc[]> rankDocListener);
+
+    protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<RankFeatureDoc[]> rankDocListener) {
+        if (delegate != null) {
+            delegate.computeScores(featureDocs, rankDocListener.delegateFailureAndWrap((delegateListener, delegateScoreDocs) -> {
+                Arrays.sort(delegateScoreDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
+                RankFeatureDoc[] delegateRankedDocs = Arrays.copyOfRange(
+                    delegateScoreDocs,
+                    0,
+                    Math.min(featureDocs.length, rankWindowSize)
+                );
+                doComputeScores(
+                    delegateRankedDocs,
+                    delegateListener.delegateFailureAndWrap((listener, rankDocs) -> listener.onResponse(rankDocs))
+                );
+            }));
+        } else {
+            doComputeScores(featureDocs, rankDocListener.delegateFailureAndWrap((listener, rankDocs) -> listener.onResponse(rankDocs)));
+        }
+    }
 
     /**
      * This method is responsible for ranking the global results based on the provided rank feature results from each shard.
@@ -67,30 +86,8 @@ public abstract class RankFeaturePhaseRankCoordinatorContext {
     ) {
         // extract feature data from each shard rank-feature phase result
         RankFeatureDoc[] featureDocs = extractFeatureDocs(rankSearchResults);
-
-        if (delegate != null) {
-            delegate.computeScores(featureDocs, rankListener.delegateFailureAndWrap((delegateListener, intermediateScores) -> {
-                for (int i = 0; i < featureDocs.length; i++) {
-                    featureDocs[i].score = intermediateScores[i];
-                }
-                Arrays.sort(featureDocs, Comparator.comparing((RankFeatureDoc doc) -> doc.score).reversed());
-                RankFeatureDoc[] delegateRank = Arrays.stream(featureDocs).limit(rankWindowSize).toArray(RankFeatureDoc[]::new);
-                computeScores(delegateRank, delegateListener.delegateFailureAndWrap((listener, scores) -> {
-                    for (int i = 0; i < delegateRank.length; i++) {
-                        delegateRank[i].score = scores[i];
-                    }
-                    listener.onResponse(delegateRank);
-                }));
-            }));
-        } else {
-            // generate the final `topResults` results, and pass them to fetch phase through the `rankListener`
-            computeScores(featureDocs, rankListener.delegateFailureAndWrap((listener, scores) -> {
-                for (int i = 0; i < featureDocs.length; i++) {
-                    featureDocs[i].score = scores[i];
-                }
-                listener.onResponse(featureDocs);
-            }));
-        }
+        // generate the final `topResults` results, and pass them to fetch phase through the `rankListener`
+        computeScores(featureDocs, rankListener.delegateFailureAndWrap((listener, rerankedDocs) -> { listener.onResponse(rerankedDocs); }));
     }
 
     /**

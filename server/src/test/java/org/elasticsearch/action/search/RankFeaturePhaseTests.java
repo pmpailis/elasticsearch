@@ -856,7 +856,7 @@ public class RankFeaturePhaseTests extends ESTestCase {
         return new RankFeaturePhaseRankCoordinatorContext(size, from, rankWindowSize) {
 
             @Override
-            protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+            protected void doComputeScores(RankFeatureDoc[] featureDocs, ActionListener<RankFeatureDoc[]> scoreListener) {
                 // no-op
                 // this one is handled directly in rankGlobalResults to create a RankFeatureDoc
                 // and avoid modifying in-place the ScoreDoc's rank

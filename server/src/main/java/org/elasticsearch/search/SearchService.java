@@ -1518,6 +1518,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         int numSuggestDocs = 0;
         final List<CompletionSuggestion> completionSuggestions;
         if (suggest != null && suggest.hasScoreDocs()) {
+
             completionSuggestions = suggest.filter(CompletionSuggestion.class);
             for (CompletionSuggestion completionSuggestion : completionSuggestions) {
                 numSuggestDocs += completionSuggestion.getOptions().size();

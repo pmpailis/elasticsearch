@@ -686,12 +686,18 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
-                                        protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+                                        protected void doComputeScores(
+                                            RankFeatureDoc[] featureDocs,
+                                            ActionListener<RankFeatureDoc[]> rankDocListener
+                                        ) {
                                             float[] scores = new float[featureDocs.length];
                                             for (int i = 0; i < featureDocs.length; i++) {
                                                 scores[i] = featureDocs[i].score;
                                             }
-                                            scoreListener.onResponse(scores);
+                                            for (int i = 0; i < featureDocs.length; i++) {
+                                                featureDocs[i].score = scores[i];
+                                            }
+                                            rankDocListener.onResponse(featureDocs);
                                         }
                                     };
                                 }
@@ -833,7 +839,10 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                             ) {
                                 return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                     @Override
-                                    protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+                                    protected void doComputeScores(
+                                        RankFeatureDoc[] featureDocs,
+                                        ActionListener<RankFeatureDoc[]> scoreListener
+                                    ) {
                                         throw new IllegalStateException("should have failed earlier");
                                     }
                                 };
@@ -952,12 +961,18 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
-                                        protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+                                        protected void doComputeScores(
+                                            RankFeatureDoc[] featureDocs,
+                                            ActionListener<RankFeatureDoc[]> rankDocListener
+                                        ) {
                                             float[] scores = new float[featureDocs.length];
                                             for (int i = 0; i < featureDocs.length; i++) {
                                                 scores[i] = featureDocs[i].score;
                                             }
-                                            scoreListener.onResponse(scores);
+                                            for (int i = 0; i < featureDocs.length; i++) {
+                                                featureDocs[i].score = scores[i];
+                                            }
+                                            rankDocListener.onResponse(featureDocs);
                                         }
                                     };
                                 }
@@ -1080,12 +1095,18 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                                 ) {
                                     return new RankFeaturePhaseRankCoordinatorContext(size, from, DEFAULT_RANK_WINDOW_SIZE) {
                                         @Override
-                                        protected void computeScores(RankFeatureDoc[] featureDocs, ActionListener<float[]> scoreListener) {
+                                        protected void doComputeScores(
+                                            RankFeatureDoc[] featureDocs,
+                                            ActionListener<RankFeatureDoc[]> rankDocListener
+                                        ) {
                                             float[] scores = new float[featureDocs.length];
                                             for (int i = 0; i < featureDocs.length; i++) {
                                                 scores[i] = featureDocs[i].score;
                                             }
-                                            scoreListener.onResponse(scores);
+                                            for (int i = 0; i < featureDocs.length; i++) {
+                                                featureDocs[i].score = scores[i];
+                                            }
+                                            rankDocListener.onResponse(featureDocs);
                                         }
                                     };
                                 }
