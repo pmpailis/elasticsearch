@@ -49,6 +49,7 @@ import org.elasticsearch.search.profile.SearchProfileResultsBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
+import org.elasticsearch.search.rank.feature.RankFeatureDoc;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
@@ -466,12 +467,11 @@ public final class SearchPhaseController {
                         if (sortScoreIndex != -1) {
                             searchHit.score(((Number) fieldDoc.fields[sortScoreIndex]).floatValue());
                         }
+                    } else if (shardDoc instanceof RankFeatureDoc) {
+                        searchHit.score(shardDoc.score);
+                        searchHit.setRank(((RankFeatureDoc) shardDoc).rank);
+                        searchHit.sortValues(((RankFeatureDoc) shardDoc).fields, reducedQueryPhase.sortValueFormats);
                     }
-                    // }else if(shardDoc instanceof RankFeatureDoc){
-                    // searchHit.score(shardDoc.score);
-                    // searchHit.setRank(((RankFeatureDoc) shardDoc).rank);
-                    // searchHit.sortValues(((RankFeatureDoc) shardDoc).fields, reducedQueryPhase.sortValueFormats);
-                    // }
                 } else {
                     searchHit.score(shardDoc.score);
                 }

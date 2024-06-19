@@ -14,6 +14,9 @@ import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverParserContext;
+import org.elasticsearch.search.sort.FieldSortBuilder;
+import org.elasticsearch.search.sort.ScoreSortBuilder;
+import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.xcontent.ObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -21,6 +24,7 @@ import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xpack.core.XPackField;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.elasticsearch.search.rank.RankBuilder.DEFAULT_RANK_WINDOW_SIZE;
@@ -149,6 +153,14 @@ public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
     @Override
     public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         retrieverBuilder.extractToSearchSourceBuilder(searchSourceBuilder, false);
+        List<SortBuilder<?>> sortBuilders = searchSourceBuilder.sorts() != null
+            ? new ArrayList<>(searchSourceBuilder.sorts())
+            : new ArrayList<>();
+        if (sortBuilders.isEmpty()) {
+            sortBuilders.add(new ScoreSortBuilder());
+        }
+        sortBuilders.add(new FieldSortBuilder(FieldSortBuilder.SHARD_DOC_FIELD_NAME));
+        searchSourceBuilder.sort(sortBuilders);
         searchSourceBuilder.rankBuilder(
             new TextSimilarityRankBuilder(this.field, this.inferenceId, this.inferenceText, this.windowSize, this.minScore)
         );

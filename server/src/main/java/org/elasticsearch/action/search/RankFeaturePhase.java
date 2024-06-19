@@ -190,6 +190,7 @@ public class RankFeaturePhase extends SearchPhase {
             @Override
             public void onResponse(RankFeatureDoc[] docsWithUpdatedScores) {
                 RankFeatureDoc[] topResults = rankFeaturePhaseRankCoordinatorContext.rankAndPaginate(docsWithUpdatedScores);
+                addFieldsToScoreDocs(topResults, reducedQueryPhase.sortedTopDocs().scoreDocs());
                 SearchPhaseController.ReducedQueryPhase reducedRankFeaturePhase = newReducedQueryPhaseResults(
                     reducedQueryPhase,
                     topResults
@@ -245,10 +246,10 @@ public class RankFeaturePhase extends SearchPhase {
             docAndShardToFields.computeIfAbsent(doc.doc, k -> new HashMap<>());
             docAndShardToFields.get(doc.doc).put(doc.shardIndex, ((FieldDoc) doc).fields);
         }
-        // for (ScoreDoc doc : rerankedDocs) {
-        // assert doc instanceof RankFeatureDoc;
-        // ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex).f;
-        // }
+        for (ScoreDoc doc : rerankedDocs) {
+            assert doc instanceof RankFeatureDoc;
+            ((RankFeatureDoc) doc).fields = docAndShardToFields.get(doc.doc).get(doc.shardIndex);
+        }
     }
 
     private float maxScore(ScoreDoc[] scoreDocs) {

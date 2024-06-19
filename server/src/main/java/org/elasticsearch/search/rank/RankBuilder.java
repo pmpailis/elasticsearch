@@ -156,8 +156,11 @@ public abstract class RankBuilder implements VersionedNamedWriteable, ToXContent
         return Strings.toString(this, true, true);
     }
 
-    public RankBuilder delegateRankBuilder() {
-        return this.delegateRankBuilder;
+    public int getMaxWindowSize() {
+        if (delegateRankBuilder != null) {
+            return delegateRankBuilder.rankWindowSize();
+        }
+        return rankWindowSize;
     }
 
     public void delegate(RankBuilder rankBuilder) {
