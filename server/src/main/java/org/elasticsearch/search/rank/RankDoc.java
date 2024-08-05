@@ -12,6 +12,7 @@ import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.xcontent.ToXContentFragment;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -21,7 +22,7 @@ import java.util.Objects;
  * Subclasses should extend this with additional information
  * required for their global ranking method.
  */
-public abstract class RankDoc extends ScoreDoc implements NamedWriteable {
+public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXContentFragment {
 
     public static final int NO_RANK = -1;
 

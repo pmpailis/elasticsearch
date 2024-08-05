@@ -10,7 +10,11 @@ package org.elasticsearch.search.retriever;
 
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.features.NodeFeature;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilder;
+import org.elasticsearch.search.vectors.ExactKnnQueryBuilder;
 import org.elasticsearch.search.vectors.KnnSearchBuilder;
 import org.elasticsearch.search.vectors.QueryVectorBuilder;
 import org.elasticsearch.search.vectors.VectorData;
@@ -43,6 +47,8 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
     public static final ParseField QUERY_VECTOR_FIELD = new ParseField("query_vector");
     public static final ParseField QUERY_VECTOR_BUILDER_FIELD = new ParseField("query_vector_builder");
     public static final ParseField VECTOR_SIMILARITY = new ParseField("similarity");
+
+    private final KnnSearchBuilder knnSearchBuilder;
 
     @SuppressWarnings("unchecked")
     public static final ConstructingObjectParser<KnnRetrieverBuilder, RetrieverParserContext> PARSER = new ConstructingObjectParser<>(
@@ -111,6 +117,14 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
         this.k = k;
         this.numCands = numCands;
         this.similarity = similarity;
+        this.knnSearchBuilder = new KnnSearchBuilder(
+            field,
+            VectorData.fromFloats(queryVector),
+            queryVectorBuilder,
+            k,
+            numCands,
+            similarity
+        );
     }
 
     // ---- FOR TESTING XCONTENT PARSING ----
@@ -118,6 +132,17 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
     @Override
     public String getName() {
         return NAME;
+    }
+
+    @Override
+    public QueryBuilder topDocsQuery() {
+        // TODO nested + inner_hits
+        assert rankDocs != null : "rankDocs should have been materialized at this point";
+
+        BoolQueryBuilder knnTopResultsQuery = new BoolQueryBuilder().must(new RankDocsQueryBuilder(rankDocs))
+            .should(new ExactKnnQueryBuilder(knnSearchBuilder.getQueryVector(), knnSearchBuilder.getField(), knnSearchBuilder.getSimilarity()));
+        preFilterQueryBuilders.forEach(knnTopResultsQuery::filter);
+        return knnTopResultsQuery;
     }
 
     @Override

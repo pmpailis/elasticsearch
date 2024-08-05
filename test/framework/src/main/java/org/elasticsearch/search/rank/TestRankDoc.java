@@ -10,6 +10,7 @@ package org.elasticsearch.search.rank;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
 
@@ -41,5 +42,10 @@ public class TestRankDoc extends RankDoc {
     @Override
     public String getWriteableName() {
         return "test_rank_doc";
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        return null;
     }
 }

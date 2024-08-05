@@ -9,10 +9,12 @@ package org.elasticsearch.xpack.inference.rank.textsimilarity;
 
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.features.NodeFeature;
+import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.license.LicenseUtils;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverParserContext;
+import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilder;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -97,6 +99,11 @@ public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
         this.field = field;
         this.rankWindowSize = rankWindowSize;
         this.minScore = minScore;
+    }
+
+    @Override
+    public QueryBuilder topDocsQuery() {
+        return new RankDocsQueryBuilder(rankDocs);
     }
 
     @Override
