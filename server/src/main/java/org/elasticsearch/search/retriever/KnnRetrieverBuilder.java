@@ -136,10 +136,9 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public QueryBuilder topDocsQuery() {
-        // TODO nested + inner_hits
         assert rankDocs != null : "{rankDocs} should have been materialized at this point";
 
-        BoolQueryBuilder knnTopResultsQuery = new BoolQueryBuilder().must(new RankDocsQueryBuilder(rankDocs))
+        BoolQueryBuilder knnTopResultsQuery = new BoolQueryBuilder().filter(new RankDocsQueryBuilder(rankDocs))
             .should(
                 new ExactKnnQueryBuilder(knnSearchBuilder.getQueryVector(), knnSearchBuilder.getField(), knnSearchBuilder.getSimilarity())
             );
