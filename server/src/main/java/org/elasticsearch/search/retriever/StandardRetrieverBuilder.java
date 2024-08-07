@@ -108,19 +108,11 @@ public final class StandardRetrieverBuilder extends RetrieverBuilder implements 
 
     @Override
     public QueryBuilder topDocsQuery() {
-        /**
-         * What actions should we take with {@link KnnVectorQueryBuilder} or {@link MultiTermQueryBuilder} when a
-         * compound retriever executes the original queries? Our goal is to retain these queries in scenarios where
-         * aggregations, highlighting, or inner_hits are used. However, this approach can be costly for compound
-         * retrievers since they will be executed twice: once as a must clause at this level and a second time as a
-         * should clause at the upper level (compound retriever).
-         * Therefore, it would be beneficial to rewrite these queries at the upper level to focus solely on
-         * scoring/matching similar to what {@link RetrieverBuilder#topDocsQuery()} is doing.
-         */
+        // TODO: for compound retrievers this will have to be reworked as queries like knn could be executed twice
         if (preFilterQueryBuilders.isEmpty()) {
             return queryBuilder;
         }
-        var ret = new BoolQueryBuilder().must(queryBuilder);
+        var ret = new BoolQueryBuilder().filter(queryBuilder);
         preFilterQueryBuilders.stream().forEach(ret::filter);
         return ret;
     }
