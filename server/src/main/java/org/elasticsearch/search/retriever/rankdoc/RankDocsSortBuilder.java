@@ -29,7 +29,7 @@ import java.util.Arrays;
  * Builds a {@code RankDocsSortField} that sorts documents by their rank as computed through the {@code RankDocsRetrieverBuilder}.
  */
 public class RankDocsSortBuilder extends SortBuilder<RankDocsSortBuilder> {
-    public static final String NAME = "_rank_sort_builder";
+    public static final String NAME = "rank_docs_sort";
 
     private final RankDoc[] rankDocs;
 
@@ -72,11 +72,11 @@ public class RankDocsSortBuilder extends SortBuilder<RankDocsSortBuilder> {
     @Override
     public BucketedSort buildBucketedSort(SearchExecutionContext context, BigArrays bigArrays, int bucketSize, BucketedSort.ExtraData extra)
         throws IOException {
-        throw new UnsupportedOperationException("Not supported");
+        throw new UnsupportedOperationException("buildBucketedSort() is not supported for " + this.getClass());
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        throw new UnsupportedOperationException("Not supported");
+        throw new UnsupportedOperationException("toXContent() is not supported for " + this.getClass());
     }
 }

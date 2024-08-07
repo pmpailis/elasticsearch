@@ -106,7 +106,6 @@ public final class StandardRetrieverBuilder extends RetrieverBuilder implements 
     Float minScore;
     CollapseBuilder collapseBuilder;
 
-
     @Override
     public QueryBuilder topDocsQuery() {
         /**

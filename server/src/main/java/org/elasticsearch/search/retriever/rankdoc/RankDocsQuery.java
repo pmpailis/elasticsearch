@@ -30,6 +30,7 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
  * A {@code RankDocsQuery} returns the top k documents in the order specified by the global doc IDs.
  */
 public class RankDocsQuery extends Query {
+
     private final RankDoc[] docs;
     private final int[] segmentStarts;
     private final Object contextIdentity;
@@ -59,6 +60,10 @@ public class RankDocsQuery extends Query {
         return this;
     }
 
+    RankDoc[] rankDocs() {
+        return docs;
+    }
+
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
         if (searcher.getIndexReader().getContext().id() != contextIdentity) {
@@ -77,7 +82,7 @@ public class RankDocsQuery extends Query {
                 if (found < 0) {
                     return Explanation.noMatch("not in top k documents");
                 }
-                return null; //docs[found].explain();
+                return docs[found].explain();
             }
 
             @Override
@@ -159,7 +164,7 @@ public class RankDocsQuery extends Query {
 
     @Override
     public String toString(String field) {
-        return "RankDocsQuery";
+        return this.getClass().getSimpleName() + "{rank_docs:" + Arrays.toString(docs) + "}";
     }
 
     @Override

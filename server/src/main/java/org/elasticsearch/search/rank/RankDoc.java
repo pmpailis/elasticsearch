@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.rank;
 
+import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -42,6 +43,11 @@ public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXCon
         super(in.readVInt(), in.readFloat(), in.readVInt());
         rank = in.readVInt();
     }
+
+    /**
+     * Explain the ranking of this document.
+     */
+    public abstract Explanation explain();
 
     @Override
     public final void writeTo(StreamOutput out) throws IOException {

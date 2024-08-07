@@ -77,7 +77,7 @@ public final class RRFRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public QueryBuilder topDocsQuery() {
-        throw new IllegalStateException(getName() + " cannot be nested");
+        throw new IllegalStateException("{" + getName() + "} cannot be nested");
     }
 
     @Override

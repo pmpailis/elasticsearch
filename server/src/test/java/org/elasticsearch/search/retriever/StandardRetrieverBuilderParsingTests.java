@@ -166,6 +166,10 @@ public class StandardRetrieverBuilderParsingTests extends AbstractXContentTestCa
         }
     }
 
+    public void testTopDocsQuery() throws IOException {
+
+    }
+
     private static void assertEqualQueryOrMatchAllNone(QueryBuilder actual, QueryBuilder expected) {
         assertThat(actual, anyOf(instanceOf(MatchAllQueryBuilder.class), instanceOf(MatchNoneQueryBuilder.class), equalTo(expected)));
     }

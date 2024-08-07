@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.rank;
 
+import org.apache.lucene.search.Explanation;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -16,12 +17,19 @@ import java.io.IOException;
 
 public class TestRankDoc extends RankDoc {
 
+    public static final String NAME = "test_rank_doc";
+
     public TestRankDoc(int doc, float score, int shardIndex) {
         super(doc, score, shardIndex);
     }
 
     public TestRankDoc(StreamInput in) throws IOException {
         super(in);
+    }
+
+    @Override
+    public Explanation explain() {
+        return null;
     }
 
     @Override
@@ -41,7 +49,7 @@ public class TestRankDoc extends RankDoc {
 
     @Override
     public String getWriteableName() {
-        return "test_rank_doc";
+        return NAME;
     }
 
     @Override

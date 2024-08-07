@@ -7,9 +7,11 @@
 
 package org.elasticsearch.xpack.rank.rrf;
 
+import org.apache.lucene.search.Explanation;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.rank.RankDoc;
+import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -55,6 +57,11 @@ public class RRFRankDoc extends RankDoc {
     }
 
     @Override
+    public Explanation explain() {
+        return null;
+    }
+
+    @Override
     public void doWriteTo(StreamOutput out) throws IOException {
         out.writeVInt(rank);
         out.writeIntArray(positions);
@@ -95,5 +102,10 @@ public class RRFRankDoc extends RankDoc {
     @Override
     public String getWriteableName() {
         return NAME;
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        return null;
     }
 }

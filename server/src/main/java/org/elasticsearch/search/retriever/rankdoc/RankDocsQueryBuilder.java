@@ -25,7 +25,7 @@ import java.util.Comparator;
 
 public class RankDocsQueryBuilder extends AbstractQueryBuilder<RankDocsQueryBuilder> {
 
-    public static final String NAME = "rank";
+    public static final String NAME = "rank_docs_query";
 
     private final RankDoc[] rankDocs;
 
@@ -36,6 +36,10 @@ public class RankDocsQueryBuilder extends AbstractQueryBuilder<RankDocsQueryBuil
     public RankDocsQueryBuilder(StreamInput in) throws IOException {
         super(in);
         this.rankDocs = in.readArray(c -> c.readNamedWriteable(RankDoc.class), RankDoc[]::new);
+    }
+
+    RankDoc[] rankDocs() {
+        return rankDocs;
     }
 
     @Override
@@ -80,7 +84,7 @@ public class RankDocsQueryBuilder extends AbstractQueryBuilder<RankDocsQueryBuil
     @Override
     protected void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(NAME);
-        builder.startArray("docs");
+        builder.startArray("rank_docs");
         for (RankDoc doc : rankDocs) {
             builder.startObject();
             doc.toXContent(builder, params);

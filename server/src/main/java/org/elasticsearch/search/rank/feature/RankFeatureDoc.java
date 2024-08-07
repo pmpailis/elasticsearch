@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.rank.feature;
 
+import org.apache.lucene.search.Explanation;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.rank.RankDoc;
@@ -33,6 +34,11 @@ public class RankFeatureDoc extends RankDoc {
     public RankFeatureDoc(StreamInput in) throws IOException {
         super(in);
         featureData = in.readOptionalString();
+    }
+
+    @Override
+    public Explanation explain() {
+        return null;
     }
 
     public void featureData(String featureData) {
