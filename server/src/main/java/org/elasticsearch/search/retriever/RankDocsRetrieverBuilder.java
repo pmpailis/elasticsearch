@@ -96,7 +96,7 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
     @Override
     public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         // here we force a custom sort based on the rank of the documents
-        // should we adjust to account for other fields sort options just for the top ranked docs?
+        // TODO: should we adjust to account for other fields sort options just for the top ranked docs?
         searchSourceBuilder.sort(Collections.singletonList(new RankDocsSortBuilder(rankDocs.get())));
         if (searchSourceBuilder.explain() != null && searchSourceBuilder.explain()) {
             searchSourceBuilder.trackScores(true);

@@ -28,6 +28,8 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /**
  * A {@code RankDocsQuery} returns the top k documents in the order specified by the global doc IDs.
+ * This is used by retrievers that compute a score for a large document set, and need access to just the top results,
+ * after performing any reranking or filtering.
  */
 public class RankDocsQuery extends Query {
 
@@ -36,7 +38,7 @@ public class RankDocsQuery extends Query {
     private final Object contextIdentity;
 
     /**
-     * Creates a query.
+     * Creates a {@code RankDocsQuery} based on the provided docs.
      *
      * @param docs the global doc IDs of documents that match, in ascending order
      * @param segmentStarts the indexes in docs and scores corresponding to the first matching

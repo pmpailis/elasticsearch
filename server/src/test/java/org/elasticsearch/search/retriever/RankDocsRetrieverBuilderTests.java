@@ -8,19 +8,25 @@
 
 package org.elasticsearch.search.retriever;
 
-import org.elasticsearch.index.query.TermQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.RandomQueryBuilder;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.TestRankDoc;
+import org.elasticsearch.search.retriever.rankdoc.RankDocsSortBuilder;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
-import static org.elasticsearch.search.profile.query.RandomQueryGenerator.randomQueryBuilder;
+import static org.elasticsearch.search.vectors.KnnSearchBuilderTests.randomVector;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.instanceOf;
 
 public class RankDocsRetrieverBuilderTests extends ESTestCase {
 
-    private Supplier<TestRankDoc[]> rankDocsSupplier() {
+    private Supplier<RankDoc[]> rankDocsSupplier() {
         final int rankDocsCount = randomIntBetween(0, 10);
         final int shardIndex = 0;
         TestRankDoc[] rankDocs = new TestRankDoc[rankDocsCount];
@@ -28,22 +34,69 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
         for (int i = 0; i < rankDocsCount; i++) {
             TestRankDoc testRankDoc = new TestRankDoc(docId, randomFloat(), shardIndex);
             docId += randomInt(100);
+            rankDocs[i] = testRankDoc;
         }
         return () -> rankDocs;
     }
 
-    public void testWithStandardRetriever() {
-        final List<String> textFields = randomList(1, 3, () -> randomAlphaOfLengthBetween(1, 10));
-        final List<String> numericFields = randomList(1, 3, () -> randomAlphaOfLengthBetween(1, 10));
-
-        StandardRetrieverBuilder standardRetriever = new StandardRetrieverBuilder();
-        standardRetriever.queryBuilder = randomQueryBuilder(textFields, numericFields, 100, 5);
-        standardRetriever.retrieverName = "standardRetriever";
-        standardRetriever.preFilterQueryBuilders = new ArrayList<>();
-        if (randomBoolean()) {
-            for (int i = 0; i < randomInt(2); i++) {
-                standardRetriever.preFilterQueryBuilders.add(new TermQueryBuilder("field", "value" + i));
+    private List<RetrieverBuilder> innerRetrievers() {
+        List<RetrieverBuilder> retrievers = new ArrayList<>();
+        int numRetrievers = randomIntBetween(1, 10);
+        for (int i = 0; i < numRetrievers; i++) {
+            if (randomBoolean()) {
+                StandardRetrieverBuilder standardRetrieverBuilder = new StandardRetrieverBuilder();
+                standardRetrieverBuilder.queryBuilder = RandomQueryBuilder.createQuery(random());
+                if (randomBoolean()) {
+                    standardRetrieverBuilder.preFilterQueryBuilders = preFilters();
+                }
+                retrievers.add(standardRetrieverBuilder);
+            } else {
+                KnnRetrieverBuilder knnRetrieverBuilder = new KnnRetrieverBuilder(
+                    randomAlphaOfLength(10),
+                    randomVector(randomInt(10)),
+                    null,
+                    randomInt(10),
+                    randomIntBetween(10, 100),
+                    randomFloat()
+                );
+                if (randomBoolean()) {
+                    knnRetrieverBuilder.preFilterQueryBuilders = preFilters();
+                }
+                retrievers.add(knnRetrieverBuilder);
             }
         }
+        return retrievers;
+    }
+
+    private List<QueryBuilder> preFilters() {
+        List<QueryBuilder> preFilters = new ArrayList<>();
+        int numPreFilters = randomInt(10);
+        for (int i = 0; i < numPreFilters; i++) {
+            preFilters.add(RandomQueryBuilder.createQuery(random()));
+        }
+        return preFilters;
+    }
+
+    private RankDocsRetrieverBuilder createRandomRankDocsRetrieverBuilder() {
+        return new RankDocsRetrieverBuilder(
+            randomInt(100),
+            innerRetrievers(),
+            rankDocsSupplier(),
+            preFilters());
+    }
+
+    public void testBasic() {
+        RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
+        assertEquals(RankDocsRetrieverBuilder.NAME, retriever.getName());
+    }
+
+    public void testExtractToSearchSourceBuilder(){
+        RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
+        SearchSourceBuilder source = new SearchSourceBuilder();
+        retriever.extractToSearchSourceBuilder(source, randomBoolean());
+        assertThat(source.sorts().size(), equalTo(1));
+        assertThat(source.sorts().get(0), instanceOf(RankDocsSortBuilder.class));
+
+
     }
 }
