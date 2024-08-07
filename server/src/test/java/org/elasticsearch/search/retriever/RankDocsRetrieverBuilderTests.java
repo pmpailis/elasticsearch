@@ -8,21 +8,34 @@
 
 package org.elasticsearch.search.retriever;
 
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.DisMaxQueryBuilder;
+import org.elasticsearch.index.query.MatchAllQueryBuilder;
+import org.elasticsearch.index.query.MatchNoneQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.index.query.RandomQueryBuilder;
+import org.elasticsearch.index.query.Rewriteable;
+import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.TestRankDoc;
+import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilder;
 import org.elasticsearch.search.retriever.rankdoc.RankDocsSortBuilder;
 import org.elasticsearch.test.ESTestCase;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
 import static org.elasticsearch.search.vectors.KnnSearchBuilderTests.randomVector;
+import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.instanceOf;
+import static org.mockito.Mockito.mock;
 
 public class RankDocsRetrieverBuilderTests extends ESTestCase {
 
@@ -62,6 +75,7 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
                 if (randomBoolean()) {
                     knnRetrieverBuilder.preFilterQueryBuilders = preFilters();
                 }
+                knnRetrieverBuilder.rankDocs = rankDocsSupplier().get();
                 retrievers.add(knnRetrieverBuilder);
             }
         }
@@ -78,11 +92,7 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
     }
 
     private RankDocsRetrieverBuilder createRandomRankDocsRetrieverBuilder() {
-        return new RankDocsRetrieverBuilder(
-            randomInt(100),
-            innerRetrievers(),
-            rankDocsSupplier(),
-            preFilters());
+        return new RankDocsRetrieverBuilder(randomInt(100), innerRetrievers(), rankDocsSupplier(), preFilters());
     }
 
     public void testBasic() {
@@ -90,13 +100,70 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
         assertEquals(RankDocsRetrieverBuilder.NAME, retriever.getName());
     }
 
-    public void testExtractToSearchSourceBuilder(){
+    public void testExtractToSearchSourceBuilder() {
         RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
         SearchSourceBuilder source = new SearchSourceBuilder();
+        if (randomBoolean()) {
+            source.aggregation(new TermsAggregationBuilder("name").field("field"));
+        }
         retriever.extractToSearchSourceBuilder(source, randomBoolean());
         assertThat(source.sorts().size(), equalTo(1));
         assertThat(source.sorts().get(0), instanceOf(RankDocsSortBuilder.class));
+        assertThat(source.query(), instanceOf(BoolQueryBuilder.class));
+        BoolQueryBuilder bq = (BoolQueryBuilder) source.query();
+        if (source.aggregations() != null) {
+            assertThat(bq.must().size(), equalTo(0));
+            assertThat(bq.should().size(), greaterThanOrEqualTo(1));
+            assertThat(bq.should().get(0), instanceOf(RankDocsQueryBuilder.class));
+            assertNotNull(source.postFilter());
+            assertThat(source.postFilter(), instanceOf(RankDocsQueryBuilder.class));
+        } else {
+            assertThat(bq.must().size(), equalTo(1));
+            assertThat(bq.must().get(0), instanceOf(RankDocsQueryBuilder.class));
+            assertNull(source.postFilter());
+        }
+        assertThat(bq.filter().size(), equalTo(retriever.preFilterQueryBuilders.size()));
+    }
 
+    public void testTopDocsQuery() {
+        RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
+        QueryBuilder topDocs = retriever.topDocsQuery();
+        assertNotNull(topDocs);
+        assertThat(topDocs, instanceOf(DisMaxQueryBuilder.class));
+        assertThat(((DisMaxQueryBuilder) topDocs).innerQueries(), hasSize(retriever.sources.size()));
+    }
 
+    public void testRewrite() throws IOException {
+        RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
+        boolean compoundAdded = false;
+        if (randomBoolean()) {
+            compoundAdded = true;
+            retriever.sources.add(new TestRetrieverBuilder("compound_retriever") {
+                @Override
+                public boolean isCompound() {
+                    return true;
+                }
+            });
+        }
+        SearchSourceBuilder source = new SearchSourceBuilder().retriever(retriever);
+        QueryRewriteContext queryRewriteContext = mock(QueryRewriteContext.class);
+        if (compoundAdded) {
+            expectThrows(AssertionError.class, () -> Rewriteable.rewrite(source, queryRewriteContext));
+        } else {
+            SearchSourceBuilder rewrittenSource = Rewriteable.rewrite(source, queryRewriteContext);
+            assertNull(rewrittenSource.retriever());
+            assertTrue(rewrittenSource.knnSearch().isEmpty());
+            assertThat(
+                rewrittenSource.query(),
+                anyOf(instanceOf(BoolQueryBuilder.class), instanceOf(MatchAllQueryBuilder.class), instanceOf(MatchNoneQueryBuilder.class))
+            );
+            if (rewrittenSource.query() instanceof BoolQueryBuilder) {
+                BoolQueryBuilder bq = (BoolQueryBuilder) rewrittenSource.query();
+                assertThat(bq.filter().size(), equalTo(retriever.preFilterQueryBuilders.size()));
+                // we don't have any aggregations so the RankDocs query is set as a must clause
+                assertThat(bq.must().size(), equalTo(1));
+                assertThat(bq.must().get(0), instanceOf(RankDocsQueryBuilder.class));
+            }
+        }
     }
 }

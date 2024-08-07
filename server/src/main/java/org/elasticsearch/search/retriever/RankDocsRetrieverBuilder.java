@@ -32,8 +32,8 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
 
     public static final String NAME = "rank_docs_retriever";
     private final int rankWindowSize;
-    private final List<RetrieverBuilder> sources;
-    private final Supplier<RankDoc[]> rankDocs;
+    final List<RetrieverBuilder> sources;
+    final Supplier<RankDoc[]> rankDocs;
 
     public RankDocsRetrieverBuilder(
         int rankWindowSize,
@@ -107,6 +107,12 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
         // so we just post-filter the top hits based on the rank queries we have
         if (searchSourceBuilder.aggregations() != null) {
             boolQuery.should(rankQuery);
+            // compute a disjunction of all the query sources that were executed to compute the top rank docs
+            QueryBuilder disjunctionOfSources = topDocsQuery();
+            if (disjunctionOfSources != null) {
+                boolQuery.should(disjunctionOfSources);
+            }
+            // post filter the results so that the top docs are still the same
             searchSourceBuilder.postFilter(rankQuery);
         } else {
             boolQuery.must(rankQuery);
@@ -114,12 +120,6 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
         // add any prefilters present in the retriever
         for (var preFilterQueryBuilder : preFilterQueryBuilders) {
             boolQuery.filter(preFilterQueryBuilder);
-        }
-        // compute a disjunction of all the query sources that were executed to compute the top rank docs
-        QueryBuilder originalQuery = topDocsQuery();
-        // if we have aggregations, expand the matching result set to include all hits from source queries
-        if (searchSourceBuilder.aggregations() != null) {
-            boolQuery.should(originalQuery);
         }
         searchSourceBuilder.query(boolQuery);
     }
