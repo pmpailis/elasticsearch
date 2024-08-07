@@ -58,7 +58,28 @@ public class RRFRankDoc extends RankDoc {
 
     @Override
     public Explanation explain() {
-        return null;
+        // ideally we'd need access to the rank constant to provide score info for this one
+        int queries = positions.length;
+        Explanation[] details = new Explanation[queries];
+        for (int i = 0; i < queries; i++) {
+            final String queryIndex = "at index [" + i + "]";
+            if (positions[i] == RRFRankDoc.NO_RANK) {
+                final String description = "rrf score: [0], result not found in query " + queryIndex;
+                details[i] = Explanation.noMatch(description);
+            } else {
+                final int rank = positions[i] + 1;
+                details[i] = Explanation.match(rank, "rank [" + (rank) + "] in query " + queryIndex);
+            }
+        }
+        return Explanation.match(
+            score,
+            "rrf score: ["
+                + score
+                + "] computed for initial ranks "
+                + Arrays.toString(Arrays.stream(positions).map(x -> x + 1).toArray())
+                + "] as sum of [1 / (rank + rankConstant)] for each query",
+            details
+        );
     }
 
     @Override

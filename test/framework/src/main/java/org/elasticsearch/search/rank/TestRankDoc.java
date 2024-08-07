@@ -29,7 +29,7 @@ public class TestRankDoc extends RankDoc {
 
     @Override
     public Explanation explain() {
-        return null;
+        throw new UnsupportedOperationException("not supported for {" + getClass() + "}");
     }
 
     @Override

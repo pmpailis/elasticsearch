@@ -95,11 +95,6 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
         return new RankDocsRetrieverBuilder(randomInt(100), innerRetrievers(), rankDocsSupplier(), preFilters());
     }
 
-    public void testBasic() {
-        RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
-        assertEquals(RankDocsRetrieverBuilder.NAME, retriever.getName());
-    }
-
     public void testExtractToSearchSourceBuilder() {
         RankDocsRetrieverBuilder retriever = createRandomRankDocsRetrieverBuilder();
         SearchSourceBuilder source = new SearchSourceBuilder();

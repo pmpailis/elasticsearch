@@ -82,7 +82,7 @@ public class RankDocsQuery extends Query {
             public Explanation explain(LeafReaderContext context, int doc) {
                 int found = Arrays.binarySearch(docs, doc + context.docBase, (a, b) -> Integer.compare(((RankDoc) a).doc, (int) b));
                 if (found < 0) {
-                    return Explanation.noMatch("not in top k documents");
+                    return Explanation.noMatch("doc not found in top " + docs.length + " rank docs");
                 }
                 return docs[found].explain();
             }

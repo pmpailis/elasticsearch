@@ -24,7 +24,7 @@ public class RankFeatureDoc extends RankDoc {
 
     public static final String NAME = "rank_feature_doc";
 
-    // todo: update to support more than 1 fields; and not restrict to string data
+    // TODO: update to support more than 1 fields; and not restrict to string data
     public String featureData;
 
     public RankFeatureDoc(int doc, float score, int shardIndex) {
@@ -38,7 +38,7 @@ public class RankFeatureDoc extends RankDoc {
 
     @Override
     public Explanation explain() {
-        return null;
+        throw new UnsupportedOperationException("explain is not supported for {" + getClass() + "}");
     }
 
     public void featureData(String featureData) {

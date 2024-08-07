@@ -44,11 +44,6 @@ public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXCon
         rank = in.readVInt();
     }
 
-    /**
-     * Explain the ranking of this document.
-     */
-    public abstract Explanation explain();
-
     @Override
     public final void writeTo(StreamOutput out) throws IOException {
         out.writeVInt(doc);
@@ -59,6 +54,11 @@ public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXCon
     }
 
     protected abstract void doWriteTo(StreamOutput out) throws IOException;
+
+    /**
+     * Explain the ranking of this document.
+     */
+    public abstract Explanation explain();
 
     @Override
     public final boolean equals(Object o) {
