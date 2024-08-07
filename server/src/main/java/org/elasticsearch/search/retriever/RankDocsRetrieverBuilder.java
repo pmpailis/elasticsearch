@@ -54,6 +54,9 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
 
     private boolean sourceShouldRewrite(QueryRewriteContext ctx) throws IOException {
         for (var source : sources) {
+            if (source.isCompound()) {
+                return true;
+            }
             var newSource = source.rewrite(ctx);
             if (newSource != source) {
                 return true;

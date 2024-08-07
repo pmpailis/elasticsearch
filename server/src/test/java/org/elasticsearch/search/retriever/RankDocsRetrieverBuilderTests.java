@@ -33,8 +33,8 @@ public class RankDocsRetrieverBuilderTests extends ESTestCase {
     }
 
     public void testWithStandardRetriever() {
-        final List<String> textFields = randomList(2, () -> randomAlphaOfLengthBetween(1, 10));
-        final List<String> numericFields = randomList(2, () -> randomAlphaOfLengthBetween(1, 10));
+        final List<String> textFields = randomList(1, 3, () -> randomAlphaOfLengthBetween(1, 10));
+        final List<String> numericFields = randomList(1, 3, () -> randomAlphaOfLengthBetween(1, 10));
 
         StandardRetrieverBuilder standardRetriever = new StandardRetrieverBuilder();
         standardRetriever.queryBuilder = randomQueryBuilder(textFields, numericFields, 100, 5);

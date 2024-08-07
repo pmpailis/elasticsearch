@@ -48,8 +48,6 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
     public static final ParseField QUERY_VECTOR_BUILDER_FIELD = new ParseField("query_vector_builder");
     public static final ParseField VECTOR_SIMILARITY = new ParseField("similarity");
 
-    private final KnnSearchBuilder knnSearchBuilder;
-
     @SuppressWarnings("unchecked")
     public static final ConstructingObjectParser<KnnRetrieverBuilder, RetrieverParserContext> PARSER = new ConstructingObjectParser<>(
         "knn",
@@ -117,14 +115,6 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
         this.k = k;
         this.numCands = numCands;
         this.similarity = similarity;
-        this.knnSearchBuilder = new KnnSearchBuilder(
-            field,
-            VectorData.fromFloats(queryVector),
-            queryVectorBuilder,
-            k,
-            numCands,
-            similarity
-        );
     }
 
     // ---- FOR TESTING XCONTENT PARSING ----
@@ -139,9 +129,7 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
         assert rankDocs != null : "{rankDocs} should have been materialized at this point";
 
         BoolQueryBuilder knnTopResultsQuery = new BoolQueryBuilder().filter(new RankDocsQueryBuilder(rankDocs))
-            .should(
-                new ExactKnnQueryBuilder(knnSearchBuilder.getQueryVector(), knnSearchBuilder.getField(), knnSearchBuilder.getSimilarity())
-            );
+            .should(new ExactKnnQueryBuilder(VectorData.fromFloats(queryVector), field, similarity));
         preFilterQueryBuilders.forEach(knnTopResultsQuery::filter);
         return knnTopResultsQuery;
     }
