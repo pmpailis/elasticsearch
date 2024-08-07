@@ -18,6 +18,7 @@ import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.TransportMultiSearchAction;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
@@ -35,6 +36,7 @@ import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.hamcrest.ElasticsearchAssertions;
 import org.elasticsearch.xcontent.XContentBuilder;
+import org.elasticsearch.xcontent.XContentType;
 import org.junit.Before;
 
 import java.io.IOException;
@@ -45,6 +47,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+import static org.elasticsearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS;
 import static org.hamcrest.Matchers.equalTo;
 
 public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
@@ -56,47 +59,89 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
 
     public record RetrieverSource(RetrieverBuilder retriever, SearchSourceBuilder source) {}
 
-    private static String INDEX_DOCS = "docs";
-    private static String INDEX_QUERIES = "queries";
+    private static String INDEX = "test_index";
     private static final String ID_FIELD = "_id";
-    private static final String QUERY_FIELD = "query";
+    private static final String TEXT_FIELD = "text";
+    private static final String VECTOR_FIELD = "vector";
 
     @Before
     public void setup() throws Exception {
-        createIndex(INDEX_DOCS);
-        index(INDEX_DOCS, "doc_0", "{}");
-        index(INDEX_DOCS, "doc_1", "{}");
-        index(INDEX_DOCS, "doc_2", "{}");
-        refresh(INDEX_DOCS);
-
-        createIndex(INDEX_QUERIES);
-        index(INDEX_QUERIES, "query_0", "{ \"" + QUERY_FIELD + "\": \"doc_2\"}");
-        index(INDEX_QUERIES, "query_1", "{ \"" + QUERY_FIELD + "\": \"doc_1\"}");
-        index(INDEX_QUERIES, "query_2", "{ \"" + QUERY_FIELD + "\": \"doc_0\"}");
-        refresh(INDEX_QUERIES);
+        String mapping = """
+            {
+              "properties": {
+                "vector": {
+                  "type": "dense_vector",
+                  "dims": 3,
+                  "element_type": "float",
+                  "index": true,
+                  "similarity": "l2_norm",
+                  "index_options": {
+                    "type": "hnsw"
+                  }
+                },
+                "text": {
+                  "type": "text"
+                }
+              }
+            }
+            """;
+        createIndex(INDEX, Settings.builder().put(SETTING_NUMBER_OF_SHARDS, 1).build());
+        admin().indices().preparePutMapping(INDEX).setSource(mapping, XContentType.JSON).get();
+        indexDoc(INDEX, "doc_1", TEXT_FIELD, "the quick brown fox jumps over the lazy dog");
+        indexDoc(INDEX, "doc_2", TEXT_FIELD, "you know, for Search!", VECTOR_FIELD, new float[] { 1.0f, 2.0f, 3.0f });
+        indexDoc(INDEX, "doc_3", VECTOR_FIELD, new float[] { 6.0f, 6.0f, 6.0f });
+        indexDoc(INDEX, "doc_4", TEXT_FIELD, "aardvark is a really awesome animal, but not very quick");
+        indexDoc(INDEX, "doc_5", TEXT_FIELD, "irrelevant stuff");
+        indexDoc(INDEX, "doc_6", TEXT_FIELD, "quick quick quick quick search", VECTOR_FIELD, new float[] { 10.0f, 30.0f, 100.0f });
+        indexDoc(INDEX, "doc_7", TEXT_FIELD, "dog", VECTOR_FIELD, new float[] { 3.0f, 3.0f, 3.0f });
+        refresh(INDEX);
     }
 
     public void testRankDocsRetriever() {
         final int rankWindowSize = 100;
         SearchSourceBuilder source = new SearchSourceBuilder();
         StandardRetrieverBuilder standard0 = new StandardRetrieverBuilder();
-        standard0.queryBuilder = QueryBuilders.termQuery(ID_FIELD, "doc_0");
+        // this one retrieves docs 1, 4, and 6
+        standard0.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.queryStringQuery("quick").defaultField(TEXT_FIELD))
+            .boost(10L);
         StandardRetrieverBuilder standard1 = new StandardRetrieverBuilder();
-        standard1.queryBuilder = QueryBuilders.termQuery(ID_FIELD, "doc_1");
+        // this one retrieves docs 2 and 6 due to prefilter
+        standard1.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.termsQuery(ID_FIELD, "doc_2", "doc_3", "doc_6")).boost(20L);
+        standard1.preFilterQueryBuilders.add(QueryBuilders.queryStringQuery("search").defaultField(TEXT_FIELD));
+        // this one retrieves docs 7, 2, 3, and 6
+        KnnRetrieverBuilder knnRetrieverBuilder = new KnnRetrieverBuilder(
+            VECTOR_FIELD,
+            new float[] { 3.0f, 3.0f, 3.0f },
+            null,
+            10,
+            100,
+            null
+        );
+        // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
+        // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
+        // so ideal rank would be: 6, 2, 1, 4, 3, 7
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
-                Arrays.asList(new RetrieverSource(standard0, null), new RetrieverSource(standard1, null))
+                Arrays.asList(
+                    new RetrieverSource(standard0, null),
+                    new RetrieverSource(standard1, null),
+                    new RetrieverSource(knnRetrieverBuilder, null)
+                )
             )
         );
-        SearchRequestBuilder req = client().prepareSearch(INDEX_DOCS, INDEX_QUERIES).setSource(source);
+        SearchRequestBuilder req = client().prepareSearch(INDEX).setSource(source);
         ElasticsearchAssertions.assertResponse(req, resp -> {
             assertNull(resp.pointInTimeId());
             assertNotNull(resp.getHits().getTotalHits());
-            assertThat(resp.getHits().getTotalHits().value, equalTo(2L));
+            assertThat(resp.getHits().getTotalHits().value, equalTo(6L));
             assertThat(resp.getHits().getTotalHits().relation, equalTo(TotalHits.Relation.EQUAL_TO));
-            assertThat(resp.getHits().getAt(0).getId(), equalTo("doc_1"));
-            assertThat(resp.getHits().getAt(1).getId(), equalTo("doc_0"));
+            assertThat(resp.getHits().getAt(0).getId(), equalTo("doc_6"));
+            assertThat(resp.getHits().getAt(1).getId(), equalTo("doc_2"));
+            assertThat(resp.getHits().getAt(2).getId(), equalTo("doc_1"));
+            assertThat(resp.getHits().getAt(3).getId(), equalTo("doc_4"));
+            assertThat(resp.getHits().getAt(4).getId(), equalTo("doc_7"));
+            assertThat(resp.getHits().getAt(5).getId(), equalTo("doc_3"));
         });
     }
 
@@ -216,6 +261,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         }
 
         private RankDoc[] getRankDocs(SearchResponse searchResponse) {
+            assert searchResponse != null;
             int size = Math.min(rankWindowSize, searchResponse.getHits().getHits().length);
             RankDoc[] docs = new RankDoc[size];
             for (int i = 0; i < size; i++) {
@@ -237,35 +283,45 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
             return (int) (value >> 32);
         }
 
+        record RankDocAndHitRatio(TestRankDoc rankDoc, float hitRatio) {}
+
         /**
          * Combines the provided {@code rankResults} to return the final top documents.
          */
         public RankDoc[] combineQueryPhaseResults(List<ScoreDoc[]> rankResults) {
-            Map<RankDoc.RankKey, TestRankDoc> docsToRankResults = Maps.newMapWithExpectedSize(rankWindowSize);
+            int totalQueries = rankResults.size();
+            final float step = 1.0f / totalQueries;
+            Map<RankDoc.RankKey, RankDocAndHitRatio> docsToRankResults = Maps.newMapWithExpectedSize(rankWindowSize);
             for (var rrfRankResult : rankResults) {
                 for (ScoreDoc scoreDoc : rrfRankResult) {
                     docsToRankResults.compute(new RankDoc.RankKey(scoreDoc.doc, scoreDoc.shardIndex), (key, value) -> {
                         if (value == null) {
-                            value = new TestRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex);
+                            return new RankDocAndHitRatio(new TestRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex), step);
+                        } else {
+                            return new RankDocAndHitRatio(
+                                new TestRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex),
+                                value.hitRatio + step
+                            );
                         }
-                        value.score = Math.max(value.score, scoreDoc.score);
-                        return value;
                     });
                 }
             }
             // sort the results based on rrf score, tiebreaker based on smaller doc id
-            TestRankDoc[] sortedResults = docsToRankResults.values().toArray(TestRankDoc[]::new);
-            Arrays.sort(sortedResults, (TestRankDoc rrf1, TestRankDoc rrf2) -> {
-                if (rrf1.score != rrf2.score) {
-                    return rrf1.score < rrf2.score ? 1 : -1;
+            RankDocAndHitRatio[] sortedResults = docsToRankResults.values().toArray(RankDocAndHitRatio[]::new);
+            Arrays.sort(sortedResults, (RankDocAndHitRatio doc1, RankDocAndHitRatio doc2) -> {
+                if (doc1.hitRatio != doc2.hitRatio) {
+                    return doc1.hitRatio < doc2.hitRatio ? 1 : -1;
                 }
-                return rrf1.doc < rrf2.doc ? -1 : 1;
+                if (doc1.rankDoc.score != doc2.rankDoc.score) {
+                    return doc1.rankDoc.score < doc2.rankDoc.score ? 1 : -1;
+                }
+                return doc1.rankDoc.doc < doc2.rankDoc.doc ? -1 : 1;
             });
             // trim the results if needed, otherwise each shard will always return `rank_window_size` results.
             // pagination and all else will happen on the coordinator when combining the shard responses
             TestRankDoc[] topResults = new TestRankDoc[Math.min(rankWindowSize, sortedResults.length)];
             for (int rank = 0; rank < topResults.length; ++rank) {
-                topResults[rank] = sortedResults[rank];
+                topResults[rank] = sortedResults[rank].rankDoc;
                 topResults[rank].rank = rank + 1;
             }
             return topResults;
