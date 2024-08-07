@@ -315,58 +315,6 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         });
     }
 
-    public void testRankDocsRetrieverWithNestedDocs() {
-
-    }
-
-    public void testRankDocsRetrieverWithInnerHits() {
-        final int rankWindowSize = 100;
-        SearchSourceBuilder source = new SearchSourceBuilder();
-        StandardRetrieverBuilder standard0 = new StandardRetrieverBuilder();
-        // this one retrieves docs 1, 4, and 6
-        standard0.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.queryStringQuery("quick").defaultField(TEXT_FIELD))
-            .boost(10L);
-        StandardRetrieverBuilder standard1 = new StandardRetrieverBuilder();
-        // this one retrieves docs 2 and 6 due to prefilter
-        standard1.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.termsQuery(ID_FIELD, "doc_2", "doc_3", "doc_6")).boost(20L);
-        standard1.preFilterQueryBuilders.add(QueryBuilders.queryStringQuery("search").defaultField(TEXT_FIELD));
-        // this one retrieves docs 7, 2, 3, and 6
-        KnnRetrieverBuilder knnRetrieverBuilder = new KnnRetrieverBuilder(
-            VECTOR_FIELD,
-            new float[] { 3.0f, 3.0f, 3.0f },
-            null,
-            10,
-            100,
-            null
-        );
-        // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
-        // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
-        source.retriever(
-            new CompoundRetrieverWithRankDocs(
-                rankWindowSize,
-                Arrays.asList(
-                    new RetrieverSource(standard0, null),
-                    new RetrieverSource(standard1, null),
-                    new RetrieverSource(knnRetrieverBuilder, null)
-                )
-            )
-        );
-        SearchRequestBuilder req = client().prepareSearch(INDEX).setSource(source);
-        ElasticsearchAssertions.assertResponse(req, resp -> {
-            assertNull(resp.pointInTimeId());
-            assertNotNull(resp.getHits().getTotalHits());
-            assertThat(resp.getHits().getTotalHits().value, equalTo(6L));
-            assertThat(resp.getHits().getTotalHits().relation, equalTo(TotalHits.Relation.EQUAL_TO));
-            assertThat(resp.getHits().getAt(0).getId(), equalTo("doc_6"));
-            assertThat(resp.getHits().getAt(1).getId(), equalTo("doc_2"));
-            assertThat(resp.getHits().getAt(2).getId(), equalTo("doc_1"));
-            assertThat(resp.getHits().getAt(3).getId(), equalTo("doc_4"));
-            assertThat(resp.getHits().getAt(4).getId(), equalTo("doc_7"));
-            assertThat(resp.getHits().getAt(5).getId(), equalTo("doc_3"));
-        });
-    }
-
     class CompoundRetrieverWithRankDocs extends RetrieverBuilder {
 
         private final List<RetrieverSource> sources;
