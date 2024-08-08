@@ -208,7 +208,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
+        // so ideal rank would be: 6, 2, 1, 4, 3, 7 and with pagination, we'd just omit the first result
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
@@ -360,7 +360,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         final int rankWindowSize = 10;
         SearchSourceBuilder source = new SearchSourceBuilder();
         StandardRetrieverBuilder standard0 = new StandardRetrieverBuilder();
-        // this one retrieves docs 1 and 6
+        // this one retrieves docs 1 and 6 as doc_4 is collapsed to doc_1
         standard0.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.queryStringQuery("quick").defaultField(TEXT_FIELD))
             .boost(10L);
         standard0.collapseBuilder = new CollapseBuilder(TOPIC_FIELD).setInnerHits(
