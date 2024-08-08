@@ -34,6 +34,7 @@ import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.collapse.CollapseBuilder;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.TestRankDoc;
+import org.elasticsearch.search.rescore.QueryRescoreMode;
 import org.elasticsearch.search.rescore.QueryRescorerBuilder;
 import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilderTests;
 import org.elasticsearch.search.sort.FieldSortBuilder;
@@ -208,7 +209,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7 and with pagination, we'd just omit the first result
+        // so ideal rank would be: 6, 2, 1, 4, 7, 3 and with pagination, we'd just omit the first result
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
@@ -261,7 +262,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
+        // so ideal rank would be: 6, 2, 1, 4, 7, 3
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
@@ -313,7 +314,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
+        // so ideal rank would be: 6, 2, 1, 4, 7, 3
         // with collapsing on topic field we would have 6, 2, 1, 7
         source.retriever(
             new CompoundRetrieverWithRankDocs(
@@ -381,7 +382,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
+        // so ideal rank would be: 6, 2, 1, 4, 7, 3
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
@@ -433,8 +434,9 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         );
         // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
         // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
-        // so ideal rank would be: 6, 2, 1, 4, 3, 7
-        // with rescore we would have 4, 6, 2, 1, 3, 7
+        // so ideal rank would be: 6, 2, 1, 4, 7, 3
+        // with rescore, and given that the final score is the hit ratio, we would have 4, 6, 2, 1, 3, 7
+        // as the docs 1, 3, and 7 have the same hit ratio (1/3) and are sorted based on doc id
         source.retriever(
             new CompoundRetrieverWithRankDocs(
                 rankWindowSize,
@@ -446,8 +448,9 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
             )
         );
         source.addRescorer(
-            new QueryRescorerBuilder(QueryBuilders.queryStringQuery("aardvark").defaultField(TEXT_FIELD)).setQueryWeight(10.0f)
-                .setRescoreQueryWeight(10.0f)
+            new QueryRescorerBuilder(
+                QueryBuilders.constantScoreQuery(QueryBuilders.queryStringQuery("aardvark").defaultField(TEXT_FIELD)).boost(500)
+            ).setQueryWeight(1.0f).setRescoreQueryWeight(10.0f).setScoreMode(QueryRescoreMode.Total)
         );
         source.fetchField(TOPIC_FIELD);
         SearchRequestBuilder req = client().prepareSearch(INDEX).setSource(source);
@@ -668,14 +671,14 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
                             return new RankDocAndHitRatio(new TestRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex), step);
                         } else {
                             return new RankDocAndHitRatio(
-                                new TestRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex),
+                                new TestRankDoc(scoreDoc.doc, Math.max(scoreDoc.score, value.rankDoc.score), scoreDoc.shardIndex),
                                 value.hitRatio + step
                             );
                         }
                     });
                 }
             }
-            // sort the results based on rrf score, tiebreaker based on smaller doc id
+            // sort the results based on hit ratio, tiebreaker based on smaller doc id
             RankDocAndHitRatio[] sortedResults = docsToRankResults.values().toArray(RankDocAndHitRatio[]::new);
             Arrays.sort(sortedResults, (RankDocAndHitRatio doc1, RankDocAndHitRatio doc2) -> {
                 if (doc1.hitRatio != doc2.hitRatio) {
@@ -692,6 +695,7 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
             for (int rank = 0; rank < topResults.length; ++rank) {
                 topResults[rank] = sortedResults[rank].rankDoc;
                 topResults[rank].rank = rank + 1;
+                topResults[rank].score = sortedResults[rank].hitRatio;
             }
             return topResults;
         }

@@ -196,11 +196,6 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
 
     public RetrieverBuilder() {}
 
-    protected RetrieverBuilder(RetrieverBuilder clone) {
-        this.preFilterQueryBuilders = clone.preFilterQueryBuilders;
-        this.retrieverName = clone.retrieverName;
-    }
-
     protected final List<QueryBuilder> rewritePreFilters(QueryRewriteContext ctx) throws IOException {
         List<QueryBuilder> newFilters = new ArrayList<>(preFilterQueryBuilders.size());
         boolean changed = false;

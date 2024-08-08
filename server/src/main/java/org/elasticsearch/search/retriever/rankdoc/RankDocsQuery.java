@@ -22,6 +22,7 @@ import org.elasticsearch.search.rank.RankDoc;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.Objects;
 
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
@@ -34,6 +35,7 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 public class RankDocsQuery extends Query {
 
     private final RankDoc[] docs;
+    private final Iterator<Float> scores;
     private final int[] segmentStarts;
     private final Object contextIdentity;
 
@@ -52,6 +54,19 @@ public class RankDocsQuery extends Query {
         this.docs = docs;
         this.segmentStarts = segmentStarts;
         this.contextIdentity = contextIdentity;
+        this.scores = new Iterator<>() {
+            int i = 0;
+
+            @Override
+            public boolean hasNext() {
+                return i < docs.length;
+            }
+
+            @Override
+            public Float next() {
+                return docs[i++].score;
+            }
+        };
     }
 
     @Override
@@ -136,7 +151,11 @@ public class RankDocsQuery extends Query {
 
                     @Override
                     public float score() {
-                        return 0;
+                        if (scores.hasNext()) {
+                            return scores.next();
+                        } else {
+                            throw new IllegalStateException("No more scores available");
+                        }
                     }
 
                     @Override

@@ -67,7 +67,7 @@ public class RankFeatureDoc extends RankDoc {
     }
 
     @Override
-    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        return null;
+    protected void doToXContent(XContentBuilder builder, Params params) throws IOException {
+        builder.field("featureData", featureData);
     }
 }

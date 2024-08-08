@@ -14,6 +14,7 @@ import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.xcontent.ToXContentFragment;
+import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -61,6 +62,18 @@ public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXCon
     public abstract Explanation explain();
 
     @Override
+    public final XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        builder.field("_rank", rank);
+        builder.field("_doc", doc);
+        builder.field("_shard", shardIndex);
+        builder.field("_score", score);
+        doToXContent(builder, params);
+        return builder;
+    }
+
+    protected abstract void doToXContent(XContentBuilder builder, Params params) throws IOException;
+
+    @Override
     public final boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
@@ -79,6 +92,6 @@ public abstract class RankDoc extends ScoreDoc implements NamedWriteable, ToXCon
 
     @Override
     public String toString() {
-        return "RankDoc{" + "score=" + score + ", doc=" + doc + ", shardIndex=" + shardIndex + '}';
+        return "RankDoc{" + "_rank=" + rank + ", _doc=" + doc + ", _shard=" + shardIndex + ", _score=" + score + '}';
     }
 }
