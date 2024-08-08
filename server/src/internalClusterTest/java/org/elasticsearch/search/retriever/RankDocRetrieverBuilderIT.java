@@ -352,6 +352,65 @@ public class RankDocRetrieverBuilderIT extends ESIntegTestCase {
         });
     }
 
+    public void testRankDocsRetrieverWithCollapseAndAggs() {
+        // same as above, but we only want to bring back the top result from each subsearch
+        // so that would be 1, 2, and 7
+        // and final rank would be (based on score): 2, 1, 7
+        // aggs should still account for the same docs as the testRankDocsRetriever test, i.e. all but doc_5
+        final int rankWindowSize = 10;
+        SearchSourceBuilder source = new SearchSourceBuilder();
+        StandardRetrieverBuilder standard0 = new StandardRetrieverBuilder();
+        // this one retrieves docs 1 and 6
+        standard0.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.queryStringQuery("quick").defaultField(TEXT_FIELD))
+            .boost(10L);
+        standard0.collapseBuilder = new CollapseBuilder(TOPIC_FIELD).setInnerHits(
+            new InnerHitBuilder("a").addSort(new FieldSortBuilder(DOC_FIELD).order(SortOrder.DESC)).setSize(10)
+        );
+        StandardRetrieverBuilder standard1 = new StandardRetrieverBuilder();
+        // this one retrieves docs 2 and 6 due to prefilter
+        standard1.queryBuilder = QueryBuilders.constantScoreQuery(QueryBuilders.termsQuery(ID_FIELD, "doc_2", "doc_3", "doc_6")).boost(20L);
+        standard1.preFilterQueryBuilders.add(QueryBuilders.queryStringQuery("search").defaultField(TEXT_FIELD));
+        // this one retrieves docs 7, 2, 3, and 6
+        KnnRetrieverBuilder knnRetrieverBuilder = new KnnRetrieverBuilder(
+            VECTOR_FIELD,
+            new float[] { 3.0f, 3.0f, 3.0f },
+            null,
+            10,
+            100,
+            null
+        );
+        // the compound retriever here produces a score for a doc based on the percentage of the queries that it was matched on and
+        // resolves ties based on actual score and then the doc (we're forcing 1 shard for consistent results)
+        // so ideal rank would be: 6, 2, 1, 4, 3, 7
+        source.retriever(
+            new CompoundRetrieverWithRankDocs(
+                rankWindowSize,
+                Arrays.asList(
+                    new RetrieverSource(standard0, null),
+                    new RetrieverSource(standard1, null),
+                    new RetrieverSource(knnRetrieverBuilder, null)
+                )
+            )
+        );
+        source.aggregation(new TermsAggregationBuilder("topic").field(TOPIC_FIELD));
+        SearchRequestBuilder req = client().prepareSearch(INDEX).setSource(source);
+        ElasticsearchAssertions.assertResponse(req, resp -> {
+            assertNull(resp.pointInTimeId());
+            assertNotNull(resp.getHits().getTotalHits());
+            assertThat(resp.getHits().getTotalHits().value, equalTo(5L));
+            assertThat(resp.getHits().getTotalHits().relation, equalTo(TotalHits.Relation.EQUAL_TO));
+            assertThat(resp.getHits().getAt(0).getId(), equalTo("doc_6"));
+            assertNotNull(resp.getAggregations());
+            assertNotNull(resp.getAggregations().get("topic"));
+            Terms terms = resp.getAggregations().get("topic");
+            // doc_3 is not part of the final aggs computation as it is only retrieved through the knn retriever
+            // and is outside of the rank window
+            assertThat(terms.getBucketByKey("technology").getDocCount(), equalTo(3L));
+            assertThat(terms.getBucketByKey("astronomy").getDocCount(), equalTo(1L));
+            assertThat(terms.getBucketByKey("biology").getDocCount(), equalTo(1L));
+        });
+    }
+
     public void testRankDocsRetrieverWithRescore() {
         final int rankWindowSize = 100;
         SearchSourceBuilder source = new SearchSourceBuilder();
