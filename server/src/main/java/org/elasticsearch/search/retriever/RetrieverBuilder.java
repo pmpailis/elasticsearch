@@ -151,7 +151,7 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
             throw new ParsingException(new XContentLocation(nonfe.getLineNumber(), nonfe.getColumnNumber()), message, nonfe);
         }
 
-        context.trackSectionUsage(retrieverName);
+        context.trackRetrieverUsage(retrieverName);
 
         if (parser.currentToken() != XContentParser.Token.END_OBJECT) {
             throw new ParsingException(
