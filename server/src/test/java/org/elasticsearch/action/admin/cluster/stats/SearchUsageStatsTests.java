@@ -46,6 +46,8 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
         "script_score"
     );
 
+    private static final List<String> RETRIEVERS = List.of("standard", "knn", "rrf", "random", "text_similarity_reranker");
+
     @Override
     protected Reader<SearchUsageStats> instanceReader() {
         return SearchUsageStats::new;
@@ -75,6 +77,14 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
         return rescorerUsage;
     }
 
+    private static Map<String, Long> randomRetrieversUsage(int size) {
+        Map<String, Long> retrieversUsage = new HashMap<>();
+        while (retrieversUsage.size() < size) {
+            retrieversUsage.put(randomFrom(RETRIEVERS), randomLongBetween(1, Long.MAX_VALUE));
+        }
+        return retrieversUsage;
+    }
+
     @Override
     protected SearchUsageStats createTestInstance() {
         if (randomBoolean()) {
@@ -84,36 +94,48 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
             randomQueryUsage(randomIntBetween(0, QUERY_TYPES.size())),
             randomRescorerUsage(randomIntBetween(0, RESCORER_TYPES.size())),
             randomSectionsUsage(randomIntBetween(0, SECTIONS.size())),
+            randomRetrieversUsage(randomIntBetween(0, RETRIEVERS.size())),
             randomLongBetween(10, Long.MAX_VALUE)
         );
     }
 
     @Override
     protected SearchUsageStats mutateInstance(SearchUsageStats instance) {
-        int i = randomInt(4);
+        int i = randomInt(5);
         return switch (i) {
             case 0 -> new SearchUsageStats(
                 randomValueOtherThan(instance.getQueryUsage(), () -> randomQueryUsage(randomIntBetween(0, QUERY_TYPES.size()))),
                 instance.getRescorerUsage(),
                 instance.getSectionsUsage(),
+                instance.getRetrieversUsage(),
                 instance.getTotalSearchCount()
             );
             case 1 -> new SearchUsageStats(
                 instance.getQueryUsage(),
                 randomValueOtherThan(instance.getRescorerUsage(), () -> randomRescorerUsage(randomIntBetween(0, RESCORER_TYPES.size()))),
                 instance.getSectionsUsage(),
+                instance.getRetrieversUsage(),
                 instance.getTotalSearchCount()
             );
             case 2 -> new SearchUsageStats(
                 instance.getQueryUsage(),
                 instance.getRescorerUsage(),
                 randomValueOtherThan(instance.getSectionsUsage(), () -> randomSectionsUsage(randomIntBetween(0, SECTIONS.size()))),
+                instance.getRetrieversUsage(),
+                instance.getTotalSearchCount()
+            );
+            case 3 -> new SearchUsageStats(
+                instance.getQueryUsage(),
+                instance.getRescorerUsage(),
+                instance.getSectionsUsage(),
+                instance.getRetrieversUsage(),
                 instance.getTotalSearchCount()
             );
             default -> new SearchUsageStats(
                 instance.getQueryUsage(),
                 instance.getRescorerUsage(),
                 instance.getSectionsUsage(),
+                randomValueOtherThan(instance.getRetrieversUsage(), () -> randomSectionsUsage(randomIntBetween(0, SECTIONS.size()))),
                 randomLongBetween(10, Long.MAX_VALUE)
             );
         };
@@ -126,7 +148,9 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
         assertEquals(Map.of(), searchUsageStats.getSectionsUsage());
         assertEquals(0, searchUsageStats.getTotalSearchCount());
 
-        searchUsageStats.add(new SearchUsageStats(Map.of("match", 10L), Map.of("query", 5L), Map.of("query", 10L), 10L));
+        searchUsageStats.add(
+            new SearchUsageStats(Map.of("match", 10L), Map.of("query", 5L), Map.of("query", 10L), Map.of("knn", 10L), 10L)
+        );
         assertEquals(Map.of("match", 10L), searchUsageStats.getQueryUsage());
         assertEquals(Map.of("query", 10L), searchUsageStats.getSectionsUsage());
         assertEquals(Map.of("query", 5L), searchUsageStats.getRescorerUsage());
@@ -137,19 +161,28 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
                 Map.of("term", 1L, "match", 1L),
                 Map.of("query", 5L, "learning_to_rank", 2L),
                 Map.of("query", 10L, "knn", 1L),
+                Map.of("knn", 10L, "rrf", 2L),
                 10L
             )
         );
         assertEquals(Map.of("match", 11L, "term", 1L), searchUsageStats.getQueryUsage());
         assertEquals(Map.of("query", 20L, "knn", 1L), searchUsageStats.getSectionsUsage());
         assertEquals(Map.of("query", 10L, "learning_to_rank", 2L), searchUsageStats.getRescorerUsage());
+        assertEquals(Map.of("knn", 20L, "rrf", 2L), searchUsageStats.getRetrieversUsage());
         assertEquals(20L, searchUsageStats.getTotalSearchCount());
     }
 
     public void testToXContent() throws IOException {
-        SearchUsageStats searchUsageStats = new SearchUsageStats(Map.of("term", 1L), Map.of("query", 2L), Map.of("query", 10L), 10L);
+        SearchUsageStats searchUsageStats = new SearchUsageStats(
+            Map.of("term", 1L),
+            Map.of("query", 2L),
+            Map.of("query", 10L),
+            Map.of("knn", 10L),
+            10L
+        );
         assertEquals(
-            "{\"search\":{\"total\":10,\"queries\":{\"term\":1},\"rescorers\":{\"query\":2},\"sections\":{\"query\":10}}}",
+            "{\"search\":{\"total\":10,\"queries\":{\"term\":1},\"rescorers\":{\"query\":2},"
+                + "\"sections\":{\"query\":10},\"retrievers\":{\"knn\":10}}",
             Strings.toString(searchUsageStats)
         );
     }
@@ -163,6 +196,7 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
                 randomQueryUsage(QUERY_TYPES.size()),
                 Map.of(),
                 randomSectionsUsage(SECTIONS.size()),
+                Map.of(),
                 randomLongBetween(0, Long.MAX_VALUE)
             );
             assertSerialization(testInstance, version);
