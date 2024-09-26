@@ -52,6 +52,7 @@ public final class RRFRetrieverBuilder extends RetrieverBuilder {
             p.nextToken();
             String name = p.currentName();
             RetrieverBuilder retrieverBuilder = p.namedObject(RetrieverBuilder.class, name, c);
+            c.trackRetrieverUsage(retrieverBuilder.getName());
             p.nextToken();
             return retrieverBuilder;
         }, RETRIEVERS_FIELD);
