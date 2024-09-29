@@ -279,6 +279,7 @@ public class SearchRequestTests extends AbstractSearchTestCase {
         {
             // allow_partial_results and non-compound retriever
             SearchRequest searchRequest = createSearchRequest().source(new SearchSourceBuilder().retriever(new RetrieverBuilder() {
+
                 @Override
                 public QueryBuilder topDocsQuery() {
                     return null;
@@ -315,6 +316,7 @@ public class SearchRequestTests extends AbstractSearchTestCase {
         {
             // allow_partial_results not defined and compound retriever
             SearchRequest searchRequest = new SearchRequest().source(new SearchSourceBuilder().retriever(new RetrieverBuilder() {
+
                 @Override
                 public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                     // no-op

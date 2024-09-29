@@ -175,6 +175,8 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
 
     protected Float minScore;
 
+    protected boolean nested = false;
+
     /**
      * Determines if this retriever contains sub-retrievers that need to be executed prior to search.
      */
@@ -208,6 +210,10 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
 
     public QueryBuilder explainQuery() {
         return topDocsQuery();
+    }
+
+    public void nested(boolean val) {
+        this.nested = val;
     }
 
     public Float minScore() {

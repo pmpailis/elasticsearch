@@ -72,12 +72,12 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
     protected abstract RankDoc[] combineInnerRetrieverResults(List<ScoreDoc[]> rankResults);
 
     @Override
-    public final boolean isCompound() {
+    public boolean isCompound() {
         return true;
     }
 
     @Override
-    public final RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
+    public RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
         if (ctx.getPointInTimeBuilder() == null) {
             throw new IllegalStateException("PIT is required");
         }
@@ -164,7 +164,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
     }
 
     @Override
-    public final void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         throw new IllegalStateException("Should not be called, missing a rewrite?");
     }
 
@@ -208,7 +208,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return Objects.hash(innerRetrievers);
     }
 
-    private SearchSourceBuilder createSearchSourceBuilder(PointInTimeBuilder pit, RetrieverBuilder retrieverBuilder) {
+    protected SearchSourceBuilder createSearchSourceBuilder(PointInTimeBuilder pit, RetrieverBuilder retrieverBuilder) {
         var sourceBuilder = new SearchSourceBuilder().pointInTimeBuilder(pit)
             .trackTotalHits(false)
             .storedFields(new StoredFieldsContext(false))
@@ -239,7 +239,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return sourceBuilder;
     }
 
-    private RankDoc[] getRankDocs(SearchResponse searchResponse) {
+    protected RankDoc[] getRankDocs(SearchResponse searchResponse) {
         int size = searchResponse.getHits().getHits().length;
         RankDoc[] docs = new RankDoc[size];
         for (int i = 0; i < size; i++) {
