@@ -22,9 +22,14 @@ import java.util.Map;
  */
 public class SearchProfileResultsBuilder {
     private final Map<String, SearchProfileQueryPhaseResult> queryPhaseResults;
+    private final Map<String, RetrieverProfileSearchResult> retrieverProfileSearchResults;
 
-    public SearchProfileResultsBuilder(Map<String, SearchProfileQueryPhaseResult> queryPhaseResults) {
+    public SearchProfileResultsBuilder(
+        Map<String, SearchProfileQueryPhaseResult> queryPhaseResults,
+        Map<String, RetrieverProfileSearchResult> retrieverProfileSearchResults
+    ) {
         this.queryPhaseResults = Collections.unmodifiableMap(queryPhaseResults);
+        this.retrieverProfileSearchResults = retrieverProfileSearchResults;
     }
 
     /**
@@ -45,11 +50,17 @@ public class SearchProfileResultsBuilder {
                         + queryPhaseResults.keySet()
                 );
             }
-            mergedShardResults.put(key, new SearchProfileShardResult(queryPhase, fr.profileResult()));
+            mergedShardResults.put(
+                key,
+                new SearchProfileShardResult(queryPhase, retrieverProfileSearchResults.get(key), fr.profileResult())
+            );
         }
         for (Map.Entry<String, SearchProfileQueryPhaseResult> e : queryPhaseResults.entrySet()) {
             if (false == mergedShardResults.containsKey(e.getKey())) {
-                mergedShardResults.put(e.getKey(), new SearchProfileShardResult(e.getValue(), null));
+                mergedShardResults.put(
+                    e.getKey(),
+                    new SearchProfileShardResult(e.getValue(), retrieverProfileSearchResults.get(e.getKey()), null)
+                );
             }
         }
         return new SearchProfileResults(mergedShardResults);

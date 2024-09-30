@@ -29,22 +29,30 @@ import java.util.Objects;
 public class SearchProfileShardResult implements Writeable, ToXContentFragment {
 
     private final SearchProfileQueryPhaseResult queryPhase;
+    private final RetrieverProfileSearchResult retrieverResult;
     private final ProfileResult fetchPhase;
 
-    public SearchProfileShardResult(SearchProfileQueryPhaseResult queryPhase, @Nullable ProfileResult fetch) {
+    public SearchProfileShardResult(
+        SearchProfileQueryPhaseResult queryPhase,
+        @Nullable RetrieverProfileSearchResult retrieverResult,
+        @Nullable ProfileResult fetch
+    ) {
         this.queryPhase = queryPhase;
+        this.retrieverResult = retrieverResult;
         this.fetchPhase = fetch;
     }
 
     public SearchProfileShardResult(StreamInput in) throws IOException {
         queryPhase = new SearchProfileQueryPhaseResult(in);
         fetchPhase = in.readOptionalWriteable(ProfileResult::new);
+        retrieverResult = in.readOptionalWriteable(RetrieverProfileSearchResult::new);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         queryPhase.writeTo(out);
         out.writeOptionalWriteable(fetchPhase);
+        out.writeOptionalWriteable(retrieverResult);
     }
 
     public SearchProfileDfsPhaseResult getSearchProfileDfsPhaseResult() {
@@ -78,6 +86,10 @@ public class SearchProfileShardResult implements Writeable, ToXContentFragment {
             result.toXContent(builder, params);
         }
         builder.endArray();
+        if (retrieverResult != null) {
+            builder.field("retriever");
+            retrieverResult.toXContent(builder, params);
+        }
         queryPhase.getAggregationProfileResults().toXContent(builder, params);
         if (fetchPhase != null) {
             builder.field("fetch");

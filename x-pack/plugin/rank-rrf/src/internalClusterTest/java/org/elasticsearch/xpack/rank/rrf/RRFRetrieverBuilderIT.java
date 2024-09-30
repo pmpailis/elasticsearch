@@ -598,7 +598,7 @@ public class RRFRetrieverBuilderIT extends ESIntegTestCase {
             }
 
             @Override
-            public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+            public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                 throw new UnsupportedOperationException("simulated failure");
             }
         };
@@ -631,7 +631,7 @@ public class RRFRetrieverBuilderIT extends ESIntegTestCase {
             }
 
             @Override
-            public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+            public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                 searchSourceBuilder.query(QueryBuilders.matchAllQuery());
             }
         };

@@ -118,7 +118,7 @@ public final class StandardRetrieverBuilder extends RetrieverBuilder implements 
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         if (preFilterQueryBuilders.isEmpty() == false || minScore != null) {
             BoolQueryBuilder boolQueryBuilder = new BoolQueryBuilder();
 

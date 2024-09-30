@@ -73,7 +73,7 @@ public class TestRetrieverBuilder extends RetrieverBuilder {
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         throw new UnsupportedOperationException("only used for parsing tests");
     }
 

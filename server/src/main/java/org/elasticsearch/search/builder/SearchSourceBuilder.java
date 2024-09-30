@@ -293,7 +293,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        if (retrieverBuilder != null) {
+        if (retrieverBuilder != null && false == retrieverBuilder.sourceExtracted()) {
             throw new IllegalStateException("SearchSourceBuilder should be rewritten first");
         }
         out.writeOptionalWriteable(aggregations);
@@ -1167,9 +1167,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 return rewritten;
             } else {
                 // retriever is transient, the rewritten version is extracted in this source.
-                var retriever = retrieverBuilder;
-                retrieverBuilder = null;
-                retriever.extractToSearchSourceBuilder(this, false);
+                retrieverBuilder.extractToSearchSourceBuilder(this, false);
                 validate();
             }
         }
@@ -2209,10 +2207,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         if (retriever() != null) {
             validationException = retriever().validate(this, validationException, allowPartialSearchResults);
             List<String> specified = new ArrayList<>();
-            if (subSearches().isEmpty() == false) {
-                specified.add(QUERY_FIELD.getPreferredName());
-            }
-            if (knnSearch().isEmpty() == false) {
+            if (knnSearch().isEmpty() == false && false == retriever().sourceExtracted()) {
                 specified.add(KNN_FIELD.getPreferredName());
             }
             if (searchAfter() != null) {

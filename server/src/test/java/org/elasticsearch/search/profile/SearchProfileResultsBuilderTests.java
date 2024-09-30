@@ -91,7 +91,8 @@ public class SearchProfileResultsBuilderTests extends ESTestCase {
 
     private static SearchProfileResultsBuilder builder(Map<SearchShardTarget, SearchProfileQueryPhaseResult> searchPhase) {
         return new SearchProfileResultsBuilder(
-            searchPhase.entrySet().stream().collect(toMap(e -> e.getKey().toString(), Map.Entry::getValue))
+            searchPhase.entrySet().stream().collect(toMap(e -> e.getKey().toString(), Map.Entry::getValue)),
+            null
         );
     }
 

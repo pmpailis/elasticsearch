@@ -285,7 +285,7 @@ public class SearchRequestTests extends AbstractSearchTestCase {
                 }
 
                 @Override
-                public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+                public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                     // no-op
                 }
 
@@ -316,7 +316,7 @@ public class SearchRequestTests extends AbstractSearchTestCase {
             // allow_partial_results not defined and compound retriever
             SearchRequest searchRequest = new SearchRequest().source(new SearchSourceBuilder().retriever(new RetrieverBuilder() {
                 @Override
-                public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+                public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                     // no-op
                 }
 

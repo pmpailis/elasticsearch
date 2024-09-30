@@ -16,7 +16,7 @@ public class SearchProfileShardResultTests extends AbstractWireSerializingTestCa
     static SearchProfileShardResult createTestItem() {
         SearchProfileQueryPhaseResult searchResult = SearchProfileQueryPhaseResultTests.createTestItem();
         ProfileResult fetchResult = randomBoolean() ? null : ProfileResultTests.createTestItem(2);
-        return new SearchProfileShardResult(searchResult, fetchResult);
+        return new SearchProfileShardResult(searchResult, null, fetchResult);
     }
 
     @Override

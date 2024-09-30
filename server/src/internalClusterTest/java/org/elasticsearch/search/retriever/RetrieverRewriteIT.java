@@ -164,7 +164,7 @@ public class RetrieverRewriteIT extends ESIntegTestCase {
         }
 
         @Override
-        public void extractToSearchSourceBuilder(SearchSourceBuilder sourceBuilder, boolean compoundUsed) {
+        public void doExtractToSearchSourceBuilder(SearchSourceBuilder sourceBuilder, boolean compoundUsed) {
             assertNull(sourceBuilder.retriever());
             innerRetriever.extractToSearchSourceBuilder(sourceBuilder, compoundUsed);
         }
@@ -248,7 +248,7 @@ public class RetrieverRewriteIT extends ESIntegTestCase {
         }
 
         @Override
-        public void extractToSearchSourceBuilder(SearchSourceBuilder sourceBuilder, boolean compoundUsed) {
+        public void doExtractToSearchSourceBuilder(SearchSourceBuilder sourceBuilder, boolean compoundUsed) {
             assertNull(sourceBuilder.retriever());
             innerRetriever.get().extractToSearchSourceBuilder(sourceBuilder, compoundUsed);
         }

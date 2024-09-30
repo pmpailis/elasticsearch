@@ -13,13 +13,17 @@ import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.profile.RetrieverProfileSearchResult;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilder;
 import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
 
@@ -108,15 +112,12 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         final RankDocsQueryBuilder rankQuery;
         // if we have aggregations we need to compute them based on all doc matches, not just the top hits
         // similarly, for profile and explain we re-run all parent queries to get all needed information
         RankDoc[] rankDocResults = rankDocs.get();
-        if (hasAggregations(searchSourceBuilder)
-            || isExplainRequest(searchSourceBuilder)
-            || isProfileRequest(searchSourceBuilder)
-            || shouldTrackTotalHits(searchSourceBuilder)) {
+        if (hasAggregations(searchSourceBuilder) || isExplainRequest(searchSourceBuilder) || shouldTrackTotalHits(searchSourceBuilder)) {
             if (false == isExplainRequest(searchSourceBuilder)) {
                 rankQuery = new RankDocsQueryBuilder(
                     rankDocResults,
@@ -151,10 +152,6 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
         return searchSourceBuilder.explain() != null && searchSourceBuilder.explain();
     }
 
-    private boolean isProfileRequest(SearchSourceBuilder searchSourceBuilder) {
-        return searchSourceBuilder.profile();
-    }
-
     private boolean shouldTrackTotalHits(SearchSourceBuilder searchSourceBuilder) {
         return searchSourceBuilder.trackTotalHitsUpTo() == null || searchSourceBuilder.trackTotalHitsUpTo() > rankDocs.get().length;
     }
@@ -175,5 +172,23 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
     @Override
     protected void doToXContent(XContentBuilder builder, Params params) throws IOException {
         throw new UnsupportedOperationException("toXContent() is not supported for " + this.getClass());
+    }
+
+    public Map<String, RetrieverProfileSearchResult> getProfileQuerySearchResults() {
+        Map<String, List<RetrieverProfileSearchResult>> childrenResults = new HashMap<>();
+        for (var source : sources) {
+            Map<String, RetrieverProfileSearchResult> childProfileResult = source.getProfileQuerySearchResults();
+            for (var entry : childProfileResult.entrySet()) {
+                if (false == childrenResults.containsKey(entry.getKey())) {
+                    childrenResults.put(entry.getKey(), new ArrayList<>());
+                }
+                childrenResults.get(entry.getKey()).add(entry.getValue());
+            }
+        }
+        Map<String, RetrieverProfileSearchResult> retrieverResult = new HashMap<>();
+        for (var entry : childrenResults.entrySet()) {
+            retrieverResult.put(entry.getKey(), new RetrieverProfileSearchResult(getName(), tookInMillis, null, entry.getValue()));
+        }
+        return retrieverResult;
     }
 }

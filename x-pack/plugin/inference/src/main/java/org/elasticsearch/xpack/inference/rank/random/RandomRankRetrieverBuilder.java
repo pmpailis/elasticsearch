@@ -81,7 +81,7 @@ public class RandomRankRetrieverBuilder extends RetrieverBuilder {
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         retrieverBuilder.extractToSearchSourceBuilder(searchSourceBuilder, compoundUsed);
 
         // Combining with other rank builder (such as RRF) is not supported

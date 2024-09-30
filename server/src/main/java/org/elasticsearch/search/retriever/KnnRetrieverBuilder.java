@@ -154,7 +154,7 @@ public final class KnnRetrieverBuilder extends RetrieverBuilder {
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         KnnSearchBuilder knnSearchBuilder = new KnnSearchBuilder(
             field,
             VectorData.fromFloats(queryVector),

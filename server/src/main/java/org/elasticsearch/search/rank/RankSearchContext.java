@@ -195,12 +195,9 @@ public class RankSearchContext extends SearchContext {
         return querySearchResult;
     }
 
-    /**
-     * Profiling is not supported by ranking.
-     */
     @Override
     public Profilers getProfilers() {
-        return null;
+        return parent.getProfilers();
     }
 
     @Override

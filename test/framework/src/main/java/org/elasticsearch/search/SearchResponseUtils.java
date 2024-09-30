@@ -35,6 +35,7 @@ import org.elasticsearch.search.aggregations.Aggregation;
 import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.fetch.subphase.highlight.HighlightField;
 import org.elasticsearch.search.profile.ProfileResult;
+import org.elasticsearch.search.profile.RetrieverProfileSearchResult;
 import org.elasticsearch.search.profile.SearchProfileDfsPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileResults;
@@ -466,6 +467,7 @@ public enum SearchResponseUtils {
         List<QueryProfileShardResult> queryProfileResults = new ArrayList<>();
         AggregationProfileShardResult aggProfileShardResult = null;
         ProfileResult fetchResult = null;
+        RetrieverProfileSearchResult retrieverProfileSearchResult = null;
         String id = null;
         String currentFieldName = null;
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
@@ -492,6 +494,8 @@ public enum SearchResponseUtils {
                     searchProfileDfsPhaseResult = parseProfileDfsPhaseResult(parser);
                 } else if ("fetch".equals(currentFieldName)) {
                     fetchResult = ProfileResult.fromXContent(parser);
+                } else if ("retriever".equals(currentFieldName)) {
+                    retrieverProfileSearchResult = null; // parseRetrieverProfileShardResult(parser);
                 } else {
                     parser.skipChildren();
                 }
@@ -501,6 +505,7 @@ public enum SearchResponseUtils {
         }
         SearchProfileShardResult result = new SearchProfileShardResult(
             new SearchProfileQueryPhaseResult(queryProfileResults, aggProfileShardResult),
+            retrieverProfileSearchResult,
             fetchResult
         );
         result.getQueryPhase().setSearchProfileDfsPhaseResult(searchProfileDfsPhaseResult);
@@ -560,6 +565,35 @@ public enum SearchResponseUtils {
             }
         }
         return new QueryProfileShardResult(queryProfileResults, rewriteTime, collector, vectorOperationsCount);
+    }
+
+    public static RetrieverProfileSearchResult parseRetrieverProfileShardResult(XContentParser parser) throws IOException {
+        XContentParser.Token token = parser.currentToken();
+        ensureExpectedToken(XContentParser.Token.START_OBJECT, token, parser);
+        String retrieverName = null;
+        long tookInMillis = -1;
+        List<RetrieverProfileSearchResult> children = new ArrayList<>();
+        SearchProfileQueryPhaseResult searchProfileQueryPhaseResult = null;
+        while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
+            if ("retriever_name".equals(parser.currentName())) {
+                retrieverName = parser.text();
+            } else if ("tookInMillis".equals(parser.currentName())) {
+                tookInMillis = parser.longValue();
+            } else if ("search".equals(parser.currentName())) {
+                searchProfileQueryPhaseResult = null; // parseProfileResultsEntry(parser);
+            } else if (token == XContentParser.Token.START_ARRAY) {
+                if ("children".equals(parser.currentName())) {
+                    while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
+                        children.add(parseRetrieverProfileShardResult(parser));
+                    }
+                } else {
+                    parser.skipChildren();
+                }
+            } else {
+                parser.skipChildren();
+            }
+        }
+        return new RetrieverProfileSearchResult(retrieverName, tookInMillis, null, children);
     }
 
     public static SearchHits parseSearchHits(XContentParser parser) throws IOException {

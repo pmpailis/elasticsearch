@@ -172,7 +172,7 @@ public class MinimalCompoundRetrieverIT extends AbstractMultiClustersTestCase {
         }
 
         @Override
-        public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+        public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
             throw new UnsupportedOperationException("should not be called");
         }
 

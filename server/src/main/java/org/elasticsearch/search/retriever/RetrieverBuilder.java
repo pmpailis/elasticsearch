@@ -19,6 +19,8 @@ import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.index.query.Rewriteable;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.profile.RetrieverProfileSearchResult;
+import org.elasticsearch.search.profile.SearchProfileShardResult;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.xcontent.AbstractObjectParser;
 import org.elasticsearch.xcontent.FilterXContentParserWrapper;
@@ -31,8 +33,11 @@ import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -175,6 +180,12 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
 
     protected Float minScore;
 
+    protected Map<String, SearchProfileShardResult> profileSearchResult = null;
+
+    private boolean sourceExtracted = false;
+
+    protected long tookInMillis = -1;
+
     /**
      * Determines if this retriever contains sub-retrievers that need to be executed prior to search.
      */
@@ -234,7 +245,14 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
      * This method is called at the end of rewriting on behalf of a {@link SearchSourceBuilder}.
      * Elements from retrievers are expected to be "extracted" into the {@link SearchSourceBuilder}.
      */
-    public abstract void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed);
+    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+        if (false == sourceExtracted) {
+            sourceExtracted = true;
+            doExtractToSearchSourceBuilder(searchSourceBuilder, compoundUsed);
+        }
+    }
+
+    public abstract void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed);
 
     public ActionRequestValidationException validate(
         SearchSourceBuilder source,
@@ -242,6 +260,29 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
         boolean allowPartialSearchResults
     ) {
         return validationException;
+    }
+
+    public Map<String, RetrieverProfileSearchResult> getProfileQuerySearchResults() {
+        if (profileSearchResult == null) {
+            return null;
+        }
+        Map<String, RetrieverProfileSearchResult> queryProfileResults = new HashMap<>();
+        for (var entry : profileSearchResult.entrySet()) {
+            queryProfileResults.put(
+                entry.getKey(),
+                new RetrieverProfileSearchResult(getName(), tookInMillis, entry.getValue().getQueryPhase(), Collections.emptyList())
+            );
+        }
+        return queryProfileResults;
+    }
+
+    public void profileSearchResult(Map<String, SearchProfileShardResult> profileSearchResult, long tookInMillis) {
+        this.profileSearchResult = profileSearchResult;
+        this.tookInMillis = tookInMillis;
+    }
+
+    public boolean sourceExtracted() {
+        return sourceExtracted;
     }
 
     // ---- FOR TESTING XCONTENT PARSING ----

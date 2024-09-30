@@ -46,12 +46,14 @@ import org.elasticsearch.search.dfs.DfsKnnResults;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.profile.RetrieverProfileSearchResult;
 import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileResults;
 import org.elasticsearch.search.profile.SearchProfileResultsBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
+import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
@@ -533,6 +535,7 @@ public final class SearchPhaseController {
             true,
             aggReduceContextBuilder,
             null,
+            null,
             true
         );
     }
@@ -555,6 +558,7 @@ public final class SearchPhaseController {
         boolean isScrollRequest,
         AggregationReduceContext.Builder aggReduceContextBuilder,
         QueryPhaseRankCoordinatorContext queryPhaseRankCoordinatorContext,
+        RetrieverBuilder retriever,
         boolean performFinalReduce
     ) {
         assert numReducePhases >= 0 : "num reduce phases must be >= 0 but was: " + numReducePhases;
@@ -605,6 +609,9 @@ public final class SearchPhaseController {
         final Map<String, SearchProfileQueryPhaseResult> profileShardResults = hasProfileResults
             ? Maps.newMapWithExpectedSize(queryResults.size())
             : Collections.emptyMap();
+        final Map<String, RetrieverProfileSearchResult> retrieverProfileResults = retriever != null
+            ? new HashMap<>()
+            : Collections.emptyMap();
         int from = 0;
         int size = 0;
         DocValueFormat[] sortValueFormats = null;
@@ -632,6 +639,12 @@ public final class SearchPhaseController {
                 String key = result.getSearchShardTarget().toString();
                 profileShardResults.put(key, result.consumeProfileResult());
             }
+            if (retriever != null) {
+                Map<String, RetrieverProfileSearchResult> retrieverProfileSearchResultMap = retriever.getProfileQuerySearchResults();
+                if (retrieverProfileSearchResultMap != null && false == retrieverProfileSearchResultMap.isEmpty()) {
+                    retrieverProfileResults.putAll(retrieverProfileSearchResultMap);
+                }
+            }
         }
         final Suggest reducedSuggest;
         final List<CompletionSuggestion> reducedCompletionSuggestions;
@@ -643,9 +656,9 @@ public final class SearchPhaseController {
             reducedCompletionSuggestions = reducedSuggest.filter(CompletionSuggestion.class);
         }
         final InternalAggregations aggregations = reduceAggs(aggReduceContextBuilder, performFinalReduce, bufferedAggs);
-        final SearchProfileResultsBuilder profileBuilder = profileShardResults.isEmpty()
+        final SearchProfileResultsBuilder profileBuilder = profileShardResults.isEmpty() && retrieverProfileResults.isEmpty()
             ? null
-            : new SearchProfileResultsBuilder(profileShardResults);
+            : new SearchProfileResultsBuilder(profileShardResults, retrieverProfileResults);
         final SortedTopDocs sortedTopDocs;
         if (queryPhaseRankCoordinatorContext == null) {
             sortedTopDocs = sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions);

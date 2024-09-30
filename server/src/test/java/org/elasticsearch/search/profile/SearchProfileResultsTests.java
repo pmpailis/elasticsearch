@@ -39,7 +39,7 @@ public class SearchProfileResultsTests extends AbstractXContentSerializingTestCa
                 new ShardId(randomIdentifier(), UUID.randomUUID().toString(), randomNonNegativeInt()),
                 null
             );
-            shards.put(target.toString(), new SearchProfileShardResult(searchResult, fetchResult));
+            shards.put(target.toString(), new SearchProfileShardResult(searchResult, null, fetchResult));
         }
         return new SearchProfileResults(shards);
     }

@@ -28,6 +28,7 @@ import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.rank.context.QueryPhaseRankCoordinatorContext;
+import org.elasticsearch.search.retriever.RetrieverBuilder;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -60,6 +61,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
     private final SearchProgressListener progressListener;
     private final AggregationReduceContext.Builder aggReduceContextBuilder;
     private final QueryPhaseRankCoordinatorContext queryPhaseRankCoordinatorContext;
+    private final RetrieverBuilder retriever;
 
     private final int topNSize;
     private final boolean hasTopDocs;
@@ -97,6 +99,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         this.queryPhaseRankCoordinatorContext = source == null || source.rankBuilder() == null
             ? null
             : source.rankBuilder().buildQueryPhaseCoordinatorContext(size, from);
+        this.retriever = source == null ? null : source.retriever();
         this.hasTopDocs = (source == null || size != 0) && queryPhaseRankCoordinatorContext == null;
         this.hasAggs = source != null && source.aggregations() != null;
         this.aggReduceContextBuilder = hasAggs ? controller.getReduceContext(isCanceled, source.aggregations()) : null;
@@ -146,6 +149,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                 false,
                 aggReduceContextBuilder,
                 queryPhaseRankCoordinatorContext,
+                retriever,
                 performFinalReduce
             );
         } finally {

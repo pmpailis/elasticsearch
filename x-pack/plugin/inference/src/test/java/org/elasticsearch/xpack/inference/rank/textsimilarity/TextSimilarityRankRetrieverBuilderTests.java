@@ -145,7 +145,7 @@ public class TextSimilarityRankRetrieverBuilderTests extends AbstractXContentTes
                 rewritten[0] = true;
                 return new TestRetrieverBuilder("nested-rewritten-retriever") {
                     @Override
-                    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+                    public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                         if (preFilterQueryBuilders.isEmpty() == false) {
                             BoolQueryBuilder boolQueryBuilder = new BoolQueryBuilder();
 
@@ -162,7 +162,7 @@ public class TextSimilarityRankRetrieverBuilderTests extends AbstractXContentTes
             }
 
             @Override
-            public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+            public void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
                 if (preFilterQueryBuilders.isEmpty() == false) {
                     BoolQueryBuilder boolQueryBuilder = new BoolQueryBuilder();
 

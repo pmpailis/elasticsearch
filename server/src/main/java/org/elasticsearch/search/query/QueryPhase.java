@@ -112,6 +112,9 @@ public class QueryPhase {
             querySearchResult.searchTimedOut(searchTimedOut);
             querySearchResult.serviceTimeEWMA(serviceTimeEWMA);
             querySearchResult.nodeQueueSize(nodeQueueSize);
+            if (searchContext.getProfilers() != null) {
+                searchContext.queryResult().profileResults(searchContext.getProfilers().buildQueryPhaseResults());
+            }
         } catch (Exception e) {
             throw new QueryPhaseExecutionException(searchContext.shardTarget(), "Failed to execute rank query", e);
         }

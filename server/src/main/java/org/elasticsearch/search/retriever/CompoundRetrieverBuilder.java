@@ -76,6 +76,10 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return true;
     }
 
+    public List<RetrieverBuilder> getInnerRetrievers() {
+        return innerRetrievers.stream().map(RetrieverSource::retriever).toList();
+    }
+
     @Override
     public final RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
         if (ctx.getPointInTimeBuilder() == null) {
@@ -97,7 +101,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
             } else {
                 var sourceBuilder = entry.source != null
                     ? entry.source
-                    : createSearchSourceBuilder(ctx.getPointInTimeBuilder(), newRetriever);
+                    : createSearchSourceBuilder(ctx.getPointInTimeBuilder(), newRetriever, ctx.profile());
                 var rewrittenSource = sourceBuilder.rewrite(ctx);
                 newRetrievers.add(new RetrieverSource(newRetriever, rewrittenSource));
                 hasChanged |= rewrittenSource != entry.source;
@@ -129,7 +133,9 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
                         } else {
                             assert item.getResponse() != null;
                             var rankDocs = getRankDocs(item.getResponse());
+                            var profileResults = item.getResponse().getProfileResults();
                             innerRetrievers.get(i).retriever().setRankDocs(rankDocs);
+                            innerRetrievers.get(i).retriever().profileSearchResult(profileResults, item.getResponse().getTookInMillis());
                             topDocs.add(rankDocs);
                         }
                     }
@@ -160,11 +166,11 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
 
     @Override
     public final QueryBuilder topDocsQuery() {
-        throw new IllegalStateException(getName() + " cannot be nested");
+        throw new IllegalStateException("Should not be called, missing a rewrite?");
     }
 
     @Override
-    public final void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public final void doExtractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         throw new IllegalStateException("Should not be called, missing a rewrite?");
     }
 
@@ -208,7 +214,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return Objects.hash(innerRetrievers);
     }
 
-    protected SearchSourceBuilder createSearchSourceBuilder(PointInTimeBuilder pit, RetrieverBuilder retrieverBuilder) {
+    protected SearchSourceBuilder createSearchSourceBuilder(PointInTimeBuilder pit, RetrieverBuilder retrieverBuilder, boolean profile) {
         var sourceBuilder = new SearchSourceBuilder().pointInTimeBuilder(pit)
             .trackTotalHits(false)
             .storedFields(new StoredFieldsContext(false))
@@ -236,6 +242,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         }
         sortBuilders.add(new FieldSortBuilder(FieldSortBuilder.SHARD_DOC_FIELD_NAME));
         sourceBuilder.sort(sortBuilders);
+        sourceBuilder.profile(profile);
         return sourceBuilder;
     }
 

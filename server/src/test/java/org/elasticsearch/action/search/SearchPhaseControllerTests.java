@@ -280,6 +280,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                     true,
                     InternalAggregationTestCase.emptyReduceContextBuilder(),
                     null,
+                    null,
                     true
                 );
                 List<SearchShardTarget> shards = queryResults.asList()
@@ -398,6 +399,7 @@ public class SearchPhaseControllerTests extends ESTestCase {
                             return topResults;
                         }
                     },
+                    null,
                     true
                 );
                 List<SearchShardTarget> shards = queryResults.asList()
