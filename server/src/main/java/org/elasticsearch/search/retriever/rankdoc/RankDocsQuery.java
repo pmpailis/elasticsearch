@@ -296,9 +296,9 @@ public class RankDocsQuery extends Query {
         boolean hasChanged = false;
         var topRewrite = topQuery.rewrite(searcher);
         if (topRewrite != topQuery) {
-            if (topRewrite instanceof MatchNoDocsQuery) {
-                return topRewrite;
-            }
+//            if (topRewrite instanceof MatchNoDocsQuery) {
+//                return topRewrite;
+//            }
             hasChanged = true;
         }
         var tailRewrite = tailQuery.rewrite(searcher);
