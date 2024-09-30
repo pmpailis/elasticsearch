@@ -239,7 +239,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return sourceBuilder;
     }
 
-    private final RankDoc[] getRankDocs(SearchResponse searchResponse) {
+    private RankDoc[] getRankDocs(SearchResponse searchResponse) {
         int size = searchResponse.getHits().getHits().length;
         RankDoc[] docs = new RankDoc[size];
         for (int i = 0; i < size; i++) {
