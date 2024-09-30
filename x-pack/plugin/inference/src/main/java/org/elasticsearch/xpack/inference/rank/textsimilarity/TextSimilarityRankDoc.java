@@ -20,60 +20,66 @@ public class TextSimilarityRankDoc extends RankDoc {
 
     static final String NAME = "text_similarity_rank_doc";
 
-    // the score of this document in the original ranking
-    public final float firstPhaseScore;
-    // the position of this document in the original ranking
-    public final int position;
+    public final String inferenceId;
+    public final String field;
 
-    public TextSimilarityRankDoc(int doc, float score, int shardIndex, float firstPhaseScore, int position) {
+    public TextSimilarityRankDoc(int doc, float score, int shardIndex, String inferenceId, String field) {
         super(doc, score, shardIndex);
-        this.firstPhaseScore = firstPhaseScore;
-        this.position = position;
+        this.inferenceId = inferenceId;
+        this.field = field;
     }
 
     public TextSimilarityRankDoc(StreamInput in) throws IOException {
         super(in);
-        firstPhaseScore = in.readFloat();
-        position = in.readInt();
+        inferenceId = in.readString();
+        field = in.readString();
     }
 
     @Override
     public Explanation explain(Explanation[] sources, String[] queryNames) {
-        return Explanation.match(1, "text similarity score: [" + score + "]", sources);
+        final String queryAlias = queryNames[0] == null ? "" : "[" + queryNames[0] + "]";
+        return Explanation.match(
+            score,
+            "text_similarity_reranker match using inference endpoint: ["
+                + inferenceId
+                + "] on document field: ["
+                + field
+                + "] matching on source query "
+                + queryAlias,
+            sources
+        );
     }
 
     @Override
     public void doWriteTo(StreamOutput out) throws IOException {
-        out.writeFloat(firstPhaseScore);
-        out.writeInt(position);
+        out.writeString(inferenceId);
+        out.writeString(field);
     }
 
     @Override
     public boolean doEquals(RankDoc rd) {
         TextSimilarityRankDoc tsrd = (TextSimilarityRankDoc) rd;
-        return firstPhaseScore == tsrd.firstPhaseScore && position == tsrd.position;
+        return Objects.equals(inferenceId, tsrd.inferenceId) && Objects.equals(field, tsrd.field);
     }
 
     @Override
     public int doHashCode() {
-        return Objects.hash(firstPhaseScore, position);
+        return Objects.hash(inferenceId, field);
     }
 
     @Override
     public String toString() {
         return "TextSimilarityRankDoc{"
-            + "rank="
-            + rank
-            + ", score="
-            + score
-            + ", firstPhaseScore="
-            + firstPhaseScore
-            + ", position="
-            + position
-            + ", doc="
+            + "doc="
             + doc
             + ", shardIndex="
             + shardIndex
+            + ", score="
+            + score
+            + ", inferenceId="
+            + inferenceId
+            + ", field="
+            + field
             + '}';
     }
 
@@ -84,7 +90,7 @@ public class TextSimilarityRankDoc extends RankDoc {
 
     @Override
     protected void doToXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.field("firstPhaseScore", firstPhaseScore);
-        builder.field("position", position);
+        builder.field("inferenceId", inferenceId);
+        builder.field("field", field);
     }
 }

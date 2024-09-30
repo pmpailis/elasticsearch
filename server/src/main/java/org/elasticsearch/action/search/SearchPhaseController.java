@@ -654,7 +654,7 @@ public final class SearchPhaseController {
                 queryResults.stream().map(SearchPhaseResult::queryResult).toList(),
                 topDocsStats
             );
-            sortedTopDocs = new SortedTopDocs(rankedDocs, true, null, null, null, 0);
+            sortedTopDocs = new SortedTopDocs(rankedDocs, false, null, null, null, 0);
             size = sortedTopDocs.scoreDocs.length;
             // we need to reset from here as pagination and result trimming has already taken place
             // within the `QueryPhaseRankCoordinatorContext#rankQueryPhaseResults` and we don't want

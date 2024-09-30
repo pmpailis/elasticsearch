@@ -20,7 +20,13 @@ dependencies {
   compileOnly project(path: xpackModule('core'))
 
   testImplementation(testArtifact(project(xpackModule('core'))))
+  testImplementation(project(':x-pack:plugin:inference:qa:test-service-plugin'))
+  clusterPlugins project(':x-pack:plugin:inference:qa:test-service-plugin')
+
+  testImplementation(testArtifact(project(xpackModule('core'))))
+  testImplementation(project(xpackModule('inference')))
 
   clusterModules project(xpackModule('rank-rrf'))
+  clusterModules project(xpackModule('inference'))
   clusterModules project(':modules:lang-painless')
 }
