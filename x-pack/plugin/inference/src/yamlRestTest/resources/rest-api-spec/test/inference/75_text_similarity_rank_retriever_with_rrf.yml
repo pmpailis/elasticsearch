@@ -1,6 +1,6 @@
 setup:
   - requires:
-      cluster_features: 'rrf_retriever_composition_supported'
+      cluster_features: "text_similarity_reranker_retriever_supported"
       reason: need to have support for rrf and semantic reranking composition
       test_runner_features: "close_to"
 
@@ -24,8 +24,6 @@ setup:
       indices.create:
         index: test-index
         body:
-          settings:
-            number_of_shards: 1
           mappings:
             properties:
               text:
@@ -212,7 +210,7 @@ setup:
                             standard: {
                               query: {
                                 term: {
-                                  topic: "geography"
+                                  topic: "science"
                                 }
                               }
                             }
@@ -235,15 +233,16 @@ setup:
                 field: topic
                 size: 10
 
-  - match: { hits.total.value: 2 }
-  - length: { hits.hits: 2 }
+  - match: { hits.total.value: 3 }
+  - length: { hits.hits: 3 }
 
   - match: { hits.hits.0._id: "doc_3" }
-  - match: { hits.hits.1._id: "doc_1" }
+  - match: { hits.hits.1._id: "doc_2" }
+  - match: { hits.hits.2._id: "doc_1" }
 
-  - match: { aggregations.topics.buckets.0.key: "geography" }
-  - match: { aggregations.topics.buckets.0.doc_count: 1 }
-  - match: { aggregations.topics.buckets.1.key: "science" }
+  - match: { aggregations.topics.buckets.0.key: "science" }
+  - match: { aggregations.topics.buckets.0.doc_count: 2 }
+  - match: { aggregations.topics.buckets.1.key: "geography" }
   - match: { aggregations.topics.buckets.1.doc_count: 1 }
 
 
@@ -319,16 +318,33 @@ setup:
           size: 10
           explain: true
 
-  - match: { hits.hits.0._id: "doc_2" }
-  - match: { hits.hits.1._id: "doc_1" }
-  - match: { hits.hits.2._id: "doc_3" }
+  - match: { hits.hits.0._id: "3" }
+  - match: { hits.hits.1._id: "2" }
+  - match: { hits.hits.2._id: "4" }
 
-  - close_to: { hits.hits.0._explanation.value: { value: 0.6666667, error: 0.000001 } }
-  - match: {hits.hits.0._explanation.description: "/rrf.score:.\\[0.6666667\\].*/" }
+  - close_to: { hits.hits.0._explanation.value: { value: 0.8333334, error: 0.000001 } }
+  - match: {hits.hits.0._explanation.description: "/rrf.score:.\\[0.8333334\\].*/" }
   - match: {hits.hits.0._explanation.details.0.value: 2}
   - match: {hits.hits.0._explanation.details.0.description: "/rrf.score:.\\[0.33333334\\].*/" }
-  - match: {hits.hits.0._explanation.details.0.details.0.details.0.description: "/ConstantScore.*/" }
-  - match: {hits.hits.0._explanation.details.1.value: 2}
-  - match: {hits.hits.0._explanation.details.1.description: "/rrf.score:.\\[0.33333334\\].*/" }
-  - match: {hits.hits.0._explanation.details.1.details.0.description: "/text_similarity_reranker.match.using.inference.endpoint:.\\[my-rerank-model\\].on.document.field:.\\[text\\].*/" }
-  - match: {hits.hits.0._explanation.details.1.details.0.details.0.description: "/weight.*science.*/" }
+  - match: {hits.hits.0._explanation.details.0.details.0.description: "/weight\\(text:term.*/" }
+  - match: {hits.hits.0._explanation.details.1.value: 1}
+  - match: {hits.hits.0._explanation.details.1.description: "/rrf.score:.\\[0.5\\].*/" }
+  - match: {hits.hits.0._explanation.details.1.details.0.details.0.description: "/found.vector.with.calculated.similarity.*/" }
+
+  - close_to: { hits.hits.1._explanation.value: { value: 0.5833334, error: 0.000001 } }
+  - match: {hits.hits.1._explanation.description: "/rrf.score:.\\[0.5833334\\].*/" }
+  - match: {hits.hits.1._explanation.details.0.value: 3}
+  - match: {hits.hits.1._explanation.details.0.description: "/rrf.score:.\\[0.25\\].*/" }
+  - match: {hits.hits.1._explanation.details.0.details.0.description: "/weight\\(text:term.*/" }
+  - match: {hits.hits.1._explanation.details.1.value: 2}
+  - match: {hits.hits.1._explanation.details.1.description: "/rrf.score:.\\[0.33333334\\].*/" }
+  - match: {hits.hits.1._explanation.details.1.details.0.details.0.description: "/found.vector.with.calculated.similarity.*/" }
+
+  - match: {hits.hits.2._explanation.value: 0.5}
+  - match: {hits.hits.2._explanation.description: "/rrf.score:.\\[0.5\\].*/" }
+  - match: {hits.hits.2._explanation.details.0.value: 1}
+  - match: {hits.hits.2._explanation.details.0.description: "/rrf.score:.\\[0.5\\].*/" }
+  - match: {hits.hits.2._explanation.details.0.details.0.description: "/weight\\(text:term.*/" }
+  - match: {hits.hits.2._explanation.details.1.value: 0}
+  - match: {hits.hits.2._explanation.details.1.description: "/rrf.score:.\\[0\\],.result.not.found./"}
+  - length: {hits.hits.2._explanation.details.1.details: 0}

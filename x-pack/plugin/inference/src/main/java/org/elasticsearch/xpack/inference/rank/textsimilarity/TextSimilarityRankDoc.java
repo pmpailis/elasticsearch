@@ -18,7 +18,7 @@ import java.util.Objects;
 
 public class TextSimilarityRankDoc extends RankDoc {
 
-    static final String NAME = "text_similarity_rank_doc";
+    public static final String NAME = "text_similarity_rank_doc";
 
     public final String inferenceId;
     public final String field;

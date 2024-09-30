@@ -19,6 +19,7 @@ esplugin {
 dependencies {
   compileOnly project(path: xpackModule('core'))
 
+  testImplementation project(path: ':x-pack:plugin:inference:qa:inference-service-tests')
   testImplementation(testArtifact(project(xpackModule('core'))))
   testImplementation(project(':x-pack:plugin:inference:qa:test-service-plugin'))
   clusterPlugins project(':x-pack:plugin:inference:qa:test-service-plugin')
