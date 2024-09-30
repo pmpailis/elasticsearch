@@ -72,12 +72,12 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
     protected abstract RankDoc[] combineInnerRetrieverResults(List<ScoreDoc[]> rankResults);
 
     @Override
-    public boolean isCompound() {
+    public final boolean isCompound() {
         return true;
     }
 
     @Override
-    public RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
+    public final RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
         if (ctx.getPointInTimeBuilder() == null) {
             throw new IllegalStateException("PIT is required");
         }
@@ -164,7 +164,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
     }
 
     @Override
-    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+    public final void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
         throw new IllegalStateException("Should not be called, missing a rewrite?");
     }
 
@@ -239,7 +239,7 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
         return sourceBuilder;
     }
 
-    protected RankDoc[] getRankDocs(SearchResponse searchResponse) {
+    private final RankDoc[] getRankDocs(SearchResponse searchResponse) {
         int size = searchResponse.getHits().getHits().length;
         RankDoc[] docs = new RankDoc[size];
         for (int i = 0; i < size; i++) {

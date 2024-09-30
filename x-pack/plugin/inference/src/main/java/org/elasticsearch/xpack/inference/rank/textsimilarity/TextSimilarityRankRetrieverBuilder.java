@@ -177,13 +177,6 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
         return sourceBuilder;
     }
 
-    /**
-     * Determines if this retriever contains sub-retrievers that need to be executed prior to search.
-     */
-    public boolean isCompound() {
-        return true;
-    }
-
     @Override
     public String getName() {
         return TextSimilarityRankBuilder.NAME;
