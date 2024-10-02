@@ -249,6 +249,8 @@ public abstract class RetrieverBuilder implements Rewriteable<RetrieverBuilder>,
         if (false == sourceExtracted) {
             sourceExtracted = true;
             doExtractToSearchSourceBuilder(searchSourceBuilder, compoundUsed);
+        } else {
+            throw new UnsupportedOperationException("extractToSearchSourceBuilder can only be called once");
         }
     }
 

@@ -2204,10 +2204,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         boolean isScroll,
         boolean allowPartialSearchResults
     ) {
-        if (retriever() != null) {
+        if (retriever() != null && false == retriever().sourceExtracted()) {
             validationException = retriever().validate(this, validationException, allowPartialSearchResults);
             List<String> specified = new ArrayList<>();
-            if (knnSearch().isEmpty() == false && false == retriever().sourceExtracted()) {
+            if (knnSearch().isEmpty() == false) {
                 specified.add(KNN_FIELD.getPreferredName());
             }
             if (searchAfter() != null) {
