@@ -17,6 +17,7 @@ import org.elasticsearch.test.TransportVersionUtils;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -43,7 +44,8 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
         "terminate_after",
         "indices_boost",
         "range",
-        "script_score"
+        "script_score",
+        "retrievers"
     );
 
     private static final List<String> RETRIEVERS = List.of("standard", "knn", "rrf", "random", "text_similarity_reranker");
@@ -101,7 +103,7 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
 
     @Override
     protected SearchUsageStats mutateInstance(SearchUsageStats instance) {
-        int i = randomInt(5);
+        int i = randomInt(4);
         return switch (i) {
             case 0 -> new SearchUsageStats(
                 randomValueOtherThan(instance.getQueryUsage(), () -> randomQueryUsage(randomIntBetween(0, QUERY_TYPES.size()))),
@@ -128,16 +130,17 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
                 instance.getQueryUsage(),
                 instance.getRescorerUsage(),
                 instance.getSectionsUsage(),
-                instance.getRetrieversUsage(),
+                randomValueOtherThan(instance.getRetrieversUsage(), () -> randomSectionsUsage(randomIntBetween(0, SECTIONS.size()))),
                 instance.getTotalSearchCount()
             );
-            default -> new SearchUsageStats(
+            case 4 -> new SearchUsageStats(
                 instance.getQueryUsage(),
                 instance.getRescorerUsage(),
                 instance.getSectionsUsage(),
-                randomValueOtherThan(instance.getRetrieversUsage(), () -> randomSectionsUsage(randomIntBetween(0, SECTIONS.size()))),
-                randomLongBetween(10, Long.MAX_VALUE)
+                instance.getRetrieversUsage(),
+                randomValueOtherThan(instance.getTotalSearchCount(), () -> randomLongBetween(10, Long.MAX_VALUE))
             );
+            default -> throw new IllegalStateException("Unexpected value: " + i);
         };
     }
 
@@ -182,7 +185,7 @@ public class SearchUsageStatsTests extends AbstractWireSerializingTestCase<Searc
         );
         assertEquals(
             "{\"search\":{\"total\":10,\"queries\":{\"term\":1},\"rescorers\":{\"query\":2},"
-                + "\"sections\":{\"query\":10},\"retrievers\":{\"knn\":10}}",
+                + "\"sections\":{\"query\":10},\"retrievers\":{\"knn\":10}}}",
             Strings.toString(searchUsageStats)
         );
     }
