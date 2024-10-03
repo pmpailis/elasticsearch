@@ -13,7 +13,6 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
@@ -180,7 +179,6 @@ public class RankDocsQuery extends Query {
                             return docs[upTo].doc - context.docBase;
                         }
 
-
                     };
                     return new DefaultScorerSupplier(scorer);
                 }
@@ -329,11 +327,6 @@ public class RankDocsQuery extends Query {
             }
 
             @Override
-            public Scorer scorer(LeafReaderContext context) throws IOException {
-                return combinedWeight.scorer(context);
-            }
-
-            @Override
             public boolean isCacheable(LeafReaderContext ctx) {
                 return combinedWeight.isCacheable(ctx);
             }
@@ -341,11 +334,6 @@ public class RankDocsQuery extends Query {
             @Override
             public Matches matches(LeafReaderContext context, int doc) throws IOException {
                 return combinedWeight.matches(context, doc);
-            }
-
-            @Override
-            public BulkScorer bulkScorer(LeafReaderContext context) throws IOException {
-                return combinedWeight.bulkScorer(context);
             }
 
             @Override
