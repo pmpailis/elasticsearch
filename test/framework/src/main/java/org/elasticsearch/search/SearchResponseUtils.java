@@ -460,7 +460,8 @@ public enum SearchResponseUtils {
                 parser.skipChildren();
             }
         }
-        return new SearchProfileResults(profileResults);
+        // todo: add proper implementation
+        return new SearchProfileResults(profileResults, null);
     }
 
     private static void parseProfileResultsEntry(XContentParser parser, Map<String, SearchProfileShardResult> searchProfileResults)

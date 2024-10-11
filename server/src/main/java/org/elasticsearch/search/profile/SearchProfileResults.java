@@ -11,6 +11,7 @@ package org.elasticsearch.search.profile;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -38,27 +39,40 @@ public final class SearchProfileResults implements Writeable, ToXContentFragment
     private static final String CLUSTER_FIELD = "cluster";
     private static final String INDEX_NAME_FIELD = "index";
     private static final String SHARD_ID_FIELD = "shard_id";
+    public static final String COORDINATOR_FIELD = "coordinator";
     public static final String SHARDS_FIELD = "shards";
     public static final String PROFILE_FIELD = "profile";
 
     // map key is the composite "id" of form [nodeId][(clusterName:)indexName][shardId] created from SearchShardTarget.toString
     private final Map<String, SearchProfileShardResult> shardResults;
+    private final SearchProfileCoordinatorResults coordinatorResults;
 
-    public SearchProfileResults(Map<String, SearchProfileShardResult> shardResults) {
+    public SearchProfileResults(Map<String, SearchProfileShardResult> shardResults, SearchProfileCoordinatorResults coordinatorResults) {
         this.shardResults = Collections.unmodifiableMap(shardResults);
+        this.coordinatorResults = coordinatorResults;
     }
 
     public SearchProfileResults(StreamInput in) throws IOException {
         shardResults = in.readMap(SearchProfileShardResult::new);
+        coordinatorResults = in.getTransportVersion().onOrAfter(TransportVersions.COORDINATOR_PROFILE_RESULTS)
+            ? in.readOptionalWriteable(SearchProfileCoordinatorResults::new)
+            : null;
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeMap(shardResults, StreamOutput::writeWriteable);
+        if (out.getTransportVersion().onOrAfter(TransportVersions.COORDINATOR_PROFILE_RESULTS)) {
+            out.writeOptionalWriteable(coordinatorResults);
+        }
     }
 
     public Map<String, SearchProfileShardResult> getShardResults() {
         return shardResults;
+    }
+
+    public SearchProfileCoordinatorResults getCoordinatorResults() {
+        return this.coordinatorResults;
     }
 
     @Override

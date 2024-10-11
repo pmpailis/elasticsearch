@@ -29,6 +29,7 @@ import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.rest.action.RestActions;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.aggregations.InternalAggregations;
+import org.elasticsearch.search.profile.SearchProfileCoordinatorResults;
 import org.elasticsearch.search.profile.SearchProfileResults;
 import org.elasticsearch.search.profile.SearchProfileShardResult;
 import org.elasticsearch.search.suggest.Suggest;
@@ -368,6 +369,17 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
             return Collections.emptyMap();
         }
         return profileResults.getShardResults();
+    }
+
+    /**
+     * If profiling was enabled, this returns an object containing the profile results for the coordinating node
+     */
+    @Nullable
+    public SearchProfileCoordinatorResults getCoordinatorProfileResults() {
+        if (profileResults == null) {
+            return null;
+        }
+        return profileResults.getCoordinatorResults();
     }
 
     /**
