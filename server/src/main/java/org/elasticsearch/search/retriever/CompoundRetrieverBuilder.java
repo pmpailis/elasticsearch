@@ -134,9 +134,15 @@ public abstract class CompoundRetrieverBuilder<T extends CompoundRetrieverBuilde
                         }
                     }
                     if (false == failures.isEmpty()) {
-                        IllegalStateException ex = new IllegalStateException("Search failed - some nested retrievers returned errors.");
-                        failures.forEach(ex::addSuppressed);
-                        listener.onFailure(ex);
+                        if (failures.size() == 1) {
+                            listener.onFailure(failures.getFirst());
+                        } else {
+                            IllegalArgumentException ex = new IllegalArgumentException(
+                                "[" + getName() + "] search failed - some nested retrievers returned errors."
+                            );
+                            failures.forEach(ex::addSuppressed);
+                            listener.onFailure(ex);
+                        }
                     } else {
                         results.set(combineInnerRetrieverResults(topDocs));
                         listener.onResponse(null);
