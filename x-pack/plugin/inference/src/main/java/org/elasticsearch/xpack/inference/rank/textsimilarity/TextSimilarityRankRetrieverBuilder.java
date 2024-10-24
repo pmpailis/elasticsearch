@@ -7,18 +7,16 @@
 
 package org.elasticsearch.xpack.inference.rank.textsimilarity;
 
-import org.apache.lucene.search.ScoreDoc;
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.license.LicenseUtils;
-import org.elasticsearch.search.builder.PointInTimeBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
-import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.rank.RankDoc;
-import org.elasticsearch.search.retriever.CompoundRetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverBuilder;
 import org.elasticsearch.search.retriever.RetrieverParserContext;
+import org.elasticsearch.search.retriever.rankdoc.RankDocsQueryBuilder;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -36,7 +34,7 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 /**
  * A {@code RetrieverBuilder} for parsing and constructing a text similarity reranker retriever.
  */
-public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder<TextSimilarityRankRetrieverBuilder> {
+public class TextSimilarityRankRetrieverBuilder extends RetrieverBuilder {
 
     public static final NodeFeature TEXT_SIMILARITY_RERANKER_RETRIEVER_SUPPORTED = new NodeFeature(
         "text_similarity_reranker_retriever_supported"
@@ -91,9 +89,11 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
         return PARSER.apply(parser, context);
     }
 
+    private final RetrieverBuilder innerRetriever;
     private final String inferenceId;
     private final String inferenceText;
     private final String field;
+    private final int rankWindowSize;
 
     public TextSimilarityRankRetrieverBuilder(
         RetrieverBuilder retrieverBuilder,
@@ -102,14 +102,15 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
         String field,
         int rankWindowSize
     ) {
-        super(List.of(new RetrieverSource(retrieverBuilder, null)), rankWindowSize);
+        this.innerRetriever = retrieverBuilder;
         this.inferenceId = inferenceId;
         this.inferenceText = inferenceText;
         this.field = field;
+        this.rankWindowSize = rankWindowSize;
     }
 
     public TextSimilarityRankRetrieverBuilder(
-        List<RetrieverSource> retrieverSource,
+        RetrieverBuilder innerRetriever,
         String inferenceId,
         String inferenceText,
         String field,
@@ -118,60 +119,75 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
         String retrieverName,
         List<QueryBuilder> preFilterQueryBuilders
     ) {
-        super(retrieverSource, rankWindowSize);
-        if (retrieverSource.size() != 1) {
-            throw new IllegalArgumentException("[" + getName() + "] retriever should have exactly one inner retriever");
-        }
+        this.innerRetriever = innerRetriever;
         this.inferenceId = inferenceId;
         this.inferenceText = inferenceText;
         this.field = field;
         this.minScore = minScore;
         this.retrieverName = retrieverName;
         this.preFilterQueryBuilders = preFilterQueryBuilders;
+        this.rankWindowSize = rankWindowSize;
     }
 
-    @Override
-    protected TextSimilarityRankRetrieverBuilder clone(List<RetrieverSource> newChildRetrievers) {
+    private TextSimilarityRankRetrieverBuilder clone(RetrieverBuilder rewrittenInnerRetriever, List<QueryBuilder> newPreFilters) {
         return new TextSimilarityRankRetrieverBuilder(
-            newChildRetrievers,
+            rewrittenInnerRetriever,
             inferenceId,
             inferenceText,
             field,
             rankWindowSize,
             minScore,
             retrieverName,
-            preFilterQueryBuilders
+            newPreFilters
         );
     }
 
     @Override
-    protected RankDoc[] combineInnerRetrieverResults(List<ScoreDoc[]> rankResults) {
-        assert rankResults.size() == 1;
-        ScoreDoc[] scoreDocs = rankResults.getFirst();
-        TextSimilarityRankDoc[] textSimilarityRankDocs = new TextSimilarityRankDoc[scoreDocs.length];
-        for (int i = 0; i < scoreDocs.length; i++) {
-            ScoreDoc scoreDoc = scoreDocs[i];
-            textSimilarityRankDocs[i] = new TextSimilarityRankDoc(scoreDoc.doc, scoreDoc.score, scoreDoc.shardIndex, inferenceId, field);
+    public final RetrieverBuilder rewrite(QueryRewriteContext ctx) throws IOException {
+        // Rewrite prefilters
+        boolean hasChanged = false;
+        var newPreFilters = rewritePreFilters(ctx);
+        hasChanged |= newPreFilters != preFilterQueryBuilders;
+
+        // Rewrite retriever sources
+        RetrieverBuilder rewrittenInnerRetriever = innerRetriever.rewrite(ctx);
+        hasChanged |= rewrittenInnerRetriever != innerRetriever;
+        if (hasChanged) {
+            return clone(rewrittenInnerRetriever, newPreFilters);
         }
-        return textSimilarityRankDocs;
+        return this;
     }
 
     @Override
-    protected SearchSourceBuilder createSearchSourceBuilder(PointInTimeBuilder pit, RetrieverBuilder retrieverBuilder) {
-        var sourceBuilder = new SearchSourceBuilder().pointInTimeBuilder(pit)
-            .trackTotalHits(false)
-            .storedFields(new StoredFieldsContext(false))
-            .size(rankWindowSize);
-        // apply the pre-filters downstream once
-        if (preFilterQueryBuilders.isEmpty() == false) {
-            retrieverBuilder.getPreFilterQueryBuilders().addAll(preFilterQueryBuilders);
-        }
-        retrieverBuilder.extractToSearchSourceBuilder(sourceBuilder, true);
+    public QueryBuilder topDocsQuery() {
+        return innerRetriever.topDocsQuery();
+    }
 
-        sourceBuilder.rankBuilder(
+    @Override
+    public QueryBuilder explainQuery() {
+        assert rankDocs != null;
+        TextSimilarityRankDoc[] mappedRankDocs = new TextSimilarityRankDoc[rankDocs.length];
+        for (int i = 0; i < rankDocs.length; i++) {
+            RankDoc rd = rankDocs[i];
+            mappedRankDocs[i] = new TextSimilarityRankDoc(rd.doc, rd.score, rd.shardIndex, inferenceId, field);
+        }
+        return new RankDocsQueryBuilder(mappedRankDocs, new QueryBuilder[]{innerRetriever.explainQuery()}, true);
+    }
+
+    @Override
+    public void extractToSearchSourceBuilder(SearchSourceBuilder searchSourceBuilder, boolean compoundUsed) {
+        if (preFilterQueryBuilders.isEmpty() == false) {
+            innerRetriever.getPreFilterQueryBuilders().addAll(preFilterQueryBuilders);
+        }
+        innerRetriever.extractToSearchSourceBuilder(searchSourceBuilder, compoundUsed);
+        searchSourceBuilder.rankBuilder(
             new TextSimilarityRankBuilder(this.field, this.inferenceId, this.inferenceText, this.rankWindowSize, this.minScore)
         );
-        return sourceBuilder;
+    }
+
+    @Override
+    public boolean isCompound(){
+        return innerRetriever.isCompound();
     }
 
     @Override
@@ -185,7 +201,7 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
 
     @Override
     protected void doToXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.field(RETRIEVER_FIELD.getPreferredName(), innerRetrievers.getFirst().retriever());
+        builder.field(RETRIEVER_FIELD.getPreferredName(), innerRetriever);
         builder.field(INFERENCE_ID_FIELD.getPreferredName(), inferenceId);
         builder.field(INFERENCE_TEXT_FIELD.getPreferredName(), inferenceText);
         builder.field(FIELD_FIELD.getPreferredName(), field);
@@ -195,7 +211,7 @@ public class TextSimilarityRankRetrieverBuilder extends CompoundRetrieverBuilder
     @Override
     public boolean doEquals(Object other) {
         TextSimilarityRankRetrieverBuilder that = (TextSimilarityRankRetrieverBuilder) other;
-        return super.doEquals(other)
+        return Objects.equals(inferenceId, that.innerRetriever)
             && Objects.equals(inferenceId, that.inferenceId)
             && Objects.equals(inferenceText, that.inferenceText)
             && Objects.equals(field, that.field)
