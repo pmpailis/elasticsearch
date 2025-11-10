@@ -3444,7 +3444,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
 
         private final SimilarityFunction similarityFunction;
         private final float[] vector;
-        private byte[] vectorAsBytes;
+        private volatile byte[] vectorAsBytes;
 
         public VectorSimilarityFunctionConfig(SimilarityFunction similarityFunction, float[] vector) {
             this.similarityFunction = similarityFunction;
@@ -3459,15 +3459,16 @@ public class DenseVectorFieldMapper extends FieldMapper {
             if (vectorAsBytes != null) {
                 return this;
             }
+
             // VectorSimilarityFunctionConfig is shared across multiple threads so it should be immutable
             // the only exception is vectorAsBytes which is lazily initialized if we see that we're dealing with byte vectors
             synchronized (this) {
-                if (vectorAsBytes != null) {
-                    return this;
-                }
-                vectorAsBytes = new byte[vector.length];
-                for (int i = 0; i < vector.length; i++) {
-                    vectorAsBytes[i] = (byte) vector[i];
+                if (vectorAsBytes == null) {
+                    byte[] bytes = new byte[vector.length];
+                    for (int i = 0; i < vector.length; i++) {
+                        bytes[i] = (byte) vector[i];
+                    }
+                    vectorAsBytes = bytes;
                 }
             }
             return this;
