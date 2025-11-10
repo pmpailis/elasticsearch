@@ -432,10 +432,6 @@ tests:
 - class: org.elasticsearch.action.IndicesRequestIT
   method: testIndicesStats
   issue: https://github.com/elastic/elasticsearch/issues/137594
-- class: org.elasticsearch.xpack.esql.vector.VectorSimilarityFunctionsIT
-  method: testTopNSimilarityBetweenConstantVectorAndField {functionName=v_l2_norm
-    similarityFunction=org.elasticsearch.xpack.esql.expression.function.vector.L2Norm$1@5b068087 elementType=byte}
-  issue: https://github.com/elastic/elasticsearch/issues/137625
 - class: org.elasticsearch.xpack.esql.qa.single_node.GenerativeMetricsIT
   method: test
   issue: https://github.com/elastic/elasticsearch/issues/137655
@@ -451,14 +447,6 @@ tests:
 - class: org.elasticsearch.indices.mapping.UpdateMappingIntegrationIT
   method: testUpdateMappingConcurrently
   issue: https://github.com/elastic/elasticsearch/issues/137758
-- class: org.elasticsearch.xpack.esql.vector.VectorSimilarityFunctionsIT
-  method: testSimilarityWithOneDimVector {functionName=v_cosine
-    similarityFunction=org.elasticsearch.xpack.esql.expression.function.vector.CosineSimilarity$1@70ab2d48 elementType=byte}
-  issue: https://github.com/elastic/elasticsearch/issues/137774
-- class: org.elasticsearch.xpack.esql.vector.VectorSimilarityFunctionsIT
-  method: testSimilarityWithOneDimVector {functionName=v_cosine
-    similarityFunction=org.elasticsearch.xpack.esql.expression.function.vector.CosineSimilarity$1@5b068087 elementType=byte}
-  issue: https://github.com/elastic/elasticsearch/issues/137778
 - class: org.elasticsearch.xpack.inference.integration.CCMPersistentStorageServiceIT
   method: testDelete_RemovesCCMConfiguration
   issue: https://github.com/elastic/elasticsearch/issues/137786
@@ -480,10 +468,6 @@ tests:
 - class: org.elasticsearch.xpack.inference.integration.CCMServiceIT
   method: testIsEnabled_ReturnsTrue_WhenCCMConfigurationIsPresent
   issue: https://github.com/elastic/elasticsearch/issues/137798
-- class: org.elasticsearch.xpack.esql.vector.VectorSimilarityFunctionsIT
-  method: testSimilarityWithOneDimVector {functionName=v_cosine
-    similarityFunction=org.elasticsearch.xpack.esql.expression.function.vector.CosineSimilarity$1@3300f4fd elementType=byte}
-  issue: https://github.com/elastic/elasticsearch/issues/137812
 - class: org.elasticsearch.xpack.inference.external.http.sender.RequestExecutorServiceTests
   method: testChangingCapacity_DoesNotRejectsOverflowTasks_BecauseOfQueueFull
   issue: https://github.com/elastic/elasticsearch/issues/137823

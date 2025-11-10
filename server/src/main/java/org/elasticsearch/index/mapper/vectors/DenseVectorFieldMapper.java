@@ -3456,14 +3456,18 @@ public class DenseVectorFieldMapper extends FieldMapper {
          * Call before calculating byte vector similarities
          */
         public VectorSimilarityFunctionConfig forByteVector() {
-            if (vectorAsBytes == null) {
-                // VectorSimilarityFunctionConfig is shared across multiple threads so it should be immutable
-                // the only exception is vectorAsBytes which is lazily initialized if we see that we're dealing with byte vectors
-                synchronized (this) {
-                    vectorAsBytes = new byte[vector.length];
-                    for (int i = 0; i < vector.length; i++) {
-                        vectorAsBytes[i] = (byte) vector[i];
-                    }
+            if (vectorAsBytes != null) {
+                return this;
+            }
+            // VectorSimilarityFunctionConfig is shared across multiple threads so it should be immutable
+            // the only exception is vectorAsBytes which is lazily initialized if we see that we're dealing with byte vectors
+            synchronized (this) {
+                if (vectorAsBytes != null) {
+                    return this;
+                }
+                vectorAsBytes = new byte[vector.length];
+                for (int i = 0; i < vector.length; i++) {
+                    vectorAsBytes[i] = (byte) vector[i];
                 }
             }
             return this;
