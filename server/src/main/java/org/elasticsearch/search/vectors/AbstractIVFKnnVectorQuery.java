@@ -32,6 +32,7 @@ import org.apache.lucene.search.TopDocsCollector;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
+import org.apache.lucene.util.Bits;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
@@ -45,8 +46,6 @@ import static org.elasticsearch.search.vectors.AbstractMaxScoreKnnCollector.LEAS
 
 abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerProvider {
 
-    record VectorLeafSearchFilterMeta(LeafReaderContext context, AcceptDocs preFilter, AcceptDocs postFilter) {}
-
     static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
 
     protected final String field;
@@ -56,6 +55,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected final Query filter;
     protected int vectorOpsCount;
     protected final float dynamicPostFilterTransform;
+    protected boolean expandForPostFiltering = false;
 
     protected AbstractIVFKnnVectorQuery(String field, float visitRatio, int k, int numCands, Query filter, float dynamicPostFilterTransform) {
         if (k < 1) {
@@ -103,6 +103,8 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return Objects.hash(field, k, filter, providedVisitRatio);
     }
 
+    abstract Query cloneWithoutFilters();
+
     @Override
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
         vectorOpsCount = 0;
@@ -124,46 +126,34 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
         TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
-        List<VectorLeafSearchFilterMeta> leafSearchMetas = new ArrayList<>(leafReaderContexts.size());
         assert this instanceof IVFKnnFloatVectorQuery;
         int totalVectors = 0;
+        float filterCost = 0f;
         for (LeafReaderContext leafReaderContext : leafReaderContexts) {
             LeafReader leafReader = leafReaderContext.reader();
             FloatVectorValues floatVectorValues = leafReader.getFloatVectorValues(field);
             if (floatVectorValues != null) {
                 totalVectors += floatVectorValues.size();
-                var liveDocs = leafReader.getLiveDocs();
-                if (filterWeight == null) {
-                    leafSearchMetas.add(
-                        new VectorLeafSearchFilterMeta(
-                            leafReaderContext,
-                            liveDocs == null
-                                ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE
-                                : new ESAcceptDocs.BitsAcceptDocs(liveDocs, leafReader.maxDoc()),
-                            null
-                        )
-                    );
-                } else {
-                    ScorerSupplier supplier = filterWeight.scorerSupplier(leafReaderContext);
+                if (filterWeight != null) {
+                    var supplier = filterWeight.scorerSupplier(leafReaderContext);
                     if (supplier != null) {
-                        var acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, leafReader.maxDoc());
-                        var filterCost = acceptDocs.approximateCost();
-                        if (((float) filterCost / floatVectorValues.size()) > dynamicPostFilterTransform) {
-                            leafSearchMetas.add(
-                                new VectorLeafSearchFilterMeta(
-                                    leafReaderContext,
-                                    liveDocs == null
-                                        ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE
-                                        : new ESAcceptDocs.BitsAcceptDocs(liveDocs, leafReader.maxDoc()),
-                                    acceptDocs
-                                )
-                            );
-                        } else {
-                            leafSearchMetas.add(new VectorLeafSearchFilterMeta(leafReaderContext, acceptDocs, null));
-                        }
+                        var acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, leafReader.getLiveDocs(), leafReader.maxDoc());
+                        filterCost += acceptDocs.approximateCost();
                     }
                 }
             }
+        }
+
+        if ((filterCost / totalVectors) > dynamicPostFilterTransform) {
+            var cloned = cloneWithoutFilters();
+            var clonedRewritten = indexSearcher.rewrite(cloned);
+            // if the filter is expected to filter out a significant portion of the vectors
+            // we apply it as a post filter instead of pre-filtering during search
+            return new BooleanQuery.Builder()
+                .add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER)
+                .add(filter, BooleanClause.Occur.FILTER)
+                .add(clonedRewritten, BooleanClause.Occur.MUST)
+                .build();
         }
 
         // we request numCands as we are using it as an approximation measure
@@ -171,7 +161,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         // TODO move the logic for automatically adjusting percentages to the query, so we can only pass
         // 2k to the collector.
         int vectorsToCollect = Math.round(2f * k);
-        if (leafSearchMetas.stream().anyMatch(leaf -> leaf.postFilter != null)) {
+        if (expandForPostFiltering) {
             // when there is a post filter we need to collect more vectors to account for filtering after collection
             vectorsToCollect = Math.round(1.1f * vectorsToCollect) + 1;
         }
@@ -189,8 +179,8 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
-        for (VectorLeafSearchFilterMeta leafSearchMeta : leafSearchMetas) {
-            tasks.add(() -> searchLeaf(leafSearchMeta, knnCollectorManager, visitRatio));
+        for (LeafReaderContext context : leafReaderContexts) {
+            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
@@ -203,26 +193,56 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return new KnnScoreDocQuery(topK.scoreDocs, reader);
     }
 
-    private TopDocs searchLeaf(VectorLeafSearchFilterMeta leafSearchFilterMeta, IVFCollectorManager knnCollectorManager, float visitRatio)
+    private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
         throws IOException {
-        TopDocs results = approximateSearch(
-            leafSearchFilterMeta.context,
-            leafSearchFilterMeta.preFilter,
+        TopDocs results = getLeafResults(ctx, filterWeight, knnCollectorManager, visitRatio);
+        IntHashSet dedup = new IntHashSet(results.scoreDocs.length * 4 / 3);
+        int deduplicateCount = 0;
+        for (ScoreDoc scoreDoc : results.scoreDocs) {
+            if (dedup.add(scoreDoc.doc)) {
+                deduplicateCount++;
+            }
+        }
+        ScoreDoc[] deduplicatedScoreDocs = new ScoreDoc[deduplicateCount];
+        dedup.clear();
+        int index = 0;
+        for (ScoreDoc scoreDoc : results.scoreDocs) {
+            if (dedup.add(scoreDoc.doc)) {
+                scoreDoc.doc += ctx.docBase;
+                deduplicatedScoreDocs[index++] = scoreDoc;
+            }
+        }
+        return new TopDocs(results.totalHits, deduplicatedScoreDocs);
+    }
+
+    TopDocs getLeafResults(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
+        throws IOException {
+        final LeafReader reader = ctx.reader();
+        final Bits liveDocs = reader.getLiveDocs();
+        final int maxDoc = reader.maxDoc();
+
+        if (filterWeight == null) {
+            return approximateSearch(
+                ctx,
+                liveDocs == null ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc),
+                Integer.MAX_VALUE,
+                knnCollectorManager,
+                visitRatio
+            );
+        }
+
+        ScorerSupplier supplier = filterWeight.scorerSupplier(ctx);
+        if (supplier == null) {
+            return TopDocsCollector.EMPTY_TOPDOCS;
+        }
+
+        return approximateSearch(
+            ctx,
+            new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc),
             Integer.MAX_VALUE,
             knnCollectorManager,
             visitRatio
         );
-        IntHashSet dedup = new IntHashSet(results.scoreDocs.length * 4 / 3);
-        List<ScoreDoc> deduplicatedScoreDocs = new ArrayList<>(results.scoreDocs.length);
-        for (ScoreDoc scoreDoc : results.scoreDocs) {
-            if (dedup.add(scoreDoc.doc)) {
-                scoreDoc.doc += leafSearchFilterMeta.context.docBase;
-                if (leafSearchFilterMeta.postFilter == null || leafSearchFilterMeta.postFilter.iterator().advance(scoreDoc.doc) == scoreDoc.doc) {
-                    deduplicatedScoreDocs.add(scoreDoc);
-                }
-            }
-        }
-        return new TopDocs(results.totalHits, deduplicatedScoreDocs.toArray(new ScoreDoc[0]));
     }
 
     abstract TopDocs approximateSearch(

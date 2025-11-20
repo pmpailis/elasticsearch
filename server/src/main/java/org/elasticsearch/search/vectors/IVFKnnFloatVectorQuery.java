@@ -86,6 +86,13 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
     }
 
     @Override
+    Query cloneWithoutFilters() {
+        var cloned = new IVFKnnFloatVectorQuery(field, query, k, numCands, null, dynamicPostFilterTransform);
+        cloned.expandForPostFiltering = true;
+        return cloned;
+    }
+
+    @Override
     protected TopDocs approximateSearch(
         LeafReaderContext context,
         AcceptDocs acceptDocs,
