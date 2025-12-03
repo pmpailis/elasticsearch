@@ -706,12 +706,31 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             int scoredDocs = 0;
             int limit = vectors - BULK_SIZE + 1;
             int i = 0;
-            // read Docs
-            var filteredBits = filterDocs == null ? null : filterDocs.bits();
+
+            // For lazy evaluation: use iterator with advance() instead of bits()
+            boolean useLazyEvaluation = filterDocs instanceof ESAcceptDocs.PostFilterEsAcceptDocs;
+            DocIdSetIterator filterIterator = null;
+            Bits filteredBits = null;
+
+            if (useLazyEvaluation) {
+                filterIterator = filterDocs.iterator();
+                // Assert that the iterator is unpositioned (fresh)
+                assert filterIterator == null || filterIterator.docID() == -1 : "Filter iterator must be unpositioned";
+            } else {
+                filteredBits = filterDocs == null ? null : filterDocs.bits();
+            }
+
             for (; i < limit; i += BULK_SIZE) {
                 // read the doc ids
                 readDocIds(BULK_SIZE);
-                final int docsToBulkScore = filteredBits == null ? BULK_SIZE : docToBulkScore(docIdsScratch, filteredBits);
+
+                final int docsToBulkScore;
+                if (useLazyEvaluation) {
+                    docsToBulkScore = docToBulkScoreLazy(docIdsScratch, filterIterator);
+                } else {
+                    docsToBulkScore = filteredBits == null ? BULK_SIZE : docToBulkScore(docIdsScratch, filteredBits);
+                }
+
                 if (docsToBulkScore == 0) {
                     indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
                     continue;
@@ -745,7 +764,22 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             int count = 0;
             for (; i < vectors; i++) {
                 int doc = docIdsScratch[count++];
-                if (filteredBits == null || filteredBits.get(doc)) {
+                boolean accepted;
+                if (useLazyEvaluation && filterIterator != null) {
+                    int currentDoc = filterIterator.docID();
+                    if (currentDoc == NO_MORE_DOCS) {
+                        // Iterator exhausted, all remaining docs are filtered out
+                        accepted = false;
+                    } else if (currentDoc == doc) {
+                        accepted = true;
+                    } else {
+                        accepted = filterIterator.advance(doc) == doc;
+                    }
+                } else {
+                    accepted = filteredBits == null || filteredBits.get(doc);
+                }
+
+                if (accepted) {
                     quantizeQueryIfNecessary();
                     float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
                     indexInput.readFloats(correctiveValues, 0, 3);
@@ -773,6 +807,33 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 knnCollector.incVisitedCount(scoredDocs);
             }
             return scoredDocs;
+        }
+
+        private static int docToBulkScoreLazy(int[] docIds, DocIdSetIterator filterIterator) throws IOException {
+            assert filterIterator != null : "filterIterator must not be null";
+            int docToScore = BULK_SIZE;
+            for (int i = 0; i < BULK_SIZE; i++) {
+                int doc = docIds[i];
+                int currentDoc = filterIterator.docID();
+
+                // Check if we need to advance the iterator
+                if (currentDoc != doc) {
+                    if (currentDoc == NO_MORE_DOCS) {
+                        // Iterator exhausted, filter out this and all remaining docs
+                        docIds[i] = -1;
+                        docToScore--;
+                        continue;
+                    }
+                    currentDoc = filterIterator.advance(doc);
+                }
+
+                // Check if doc matches the filter
+                if (currentDoc != doc) {
+                    docIds[i] = -1;
+                    docToScore--;
+                }
+            }
+            return docToScore;
         }
 
         private void quantizeQueryIfNecessary() {

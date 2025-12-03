@@ -252,7 +252,6 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         PostFilterEsAcceptDocs(Weight weight, LeafReaderContext ctx, Bits liveDocs) throws IOException {
             this.weight = weight;
             this.ctx = ctx;
-            ;
             this.liveDocs = liveDocs;
         }
 
@@ -263,14 +262,20 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
 
         @Override
         public DocIdSetIterator iterator() throws IOException {
-            return liveDocs == null
-                ? weight.scorerSupplier(ctx).get(NO_MORE_DOCS).iterator()
-                : new FilteredDocIdSetIterator(weight.scorerSupplier(ctx).get(NO_MORE_DOCS).iterator()) {
-                    @Override
-                    protected boolean match(int doc) {
-                        return liveDocs.get(doc);
-                    }
-                };
+            // Create a fresh scorer each time to ensure a new, unpositioned iterator
+            // Using scorer() instead of scorerSupplier().get() to avoid caching issues
+            var scorer = weight.scorer(ctx);
+            if (scorer == null) {
+                return null;
+            }
+            DocIdSetIterator baseIterator = scorer.iterator();
+
+            return liveDocs == null ? baseIterator : new FilteredDocIdSetIterator(baseIterator) {
+                @Override
+                protected boolean match(int doc) {
+                    return liveDocs.get(doc);
+                }
+            };
         }
 
         @Override

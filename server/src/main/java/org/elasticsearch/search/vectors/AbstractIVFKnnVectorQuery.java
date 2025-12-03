@@ -149,7 +149,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                     ScorerSupplier supplier = filterWeight.scorerSupplier(leafReaderContext);
                     if (supplier != null) {
                         var filterCost = Math.toIntExact(supplier.cost());
-                        if (((float) filterCost / floatVectorValues.size()) >= 10000 * (1 + postFilteringThreshold)) {
+                        if (((float) filterCost / floatVectorValues.size()) >= postFilteringThreshold) {
                             leafSearchMetas.add(
                                 new VectorLeafSearchFilterMeta(
                                     leafReaderContext,
