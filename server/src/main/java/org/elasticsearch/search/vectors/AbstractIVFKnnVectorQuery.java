@@ -149,11 +149,11 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                     ScorerSupplier supplier = filterWeight.scorerSupplier(leafReaderContext);
                     if (supplier != null) {
                         var filterCost = Math.toIntExact(supplier.cost());
-                        if (((float) filterCost / floatVectorValues.size()) >= 10000 * (1 + postFilteringThreshold)) {
+                        if (((float) filterCost / floatVectorValues.size()) >= postFilteringThreshold) {
                             leafSearchMetas.add(
                                 new VectorLeafSearchFilterMeta(
                                     leafReaderContext,
-                                    new ESAcceptDocs.PostFilterEsAcceptDocs(filterWeight, leafReaderContext, liveDocs)
+                                    new ESAcceptDocs.PostFilterEsAcceptDocs(supplier, liveDocs)
                                 )
                             );
                         } else {
@@ -189,9 +189,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
         for (VectorLeafSearchFilterMeta leafSearchMeta : leafSearchMetas) {
-            tasks.add(
-                () -> searchLeaf(leafSearchMeta.context, leafSearchMeta.filter, knnCollectorManager, visitRatio, postFilteringThreshold)
-            );
+            tasks.add(() -> searchLeaf(leafSearchMeta.context, leafSearchMeta.filter, knnCollectorManager, visitRatio));
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
@@ -204,21 +202,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return new KnnScoreDocQuery(topK.scoreDocs, reader);
     }
 
-    private TopDocs searchLeaf(
-        LeafReaderContext context,
-        AcceptDocs filterDocs,
-        IVFCollectorManager knnCollectorManager,
-        float visitRatio,
-        float postFilteringThreshold
-    ) throws IOException {
-        TopDocs results = approximateSearch(
-            context,
-            filterDocs,
-            Integer.MAX_VALUE,
-            knnCollectorManager,
-            visitRatio,
-            postFilteringThreshold
-        );
+    private TopDocs searchLeaf(LeafReaderContext context, AcceptDocs filterDocs, IVFCollectorManager knnCollectorManager, float visitRatio)
+        throws IOException {
+        TopDocs results = approximateSearch(context, filterDocs, Integer.MAX_VALUE, knnCollectorManager, visitRatio);
         IntHashSet dedup = new IntHashSet(results.scoreDocs.length * 4 / 3);
         List<ScoreDoc> deduplicatedScoreDocs = new ArrayList<>(results.scoreDocs.length);
         for (ScoreDoc scoreDoc : results.scoreDocs) {
@@ -235,8 +221,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         AcceptDocs filterDocs,
         int visitedLimit,
         IVFCollectorManager knnCollectorManager,
-        float visitRatio,
-        float postFilteringThreshold
+        float visitRatio
     ) throws IOException;
 
     protected IVFCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {

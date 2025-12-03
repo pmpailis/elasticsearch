@@ -12,11 +12,18 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /** A {@link IVFKnnFloatVectorQuery} that uses the IVF search strategy. */
 public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
@@ -93,8 +100,7 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         AcceptDocs filterDocs,
         int visitedLimit,
         IVFCollectorManager knnCollectorManager,
-        float visitRatio,
-        float postFilteringThreshold
+        float visitRatio
     ) throws IOException {
         LeafReader reader = context.reader();
         FloatVectorValues floatVectorValues = reader.getFloatVectorValues(field);
@@ -106,14 +112,71 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
             return NO_RESULTS;
         }
         assert filterDocs instanceof ESAcceptDocs;
+
+        // Check if we need to apply post-filtering
+        boolean usePostFiltering = filterDocs instanceof ESAcceptDocs.PostFilterEsAcceptDocs;
+        AcceptDocs searchFilter = usePostFiltering ? getMatchAllAcceptDocs(reader) : filterDocs;
+
         IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, knnCollectorManager.longAccumulator);
-        AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
+        AbstractMaxScoreKnnCollector knnCollector = usePostFiltering
+            ? knnCollectorManager.newOptimisticCollector(visitedLimit, strategy, context, Math.round((1 + (3 * (1 - postFilteringThreshold))) * k))
+            : knnCollectorManager.newCollector(visitedLimit, strategy, context);
         if (knnCollector == null) {
             return NO_RESULTS;
         }
         strategy.setCollector(knnCollector);
-        reader.searchNearestVectors(field, query, knnCollector, filterDocs);
+        reader.searchNearestVectors(field, query, knnCollector, searchFilter);
         TopDocs results = knnCollector.topDocs();
+
+        // Apply post-filtering if needed
+        if (usePostFiltering && results != null && results.scoreDocs.length > 0) {
+            results = applyPostFilter(results, filterDocs);
+        }
+
         return results != null ? results : NO_RESULTS;
+    }
+
+    private AcceptDocs getMatchAllAcceptDocs(LeafReader reader) {
+        var liveDocs = reader.getLiveDocs();
+        return liveDocs == null ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE : new ESAcceptDocs.BitsAcceptDocs(liveDocs, reader.maxDoc());
+    }
+
+    private TopDocs applyPostFilter(TopDocs results, AcceptDocs filterDocs) throws IOException {
+        if (results.scoreDocs.length == 0) {
+            return results;
+        }
+
+        // Get iterator for filter - must be accessed in ascending order
+        DocIdSetIterator filterIterator = filterDocs.iterator();
+        if (filterIterator == null) {
+            // No filtering needed
+            return results;
+        }
+
+        // Sort scoreDocs by doc ID to ensure ascending order access
+        Arrays.sort(results.scoreDocs, Comparator.comparingInt(sd -> sd.doc));
+
+        // Filter results using the iterator
+        ArrayList<ScoreDoc> filteredDocs = new ArrayList<>(results.scoreDocs.length);
+        assert filterIterator.docID() == -1;
+        for (ScoreDoc scoreDoc : results.scoreDocs) {
+            if (filterIterator.docID() == NO_MORE_DOCS) {
+                break;
+            }
+            if (filterIterator.docID() > scoreDoc.doc) {
+                continue;
+            }
+            if (filterIterator.advance(scoreDoc.doc) == scoreDoc.doc) {
+                filteredDocs.add(scoreDoc);
+            }
+        }
+        filteredDocs.sort(Comparator.comparingDouble((ScoreDoc sd) -> sd.score).reversed());
+        // Keep only top k results
+        int numResults = Math.min(k, filteredDocs.size());
+        ScoreDoc[] topK = new ScoreDoc[numResults];
+        for (int i = 0; i < numResults; i++) {
+            topK[i] = filteredDocs.get(i);
+        }
+        return new TopDocs(new TotalHits(numResults, results.totalHits.relation()), topK);
     }
 }
