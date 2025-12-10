@@ -154,7 +154,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                             var filterCost = Math.toIntExact(supplier.cost());
                             float selectivity = (float) filterCost / floatVectorValues.size();
 
-                            if (selectivity >= 0.85f) {
+                            if (selectivity >= 2f) {
                                 // for cases with > .85% selectivity, we:
                                 // * oversample by (1 + (3 * (1 - selectivity))) * k)
                                 // * skip centroid filtering (most centroids will be valid either way)
@@ -167,7 +167,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                                         new ESAcceptDocs.PostFilterEsAcceptDocs(filterWeight, leafReaderContext, liveDocs)
                                     )
                                 );
-                            } else if (selectivity >= 0.3f) {
+                            } else if (selectivity >= 0f) {
                                 // 30-85% selectivity -> lazy evaluation
                                 // Use iterator with advance()
                                 leafSearchMetas.add(
