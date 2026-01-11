@@ -31,8 +31,10 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
+import org.elasticsearch.index.codec.vectors.diskbbq.next.ESNextDiskBBQVectorsReader;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
+import org.elasticsearch.search.vectors.MultiPostingListManager;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -316,37 +318,142 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             visitRatio
         );
         Bits acceptDocsBits = acceptDocs.bits();
-        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
-        long expectedDocs = 0;
-        long actualDocs = 0;
-        // initially we visit only the "centroids to search"
-        // Note, numCollected is doing the bare minimum here.
-        // TODO do we need to handle nested doc counts similarly to how we handle
-        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
-        while (centroidPrefetchingIterator.hasNext()
-            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-            // todo do we actually need to know the score???
-            CentroidOffsetAndLength offsetAndLength = centroidPrefetchingIterator.nextPostingListOffsetAndLength();
-            // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
-            // is enough?
-            expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
-            actualDocs += scorer.visit(knnCollector);
-            if (knnCollector.getSearchStrategy() != null) {
-                knnCollector.getSearchStrategy().nextVectorsBlock();
+
+        // TODO: Enable parallel posting list evaluation conditionally
+        // For now, disabled by default - requires all readers to support batch operations
+        // The issue is that if we try parallel and it fails, the centroidIterator is already
+        // partially consumed and we can't rewind it for sequential processing
+        boolean useParallelEvaluation = false; //this instanceof ESNextDiskBBQVectorsReader; // Disabled by default for now
+
+        if (useParallelEvaluation) {
+            try {
+                // Try to use parallel evaluation
+                // If the PostingVisitor doesn't support batch operations, this will throw
+                // UnsupportedOperationException and we'll fall back to sequential
+                searchWithParallelPostingLists(
+                    fieldInfo,
+                    postListSlice,
+                    target,
+                    acceptDocs, // Pass full AcceptDocs for iterator access
+                    centroidPrefetchingIterator,
+                    knnCollector,
+                    maxVectorVisited,
+                    state.segmentInfo.maxDoc(),
+                    true // Assume overspill may exist - dedup filter is lazy anyway
+                );
+                return; // Success - exit early
+            } catch (UnsupportedOperationException e) {
+                // Batch operations not supported by this visitor, fall back to sequential
+                // Continue with sequential implementation below
             }
         }
-        if (acceptDocsBits != null) {
-            // TODO Adjust the value here when using centroid filtering
-            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
-            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
-            while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+
+        // Sequential implementation (original or fallback)
+        {
+            PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
+            long expectedDocs = 0;
+            long actualDocs = 0;
+            // initially we visit only the "centroids to search"
+            // Note, numCollected is doing the bare minimum here.
+            // TODO do we need to handle nested doc counts similarly to how we handle
+            // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
+            while (centroidPrefetchingIterator.hasNext()
+                && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+                // todo do we actually need to know the score???
                 CentroidOffsetAndLength offsetAndLength = centroidPrefetchingIterator.nextPostingListOffsetAndLength();
-                scorer.resetPostingsScorer(offsetAndLength.offset());
+                // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
+                // is enough?
+                expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
+            }
+            if (acceptDocsBits != null) {
+                // TODO Adjust the value here when using centroid filtering
+                float unfilteredRatioVisited = (float) expectedDocs / numVectors;
+                int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
+                float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+                while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+                    CentroidOffsetAndLength offsetAndLength = centroidPrefetchingIterator.nextPostingListOffsetAndLength();
+                    scorer.resetPostingsScorer(offsetAndLength.offset());
+                    actualDocs += scorer.visit(knnCollector);
+                    if (knnCollector.getSearchStrategy() != null) {
+                        knnCollector.getSearchStrategy().nextVectorsBlock();
+                    }
+                }
+            }
+        } // End sequential implementation block
+    }
+
+    /**
+     * Searches using parallel posting list evaluation with multi-way merge.
+     * This approach processes multiple posting lists simultaneously, merging
+     * documents in doc ID order to enable efficient deduplication and early termination.
+     *
+     * @param fieldInfo the field info for the vector field
+     * @param postingListInput the input for reading posting lists
+     * @param target the query vector
+     * @param centroidIterator iterator providing posting list offsets
+     * @param knnCollector the collector for results
+     * @param maxVectorVisited maximum number of vectors to visit
+     * @param maxDoc maximum document ID in the segment
+     * @param hasOverspillAssignments whether overspill assignments exist
+     * @throws IOException if an I/O error occurs
+     */
+    private void searchWithParallelPostingLists(
+        FieldInfo fieldInfo,
+        IndexInput postingListInput,
+        float[] target,
+        AcceptDocs acceptDocs,
+        CentroidIterator centroidIterator,
+        KnnCollector knnCollector,
+        long maxVectorVisited,
+        int maxDoc,
+        boolean hasOverspillAssignments
+    ) throws IOException {
+        // Create manager for parallel posting list evaluation
+        // The manager will create dedicated PostingVisitor instances for each cursor to avoid state conflicts
+        MultiPostingListManager manager = new MultiPostingListManager(
+            centroidIterator,
+            this, // Pass the IVFVectorsReader so manager can create PostingVisitors
+            fieldInfo,
+            postingListInput,
+            target,
+            acceptDocs, // Pass full AcceptDocs for iterator-based filtering
+            maxDoc,
+            hasOverspillAssignments
+        );
+
+        // Initialize with first batch of posting lists
+        manager.initialize();
+
+        long docsProcessed = 0;
+
+        // Process documents using multi-way merge
+        while (manager.hasNext() && (docsProcessed < maxVectorVisited || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            // Process in batches for efficiency
+            int scored = manager.processBatch(knnCollector);
+            docsProcessed += scored;
+
+            // Update search strategy
+            if (knnCollector.getSearchStrategy() != null) {
+                knnCollector.getSearchStrategy().nextVectorsBlock();
+            }
+
+            // Check for early termination
+            if (knnCollector.earlyTerminated()) {
+                break;
+            }
+
+            // If we have enough results and the competitive threshold is high enough,
+            // we can potentially terminate early
+            if (knnCollector.k() > 0
+                && manager.seenCount() >= knnCollector.k() * 2
+                && knnCollector.minCompetitiveSimilarity() > Float.NEGATIVE_INFINITY) {
+                // We have seen enough candidates, consider terminating
+                // This is a simple heuristic - could be refined
+                break;
             }
         }
     }
@@ -475,5 +582,53 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /**
+         * Checks if there are more batches to read from the current posting list.
+         * Must be called after {@link #resetPostingsScorer(long)}.
+         *
+         * @return true if more batches are available
+         */
+        default boolean hasNextBatch() {
+            throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
+        }
+
+        /**
+         * Reads the next batch of document IDs (without scoring).
+         * Returns the document IDs in ascending order within the batch.
+         * Must be called after {@link #resetPostingsScorer(long)}.
+         *
+         * @param docIds array to store the document IDs (must be at least 32 elements)
+         * @return the number of document IDs read (0 if no more batches)
+         * @throws IOException if an I/O error occurs
+         */
+        default int readNextBatch(int[] docIds) throws IOException {
+            throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
+        }
+
+        /**
+         * Returns the minimum document ID in the most recently read batch.
+         * Valid after calling {@link #readNextBatch(int[])}.
+         *
+         * @return the minimum document ID in the current batch, or Integer.MAX_VALUE if no batch loaded
+         */
+        default int getMinDocInCurrentBatch() {
+            return Integer.MAX_VALUE;
+        }
+
+        /**
+         * Scores documents from the current batch and collects them.
+         * Only scores documents whose IDs are in the provided array.
+         * Must be called after {@link #readNextBatch(int[])}.
+         *
+         * @param docIds the document IDs to score (subset of batch)
+         * @param count the number of valid document IDs in the array
+         * @param collector the collector to receive scored documents
+         * @return the number of documents actually scored
+         * @throws IOException if an I/O error occurs
+         */
+        default int scoreCurrentBatch(int[] docIds, int count, KnnCollector collector) throws IOException {
+            throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
+        }
     }
 }

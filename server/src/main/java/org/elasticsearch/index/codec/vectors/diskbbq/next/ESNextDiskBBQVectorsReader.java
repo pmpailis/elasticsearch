@@ -587,6 +587,12 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         final float[] correctiveValues = new float[3];
         final long quantizedVectorByteSize;
 
+        // State for batch-level operations
+        int vectorsRead;
+        int currentBatchSize;
+        int minDocInBatch;
+        long currentBatchDataPos; // File position of quantized data for current batch
+
         MemorySegmentPostingsVisitor(
             float[] target,
             ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding,
@@ -628,6 +634,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             docEncoding = indexInput.readByte();
             docBase = 0;
             slicePos = indexInput.getFilePointer();
+            vectorsRead = 0;
+            currentBatchSize = 0;
+            minDocInBatch = Integer.MAX_VALUE;
+            currentBatchDataPos = -1;
             return vectors;
         }
 
@@ -787,6 +797,189 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 quantEncoding.packQuery(quantizationScratch, quantizedQueryScratch);
                 quantized = true;
             }
+        }
+
+        @Override
+        public boolean hasNextBatch() {
+            return vectorsRead < vectors;
+        }
+
+        @Override
+        public int readNextBatch(int[] docIds) throws IOException {
+            if (vectorsRead >= vectors) {
+                currentBatchSize = 0;
+                minDocInBatch = Integer.MAX_VALUE;
+                return 0;
+            }
+
+            // Position at the start of the next batch
+            indexInput.seek(slicePos);
+
+            // Calculate how many docs to read in this batch
+            int toRead = Math.min(BULK_SIZE, vectors - vectorsRead);
+
+            // Read doc ID deltas
+            idsWriter.readInts(indexInput, toRead, docEncoding, docIdsScratch);
+
+            // Accumulate deltas to get absolute doc IDs
+            minDocInBatch = Integer.MAX_VALUE;
+            for (int j = 0; j < toRead; j++) {
+                docBase += docIdsScratch[j];
+                docIdsScratch[j] = docBase;
+                docIds[j] = docBase;
+                if (docBase < minDocInBatch) {
+                    minDocInBatch = docBase;
+                }
+            }
+
+            // Store batch size and update counters
+            currentBatchSize = toRead;
+            vectorsRead += toRead;
+
+            // The quantized vectors and corrections are still in the file
+            // Save the position where quantized data starts for this batch
+            currentBatchDataPos = indexInput.getFilePointer();
+
+            // Calculate the size of the quantized data for this batch
+            long quantizedDataSize = (long) toRead * quantizedVectorByteSize + // quantized vectors
+                Float.BYTES * toRead + // correctionsLower
+                Float.BYTES * toRead + // correctionsUpper
+                Short.BYTES * toRead + // correctionsSum
+                Float.BYTES * toRead; // correctionsAdd
+
+            // Position for next batch will be after current quantized data
+            slicePos = currentBatchDataPos + quantizedDataSize;
+
+            return toRead;
+        }
+
+        @Override
+        public int getMinDocInCurrentBatch() {
+            return minDocInBatch;
+        }
+
+        @Override
+        public int scoreCurrentBatch(int[] docIds, int count, KnnCollector knnCollector) throws IOException {
+            if (count == 0 || currentBatchSize == 0) {
+                return 0;
+            }
+
+            // Seek to the batch data position since other cursors may have moved the file pointer
+            // This is necessary because multiple PostingVisitor instances share the same IndexInput
+            if (currentBatchDataPos >= 0) {
+                indexInput.seek(currentBatchDataPos);
+            }
+
+            // Create a filter for which docs to actually collect
+            // docIds contains the subset of docIdsScratch that passed BOTH acceptDocs and deduplication
+            // Note: acceptDocs filter is now checked in PostingListCursor.scoreBatch()
+            boolean[] shouldCollect = new boolean[BULK_SIZE];
+
+            int notFoundInScratch = 0;
+
+            for (int i = 0; i < count; i++) {
+                int docId = docIds[i];
+                // Find this docId in docIdsScratch
+                boolean found = false;
+                for (int j = 0; j < currentBatchSize; j++) {
+                    if (docIdsScratch[j] == docId) {
+                        shouldCollect[j] = true;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    notFoundInScratch++;
+                }
+            }
+
+//            System.err.println("DEBUG[scoreCurrentBatch] currentBatchSize=" + currentBatchSize +
+//                " receivedCount=" + count +
+//                " notFoundInScratch=" + notFoundInScratch);
+
+            // Quantize query if not already done
+            quantizeQueryIfNecessary();
+
+            // Count how many docs should be scored (passed all filters including acceptDocs)
+            int docsToScore = 0;
+            for (int i = 0; i < currentBatchSize; i++) {
+                if (shouldCollect[i]) {
+                    docsToScore++;
+                }
+            }
+
+            int scoredDocs = docsToScore; // Track docs that were scored (for visited count)
+            int actualCollected = 0;
+
+            // Use bulk scoring only for full batches (BULK_SIZE docs)
+            // For partial batches (tail), score individually to avoid reading past EOF
+            if (currentBatchSize == BULK_SIZE) {
+                // Bulk scoring for full batch
+                float maxScore = osqVectorsScorer.scoreBulk(
+                    quantizedQueryScratch,
+                    queryCorrections.lowerInterval(),
+                    queryCorrections.upperInterval(),
+                    queryCorrections.quantizedComponentSum(),
+                    queryCorrections.additionalCorrection(),
+                    fieldInfo.getVectorSimilarityFunction(),
+                    centroidDp,
+                    scores
+                );
+
+                // Collect only the docs that passed filters
+                // Note: We check minCompetitiveSimilarity once for the batch as an optimization,
+                // but the collector itself will do the final filtering based on individual scores
+                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                    for (int i = 0; i < currentBatchSize; i++) {
+                        if (shouldCollect[i]) {
+                            knnCollector.collect(docIdsScratch[i], scores[i]);
+                            actualCollected++;
+                        }
+                    }
+                }
+            } else {
+                // Individual scoring for partial batch (tail)
+                // Note: We must read ALL docs sequentially because quantized data is laid out sequentially
+                // We score all docs but only collect the ones that passed filters (shouldCollect)
+                for (int i = 0; i < currentBatchSize; i++) {
+                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+
+                    // Read corrections for this doc
+                    indexInput.readFloats(correctiveValues, 0, 3);
+                    int corrSum = Short.toUnsignedInt(indexInput.readShort());
+
+                    // Only collect if this doc passed filters
+                    if (shouldCollect[i]) {
+                        float score = osqVectorsScorer.score(
+                            queryCorrections.lowerInterval(),
+                            queryCorrections.upperInterval(),
+                            queryCorrections.quantizedComponentSum(),
+                            queryCorrections.additionalCorrection(),
+                            fieldInfo.getVectorSimilarityFunction(),
+                            centroidDp,
+                            correctiveValues[0],
+                            correctiveValues[1],
+                            corrSum,
+                            correctiveValues[2],
+                            qcDist
+                        );
+
+                        knnCollector.collect(docIdsScratch[i], score);
+                        actualCollected++;
+                    }
+                    // If not collecting, we've still consumed the data from the stream
+                }
+            }
+
+//            System.err.println("DEBUG[scoreCurrentBatch] scoredDocs=" + scoredDocs +
+//                " actualCollected=" + actualCollected +
+//                " (bulk=" + (currentBatchSize == BULK_SIZE) + ")");
+
+            if (scoredDocs > 0) {
+                knnCollector.incVisitedCount(scoredDocs);
+            }
+
+            return scoredDocs;
         }
     }
 
