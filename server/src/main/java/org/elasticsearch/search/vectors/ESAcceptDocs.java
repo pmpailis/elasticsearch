@@ -240,4 +240,47 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
             return Optional.of(acceptBitSet);
         }
     }
+
+    public static final class DynamicFilterEsAcceptDocs  extends ESAcceptDocs {
+
+        private final DocIdSetIterator iterator;
+        private final Bits liveDocs;
+        private final int approximateCost;
+
+        public DynamicFilterEsAcceptDocs(ScorerSupplier supplier, Bits liveDocs) throws IOException {
+            this.iterator = supplier.get(NO_MORE_DOCS).iterator();
+            this.liveDocs = liveDocs;
+            this.approximateCost = Math.toIntExact(supplier.cost());
+        }
+
+        @Override
+        public int approximateCost() throws IOException {
+            return approximateCost;
+        }
+
+        @Override
+        public Optional<BitSet> getBitSet() throws IOException {
+            return null;
+        }
+
+        @Override
+        public Bits bits() throws IOException {
+            return null;
+        }
+
+        @Override
+        public DocIdSetIterator iterator() throws IOException {
+            return liveDocs == null ? iterator : new FilteredDocIdSetIterator(iterator) {
+                @Override
+                protected boolean match(int doc) {
+                    return liveDocs.get(doc);
+                }
+            };
+        }
+
+        @Override
+        public int cost() throws IOException {
+            return 0;
+        }
+    }
 }

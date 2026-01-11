@@ -18,7 +18,7 @@ import org.apache.lucene.util.SparseFixedBitSet;
  * <p>This is particularly useful for IVF vector search where posting lists may contain
  * duplicate documents due to overspill assignments (documents assigned to multiple centroids).
  */
-final class IncrementalDeduplicationFilter {
+public final class IncrementalDeduplicationFilter {
     private final int maxDoc;
     private SparseFixedBitSet seenDocs;
     private boolean initialized;
@@ -28,7 +28,7 @@ final class IncrementalDeduplicationFilter {
      *
      * @param maxDoc the maximum document ID in the segment
      */
-    IncrementalDeduplicationFilter(int maxDoc) {
+    public IncrementalDeduplicationFilter(int maxDoc) {
         this.maxDoc = maxDoc;
         this.initialized = false;
         this.seenDocs = null;
@@ -38,7 +38,7 @@ final class IncrementalDeduplicationFilter {
      * Explicitly initializes the internal bitset. This can be called upfront when
      * duplicates are known to exist (e.g., when overspill assignments are present).
      */
-    void initialize() {
+    public void initialize() {
         if (initialized == false) {
             seenDocs = new SparseFixedBitSet(maxDoc);
             initialized = true;
@@ -51,7 +51,7 @@ final class IncrementalDeduplicationFilter {
      *
      * @param docId the document ID to mark as seen
      */
-    void markSeen(int docId) {
+    public void markSeen(int docId) {
         if (initialized == false) {
             initialize();
         }
@@ -64,7 +64,7 @@ final class IncrementalDeduplicationFilter {
      * @param docId the document ID to check
      * @return true if the document was previously marked as seen, false otherwise
      */
-    boolean alreadySeen(int docId) {
+    public boolean alreadySeen(int docId) {
         return initialized && seenDocs.get(docId);
     }
 

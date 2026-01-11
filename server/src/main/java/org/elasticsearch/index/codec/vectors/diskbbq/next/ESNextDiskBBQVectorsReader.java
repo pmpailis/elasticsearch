@@ -31,6 +31,8 @@ import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.DocIdsWriter;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.search.vectors.IncrementalDeduplicationFilter;
+import org.elasticsearch.search.vectors.IncrementalFilterIterator;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESNextOSQVectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -56,34 +58,34 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
     CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
         return new CentroidIterator() {
-            CentroidOffsetAndLength nextOffsetAndLength = centroidIterator.hasNext()
-                ? centroidIterator.nextPostingListOffsetAndLength()
+            CentroidMeta nextCentroidMeta = centroidIterator.hasNext()
+                ? centroidIterator.nextCentroidMeta()
                 : null;
 
             {
                 // prefetch the first one
-                if (nextOffsetAndLength != null) {
-                    prefetch(nextOffsetAndLength);
+                if (nextCentroidMeta != null) {
+                    prefetch(nextCentroidMeta);
                 }
             }
 
-            void prefetch(CentroidOffsetAndLength offsetAndLength) throws IOException {
+            void prefetch(CentroidMeta offsetAndLength) throws IOException {
                 postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
             }
 
             @Override
             public boolean hasNext() {
-                return nextOffsetAndLength != null;
+                return nextCentroidMeta != null;
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
-                CentroidOffsetAndLength offsetAndLength = nextOffsetAndLength;
+            public CentroidMeta nextCentroidMeta() throws IOException {
+                CentroidMeta offsetAndLength = nextCentroidMeta;
                 if (centroidIterator.hasNext()) {
-                    nextOffsetAndLength = centroidIterator.nextPostingListOffsetAndLength();
-                    prefetch(nextOffsetAndLength);
+                    nextCentroidMeta = centroidIterator.nextCentroidMeta();
+                    prefetch(nextCentroidMeta);
                 } else {
-                    nextOffsetAndLength = null;  // indicate we reached the end
+                    nextCentroidMeta = null;  // indicate we reached the end
                 }
                 return offsetAndLength;
             }
@@ -295,12 +297,12 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
+            public CentroidMeta nextCentroidMeta() throws IOException {
                 int centroidOrdinal = neighborQueue.pop();
                 centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidOffsetAndLength(postingListOffset, postingListLength);
+                return new CentroidMeta(postingListOffset, postingListLength, centroidOrdinal);
             }
         };
     }
@@ -333,7 +335,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 }
 
                 @Override
-                public CentroidOffsetAndLength nextPostingListOffsetAndLength() {
+                public CentroidMeta nextCentroidMeta() {
                     return null;
                 }
             };
@@ -401,12 +403,12 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
+            public CentroidMeta nextCentroidMeta() throws IOException {
                 int centroidOrdinal = nextCentroid();
                 centroids.seek(childrenFileOffsets + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidOffsetAndLength(postingListOffset, postingListLength);
+                return new CentroidMeta(postingListOffset, postingListLength, centroidOrdinal);
             }
 
             private int nextCentroid() throws IOException {
@@ -820,18 +822,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
             // Read doc ID deltas
             idsWriter.readInts(indexInput, toRead, docEncoding, docIdsScratch);
-
-            // Accumulate deltas to get absolute doc IDs
-            minDocInBatch = Integer.MAX_VALUE;
             for (int j = 0; j < toRead; j++) {
                 docBase += docIdsScratch[j];
                 docIdsScratch[j] = docBase;
                 docIds[j] = docBase;
-                if (docBase < minDocInBatch) {
-                    minDocInBatch = docBase;
-                }
             }
-
             // Store batch size and update counters
             currentBatchSize = toRead;
             vectorsRead += toRead;
@@ -842,10 +837,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
             // Calculate the size of the quantized data for this batch
             long quantizedDataSize = (long) toRead * quantizedVectorByteSize + // quantized vectors
-                Float.BYTES * toRead + // correctionsLower
-                Float.BYTES * toRead + // correctionsUpper
-                Short.BYTES * toRead + // correctionsSum
-                Float.BYTES * toRead; // correctionsAdd
+                (long) Float.BYTES * toRead + // correctionsLower
+                (long) Float.BYTES * toRead + // correctionsUpper
+                (long) Short.BYTES * toRead + // correctionsSum
+                (long) Float.BYTES * toRead; // correctionsAdd
 
             // Position for next batch will be after current quantized data
             slicePos = currentBatchDataPos + quantizedDataSize;
@@ -888,14 +883,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                         break;
                     }
                 }
-                if (!found) {
+                if (false == found) {
                     notFoundInScratch++;
                 }
             }
-
-//            System.err.println("DEBUG[scoreCurrentBatch] currentBatchSize=" + currentBatchSize +
-//                " receivedCount=" + count +
-//                " notFoundInScratch=" + notFoundInScratch);
 
             // Quantize query if not already done
             quantizeQueryIfNecessary();
@@ -977,6 +968,252 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
             if (scoredDocs > 0) {
                 knnCollector.incVisitedCount(scoredDocs);
+            }
+
+            return scoredDocs;
+        }
+
+        @Override
+        public int scoreBulkWithPostFiltering(
+            int[] docIds,
+            int count,
+            IncrementalFilterIterator filterIterator,
+            IncrementalDeduplicationFilter deduplicationFilter,
+            KnnCollector knnCollector
+        ) throws IOException {
+            if (count == 0 || currentBatchSize == 0) {
+                return 0;
+            }
+
+            // Seek to the batch data position
+            if (currentBatchDataPos >= 0) {
+                indexInput.seek(currentBatchDataPos);
+            }
+
+            quantizeQueryIfNecessary();
+
+            // Score ALL docs for full bulk efficiency
+            if (currentBatchSize == BULK_SIZE) {
+                // Bulk scoring for full batch (16 docs)
+                float maxScore = osqVectorsScorer.scoreBulk(
+                    quantizedQueryScratch,
+                    queryCorrections.lowerInterval(),
+                    queryCorrections.upperInterval(),
+                    queryCorrections.quantizedComponentSum(),
+                    queryCorrections.additionalCorrection(),
+                    fieldInfo.getVectorSimilarityFunction(),
+                    centroidDp,
+                    scores
+                );
+
+                // Post-filtering: Apply filter + dedup to scored results
+                int collected = 0;
+                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                    for (int i = 0; i < currentBatchSize; i++) {
+                        int docId = docIdsScratch[i];
+
+                        // Check filter first
+                        if (filterIterator.matches(docId) == false) {
+                            continue;
+                        }
+
+                        // Check deduplication
+                        if (deduplicationFilter.alreadySeen(docId)) {
+                            continue;
+                        }
+
+                        // Mark as seen and collect
+                        deduplicationFilter.markSeen(docId);
+                        knnCollector.collect(docId, scores[i]);
+                        collected++;
+                    }
+                }
+
+                knnCollector.incVisitedCount(currentBatchSize);
+                return collected;
+
+            } else {
+                // Partial batch: score individually but still apply post-filtering
+                int collected = 0;
+                for (int i = 0; i < currentBatchSize; i++) {
+                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                    indexInput.readFloats(correctiveValues, 0, 3);
+                    int corrSum = Short.toUnsignedInt(indexInput.readShort());
+
+                    int docId = docIdsScratch[i];
+
+                    // Check filter
+                    if (filterIterator.matches(docId) == false) {
+                        continue;
+                    }
+
+                    // Check deduplication
+                    if (deduplicationFilter.alreadySeen(docId)) {
+                        continue;
+                    }
+
+                    // Score this doc
+                    float score = osqVectorsScorer.score(
+                        queryCorrections.lowerInterval(),
+                        queryCorrections.upperInterval(),
+                        queryCorrections.quantizedComponentSum(),
+                        queryCorrections.additionalCorrection(),
+                        fieldInfo.getVectorSimilarityFunction(),
+                        centroidDp,
+                        correctiveValues[0],
+                        correctiveValues[1],
+                        corrSum,
+                        correctiveValues[2],
+                        qcDist
+                    );
+
+                    // Mark as seen and collect
+                    deduplicationFilter.markSeen(docId);
+                    knnCollector.collect(docId, score);
+                    collected++;
+                }
+
+                knnCollector.incVisitedCount(currentBatchSize);
+                return collected;
+            }
+        }
+
+        @Override
+        public int visitFiltered(
+            KnnCollector knnCollector,
+            IncrementalFilterIterator filterIterator,
+            IncrementalDeduplicationFilter deduplicationFilter
+        ) throws IOException {
+            if (vectors == 0) {
+                return 0;
+            }
+
+            // Seek to the beginning of the posting list data
+            indexInput.seek(slicePos);
+
+            // Reset docBase for delta decoding
+            docBase = 0;
+
+            quantizeQueryIfNecessary();
+
+            int scoredDocs = 0;
+
+            // Read all doc IDs from posting list in batches of BULK_SIZE (16)
+            int limit = vectors - BULK_SIZE + 1;
+            int i = 0;
+
+            // Process full batches
+            for (; i < limit; i += BULK_SIZE) {
+                readDocIds(BULK_SIZE);
+
+                // Filter doc IDs: apply acceptDocs and deduplication
+                int filteredCount = 0;
+                for (int j = 0; j < BULK_SIZE; j++) {
+                    int docId = docIdsScratch[j];
+
+                    // Apply acceptDocs filter using incremental filter iterator
+                    if (filterIterator.matches(docId) == false) {
+                        docIdsScratch[j] = -1; // Mark as filtered
+                        continue;
+                    }
+
+                    // Apply deduplication filter
+                    if (deduplicationFilter.alreadySeen(docId)) {
+                        docIdsScratch[j] = -1; // Mark as filtered
+                        continue;
+                    }
+
+                    // Mark as seen for deduplication
+                    deduplicationFilter.markSeen(docId);
+                    filteredCount++;
+                }
+
+                // Score the filtered docs (skip if none passed filters)
+                if (filteredCount == 0) {
+                    indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
+                    continue;
+                }
+
+                // Decide whether to use bulk scoring or individual scoring
+                float maxScore;
+                if (filteredCount < BULK_SIZE / 2) {
+                    // Too many filtered, use individual scoring
+                    maxScore = scoreIndividually();
+                } else {
+                    // Use bulk scoring for efficiency
+                    maxScore = osqVectorsScorer.scoreBulk(
+                        quantizedQueryScratch,
+                        queryCorrections.lowerInterval(),
+                        queryCorrections.upperInterval(),
+                        queryCorrections.quantizedComponentSum(),
+                        queryCorrections.additionalCorrection(),
+                        fieldInfo.getVectorSimilarityFunction(),
+                        centroidDp,
+                        scores
+                    );
+                }
+
+                // Collect results
+                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                    for (int j = 0; j < BULK_SIZE; j++) {
+                        int doc = docIdsScratch[j];
+                        if (doc != -1) { // Not filtered
+                            knnCollector.collect(doc, scores[j]);
+                            scoredDocs++;
+                        }
+                    }
+                }
+
+                knnCollector.incVisitedCount(BULK_SIZE);
+            }
+
+            // Handle tail (partial batch) - score individually since data layout is different
+            final int remaining = vectors - i;
+            if (remaining > 0) {
+                readDocIds(remaining);
+
+                // Process each doc individually
+                for (int j = 0; j < remaining; j++) {
+                    int docId = docIdsScratch[j];
+
+                    // Apply acceptDocs filter using incremental filter iterator
+                    if (filterIterator.matches(docId) == false) {
+                        indexInput.skipBytes(quantizedByteLength);
+                        continue;
+                    }
+
+                    // Apply deduplication filter
+                    if (deduplicationFilter.alreadySeen(docId)) {
+                        indexInput.skipBytes(quantizedByteLength);
+                        continue;
+                    }
+
+                    // Mark as seen
+                    deduplicationFilter.markSeen(docId);
+
+                    // Score this document
+                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                    indexInput.readFloats(correctiveValues, 0, 3);
+                    final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
+                    float score = osqVectorsScorer.score(
+                        queryCorrections.lowerInterval(),
+                        queryCorrections.upperInterval(),
+                        queryCorrections.quantizedComponentSum(),
+                        queryCorrections.additionalCorrection(),
+                        fieldInfo.getVectorSimilarityFunction(),
+                        centroidDp,
+                        correctiveValues[0],
+                        correctiveValues[1],
+                        quantizedComponentSum,
+                        correctiveValues[2],
+                        qcDist
+                    );
+
+                    knnCollector.collect(docId, score);
+                    scoredDocs++;
+                }
+
+                knnCollector.incVisitedCount(remaining);
             }
 
             return scoredDocs;

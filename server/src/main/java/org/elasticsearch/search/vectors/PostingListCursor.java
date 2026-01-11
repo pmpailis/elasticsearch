@@ -12,22 +12,23 @@ import org.apache.lucene.search.KnnCollector;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * A cursor for incrementally processing documents from an IVF posting list.
  * This class maintains state for reading a single posting list in batches,
  * allowing for efficient interleaving of multiple posting lists.
  *
- * <p>The cursor reads document IDs in batches using the {@link IVFVectorsReader.PostingVisitor}
- * and provides access to the minimum document ID in the current batch.
- * This enables a multi-way merge strategy across multiple posting lists.
+ * <p>The cursor reads document IDs in batches using the {@link IVFVectorsReader.PostingVisitor}.
+ * Cursors are ordered by their load order (which reflects centroid proximity to the query),
+ * ensuring that posting lists from centroids closest to the query are processed first.
+ * This prioritization is critical for scoring the most relevant documents early and
+ * enabling efficient early termination.
  */
 final class PostingListCursor implements Comparable<PostingListCursor> {
-    private static final int BULK_SIZE = 32;
+    private static final int BULK_SIZE = 16;
 
-    // Identity and metadata
-    private final int centroidId;
-    private final float centroidScore;
     private final long postingListOffset;
 
     // Posting visitor for batch operations
@@ -39,31 +40,33 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
     // Current batch state
     private final int[] docIdBatch;
     private int batchSize;
-    private int positionInBatch;
 
     // State
     private boolean initialized;
     private boolean exhausted;
     private int currentDocId;
+    private final int centroidOrdinal;
+    private int totalVectors; // Total number of vectors in this posting list
+    private final int loadOrder; // Order in which this cursor was loaded (lower = closer to query)
 
     /**
      * Creates a new posting list cursor.
      *
-     * @param centroidId the centroid ID for this posting list
-     * @param centroidScore the similarity score of the centroid to the query
+     * @param centroidOrdinal the centroid ordinal for this posting list
      * @param postingListOffset the file offset of this posting list
      * @param postingVisitor the visitor for reading and scoring documents
      * @param filterIterator incremental filter iterator for accepting documents
+     * @param loadOrder the order in which this cursor was loaded (for prioritization)
      */
     PostingListCursor(
-        int centroidId,
-        float centroidScore,
+        int centroidOrdinal,
         long postingListOffset,
         IVFVectorsReader.PostingVisitor postingVisitor,
-        IncrementalFilterIterator filterIterator
+        IncrementalFilterIterator filterIterator,
+        int loadOrder
     ) {
-        this.centroidId = centroidId;
-        this.centroidScore = centroidScore;
+        this.centroidOrdinal = centroidOrdinal;
+        this.loadOrder = loadOrder;
         this.postingListOffset = postingListOffset;
         this.postingVisitor = postingVisitor;
         this.filterIterator = filterIterator;
@@ -72,7 +75,6 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
         this.exhausted = true;
         this.currentDocId = Integer.MAX_VALUE;
         this.batchSize = 0;
-        this.positionInBatch = 0;
     }
 
     /**
@@ -85,20 +87,19 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
             return;
         }
 
-        // Reset the posting visitor to this posting list
-        int totalVectors = postingVisitor.resetPostingsScorer(postingListOffset);
+        // Reset the posting visitor to this posting list and get total vector count
+        this.totalVectors = postingVisitor.resetPostingsScorer(postingListOffset);
 
-        if (totalVectors == 0) {
+        if (this.totalVectors == 0) {
             exhausted = true;
             initialized = true;
             return;
+        }else{
+            exhausted = false;
         }
-
-        initialized = true;
-        exhausted = false;
-
         // Load the first batch
         loadNextBatch();
+        initialized = true;
     }
 
     /**
@@ -116,12 +117,10 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
 
         // Read the next batch of doc IDs
         batchSize = postingVisitor.readNextBatch(docIdBatch);
-
         if (batchSize == 0) {
             exhausted = true;
             currentDocId = Integer.MAX_VALUE;
         } else {
-            positionInBatch = 0;
             currentDocId = docIdBatch[0];
         }
     }
@@ -135,23 +134,6 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
         return currentDocId;
     }
 
-    /**
-     * Returns the centroid ID for this posting list.
-     *
-     * @return the centroid ID
-     */
-    int centroidId() {
-        return centroidId;
-    }
-
-    /**
-     * Returns the centroid score (similarity to query).
-     *
-     * @return the centroid score
-     */
-    float centroidScore() {
-        return centroidScore;
-    }
 
     /**
      * Checks if there are more documents in this posting list.
@@ -159,7 +141,25 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
      * @return true if more documents are available
      */
     boolean hasNext() {
-        return !exhausted;
+        return false == exhausted;
+    }
+
+    /**
+     * Returns the size of the current batch (number of documents loaded).
+     *
+     * @return the current batch size
+     */
+    int getCurrentBatchSize() {
+        return batchSize;
+    }
+
+    /**
+     * Returns the total number of vectors in this posting list.
+     *
+     * @return the total vector count
+     */
+    int getTotalVectors() {
+        return totalVectors;
     }
 
     /**
@@ -176,7 +176,7 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
         }
 
         // Check if current doc passes the filter
-        if (!filterIterator.matches(currentDocId)) {
+        if (false == filterIterator.matches(currentDocId)) {
             return; // Skip this doc
         }
 
@@ -186,114 +186,74 @@ final class PostingListCursor implements Comparable<PostingListCursor> {
     }
 
     /**
-     * Scores all remaining documents in the current batch and collects them.
-     * This is more efficient than scoring documents one at a time.
-     * After scoring, automatically loads the next batch.
+     * Scores all documents in the current batch using POST-FILTERING approach.
+     *
+     * <p>Strategy for maximum bulk scoring efficiency:
+     * <ol>
+     *   <li>Score ALL docs in batch (16 docs) using bulk operations</li>
+     *   <li>Apply filter + deduplication to scored results</li>
+     *   <li>Collect only docs that pass both</li>
+     * </ol>
+     *
+     * This maintains full bulk scoring efficiency (always score 16 docs at once)
+     * rather than pre-filtering which would break batches into smaller pieces.
      *
      * @param collector the collector to receive scored documents
-     * @param toScore temporary array for docs to score
      * @param deduplicationFilter filter to check for already-seen documents
-     * @return the number of documents scored from this batch
+     * @return the number of documents actually scored (before filtering)
      * @throws IOException if an I/O error occurs
      */
-    int scoreBatch(KnnCollector collector, int[] toScore, IncrementalDeduplicationFilter deduplicationFilter) throws IOException {
-        if (exhausted || positionInBatch >= batchSize) {
+    int scoreBatch(KnnCollector collector, IncrementalDeduplicationFilter deduplicationFilter) throws IOException {
+        if (exhausted) {
             return 0;
         }
 
-        int totalInBatch = batchSize - positionInBatch;
-
-        // Collect docs that pass BOTH acceptDocs (via filterIterator) and deduplication filters
-        // CRITICAL: Check filter BEFORE marking as seen to avoid losing documents
-        int count = 0;
-        int skippedDueToDedup = 0;
-        int skippedDueToFilter = 0;
-        for (int i = positionInBatch; i < batchSize; i++) {
-            int docId = docIdBatch[i];
-
-            // Check filter first using incremental iterator
-            // This advances the filter iterator as needed and builds backing bitset incrementally
-            boolean passesFilter = filterIterator.matches(docId);
-//            System.err.println("DEBUG[PostingListCursor] filterIterator.matches(" + docId + ") = " + passesFilter +
-//                " (iteratorPos=" + filterIterator.currentPosition() + ")");
-
-            if (!passesFilter) {
-                skippedDueToFilter++;
-                continue;
-            }
-
-            // Check deduplication filter
-            if (deduplicationFilter.alreadySeen(docId) == false) {
-                toScore[count++] = docId;
-                deduplicationFilter.markSeen(docId);
-            } else {
-                skippedDueToDedup++;
-            }
+        if (batchSize == 0) {
+            loadNextBatch();
+            return 0;
         }
 
-//        System.err.println("DEBUG[PostingListCursor.scoreBatch] centroid=" + centroidId +
-//            " totalInBatch=" + totalInBatch +
-//            " passedFilter=" + (totalInBatch - skippedDueToFilter) +
-//            " skippedFilter=" + skippedDueToFilter +
-//            " passedDedup=" + count +
-//            " skippedDedup=" + skippedDueToDedup);
+        // Score ALL docs in batch for full bulk efficiency
+        // The visitor will handle post-filtering internally
+        int scoredCount = postingVisitor.scoreBulkWithPostFiltering(
+            docIdBatch,
+            batchSize,
+            filterIterator,
+            deduplicationFilter,
+            collector
+        );
 
-        int actualScored = 0;
-        if (count > 0) {
-            // Score all collected docs in one operation
-            actualScored = postingVisitor.scoreCurrentBatch(toScore, count, collector);
-//            System.err.println("DEBUG[PostingListCursor.scoreBatch] centroid=" + centroidId +
-//                " actualScored=" + actualScored + " (from " + count + " passed to visitor)");
-        }
-
-        // Move to end of batch and load the next batch immediately
-        positionInBatch = batchSize;
+        // Load next batch for future calls
         loadNextBatch();
 
-        return count;
+        return scoredCount;
     }
 
-    /**
-     * Advances to the next document in the posting list.
-     *
-     * @throws IOException if an I/O error occurs
-     */
-    void advance() throws IOException {
-        if (exhausted) {
-            return;
-        }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        PostingListCursor that = (PostingListCursor) o;
+        return batchSize == that.batchSize &&
+            exhausted == that.exhausted &&
+            currentDocId == that.currentDocId &&
+            centroidOrdinal == that.centroidOrdinal &&
+            Arrays.equals(docIdBatch, that.docIdBatch);
+    }
 
-        positionInBatch++;
-
-        // Check if we need to load the next batch
-        if (positionInBatch >= batchSize) {
-            loadNextBatch();
-        } else {
-            // Update current doc ID from batch
-            currentDocId = docIdBatch[positionInBatch];
-        }
+    @Override
+    public int hashCode() {
+        return Objects.hash(batchSize, exhausted, currentDocId, centroidOrdinal, Arrays.hashCode(docIdBatch));
     }
 
     @Override
     public int compareTo(PostingListCursor other) {
-        // First compare by current doc ID (primary sort key)
-        int cmp = Integer.compare(this.currentDocId, other.currentDocId);
+        // Sort by load order first (lower = closer to query = higher priority)
+        int cmp = Integer.compare(this.loadOrder, other.loadOrder);
         if (cmp != 0) {
             return cmp;
         }
-
-        // For stability, break ties using centroid score (higher score first)
-        return Float.compare(other.centroidScore, this.centroidScore);
-    }
-
-    /**
-     * Returns true if this cursor has the same minimum doc ID as another cursor.
-     * This indicates a duplicate document across posting lists (overspill).
-     *
-     * @param other the other cursor to compare
-     * @return true if both cursors have the same current doc ID
-     */
-    boolean hasSameDocAs(PostingListCursor other) {
-        return this.currentDocId == other.currentDocId && this.currentDocId != Integer.MAX_VALUE;
+        // Tie-breaker: sort by doc ID for deduplication efficiency
+        return Integer.compare(this.currentDocId, other.currentDocId);
     }
 }

@@ -204,7 +204,8 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
         return approximateSearch(
             ctx,
-            new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc),
+            new ESAcceptDocs.DynamicFilterEsAcceptDocs(supplier, liveDocs),
+//            new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc),
             Integer.MAX_VALUE,
             knnCollectorManager,
             visitRatio
