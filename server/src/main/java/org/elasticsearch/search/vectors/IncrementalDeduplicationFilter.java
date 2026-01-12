@@ -8,7 +8,7 @@
  */
 package org.elasticsearch.search.vectors;
 
-import org.apache.lucene.util.SparseFixedBitSet;
+import com.carrotsearch.hppc.IntHashSet;
 
 /**
  * An incremental filter for tracking already-seen documents during vector search.
@@ -19,43 +19,11 @@ import org.apache.lucene.util.SparseFixedBitSet;
  * duplicate documents due to overspill assignments (documents assigned to multiple centroids).
  */
 public final class IncrementalDeduplicationFilter {
-    private final int maxDoc;
-    private SparseFixedBitSet seenDocs;
-    private boolean initialized;
 
-    /**
-     * Creates a new incremental deduplication filter.
-     *
-     * @param maxDoc the maximum document ID in the segment
-     */
-    public IncrementalDeduplicationFilter(int maxDoc) {
-        this.maxDoc = maxDoc;
-        this.initialized = false;
-        this.seenDocs = null;
-    }
+    private final IntHashSet seenDocs;
 
-    /**
-     * Explicitly initializes the internal bitset. This can be called upfront when
-     * duplicates are known to exist (e.g., when overspill assignments are present).
-     */
-    public void initialize() {
-        if (initialized == false) {
-            seenDocs = new SparseFixedBitSet(maxDoc);
-            initialized = true;
-        }
-    }
-
-    /**
-     * Marks a document as seen. If the bitset has not been initialized yet,
-     * this will trigger lazy initialization.
-     *
-     * @param docId the document ID to mark as seen
-     */
-    public void markSeen(int docId) {
-        if (initialized == false) {
-            initialize();
-        }
-        seenDocs.set(docId);
+    public IncrementalDeduplicationFilter(int expectedSize) {
+        this.seenDocs = new IntHashSet(expectedSize);
     }
 
     /**
@@ -64,25 +32,7 @@ public final class IncrementalDeduplicationFilter {
      * @param docId the document ID to check
      * @return true if the document was previously marked as seen, false otherwise
      */
-    public boolean alreadySeen(int docId) {
-        return initialized && seenDocs.get(docId);
-    }
-
-    /**
-     * Returns the number of documents marked as seen.
-     *
-     * @return the count of seen documents, or 0 if not initialized
-     */
-    int seenCount() {
-        return initialized ? seenDocs.cardinality() : 0;
-    }
-
-    /**
-     * Returns whether the filter has been initialized.
-     *
-     * @return true if the internal bitset has been allocated
-     */
-    boolean isInitialized() {
-        return initialized;
+    public boolean add(int docId) {
+        return seenDocs.add(docId);
     }
 }

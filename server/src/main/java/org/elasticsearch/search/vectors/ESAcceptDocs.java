@@ -193,6 +193,7 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         private void createBitSetIfNecessary() throws IOException {
             if (acceptBitSet == null) {
                 acceptBitSet = createBitSet(scorerSupplier.get(NO_MORE_DOCS).iterator(), liveDocs, maxDoc);
+                cardinality = acceptBitSet.cardinality();
             }
         }
 
