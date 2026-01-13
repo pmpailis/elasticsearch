@@ -421,7 +421,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // This separates cheap operations (doc ID loading + filtering) from expensive operations (vector scoring)
 
         final int BATCH_SIZE = 8; // Number of posting lists to process in parallel
-        final IncrementalDeduplicationFilter deduplicationFilter = new IncrementalDeduplicationFilter(500);
+        final IncrementalDeduplicationFilter deduplicationFilter = new IncrementalDeduplicationFilter(1000);
 
         // Initialize incremental filter iterator from acceptDocs
         // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
@@ -430,33 +430,29 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         long expectedDocs = 0;   // Total vectors in posting lists we've loaded
         long actualDocs = 0;     // Docs actually scored (after filtering)
+        PostingVisitor visitor = getPostingVisitor(fieldInfo, postingListInput, target, null);
 
         while (centroidIterator.hasNext() &&
             (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
 
             // load BATCH_SIZE postings lists
             int batchCount = 0;
-            PostingVisitor[] visitors = new PostingVisitor[BATCH_SIZE];
             int[] minDocIds = new int[BATCH_SIZE];
+            long[] postingListSizes = new long[BATCH_SIZE];
+            long[] offsets = new long[BATCH_SIZE];
 
             // while there are more centroids to explore and we haven't reached our batch_size
             // let's load another set of centroids
             while (centroidIterator.hasNext() && batchCount < BATCH_SIZE) {
-                // Check termination condition before loading each centroid (matching sequential behavior)
-                if (maxVectorVisited <= expectedDocs && knnCollector.minCompetitiveSimilarity() != Float.NEGATIVE_INFINITY) {
-                    break;
-                }
-
                 CentroidMeta centroid = centroidIterator.nextCentroidMeta();
                 // Don't pass acceptDocs to visitor - we handle filtering via IncrementalFilterIterator
-                PostingVisitor visitor = getPostingVisitor(fieldInfo, postingListInput, target, null);
                 // Reset visitor to this posting list and get its size
                 long size = visitor.resetPostingsScorer(centroid.offset());
                 if (size > 0) {
                     int minDocId = visitor.peekFirstDocId();
-                    visitors[batchCount] = visitor;
                     minDocIds[batchCount] = minDocId;
-                    expectedDocs += size;
+                    offsets[batchCount] = centroid.offset;
+                    postingListSizes[batchCount] = size;  // Store size, don't increment expectedDocs yet
                     batchCount++;
                 }
             }
@@ -470,93 +466,107 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             for (int i = 0; i < batchCount; i++) {
                 indices[i] = i;
             }
-            java.util.Arrays.sort(indices, 0, batchCount, (a, b) -> Integer.compare(minDocIds[a], minDocIds[b]));
+            Arrays.sort(indices, 0, batchCount, (a, b) -> Integer.compare(minDocIds[a], minDocIds[b]));
 
             // Step 3: Process posting lists in min doc ID order
             for (int idx = 0; idx < batchCount; idx++) {
                 // Check termination condition BEFORE processing each posting list
                 // This matches the sequential behavior where condition is checked before each centroid
                 if (maxVectorVisited <= expectedDocs && knnCollector.minCompetitiveSimilarity() != Float.NEGATIVE_INFINITY) {
-                    return;
+                    break;
                 }
 
                 int i = indices[idx];
-                PostingVisitor visitor = visitors[i];
 
+                // Increment expectedDocs just before processing (matching sequential behavior)
+                expectedDocs += postingListSizes[i];
+                visitor.resetPostingsScorer(offsets[i]);
                 // Visit all docs from this posting list, applying filters
-                int scored = visitor.visitFiltered(knnCollector, incrementalFilterIterator, deduplicationFilter);
-                actualDocs += scored;
+                actualDocs += visitor.visitFiltered(knnCollector, incrementalFilterIterator, deduplicationFilter);
 
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
-
-                // Check for early termination after each posting list
-                if (knnCollector.earlyTerminated()) {
-                    return;
-                }
             }
         }
-
-        // Phase 2: Filter compensation - if filtering is active, visit more centroids
-        if (acceptDocs != null && centroidIterator.hasNext() && false == knnCollector.earlyTerminated()) {
+        if (acceptDocs != null) {
+            // TODO Adjust the value here when using centroid filtering
             float unfilteredRatioVisited = (float) expectedDocs / numVectors;
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                // Load next batch
-                int batchCount = 0;
-                PostingVisitor[] visitors = new PostingVisitor[BATCH_SIZE];
-                int[] minDocIds = new int[BATCH_SIZE];
-
-               while(centroidIterator.hasNext() && batchCount < BATCH_SIZE) {
-                    CentroidMeta centroid = centroidIterator.nextCentroidMeta();
-                    // Don't pass acceptDocs to visitor - we handle filtering via IncrementalFilterIterator
-                    PostingVisitor visitor = getPostingVisitor(fieldInfo, postingListInput, target, null);
-
-                    long size = visitor.resetPostingsScorer(centroid.offset());
-                    if (size > 0) {
-                        int minDocId = visitor.peekFirstDocId();
-                        visitors[batchCount] = visitor;
-                        minDocIds[batchCount] = minDocId;
-                        expectedDocs += size;
-                        batchCount++;
-                    }
-                }
-
-                if (batchCount == 0) {
-                    break;
-                }
-
-                // Sort posting lists by min doc ID
-                Integer[] indices = new Integer[batchCount];
-                for (int i = 0; i < batchCount; i++) {
-                    indices[i] = i;
-                }
-                java.util.Arrays.sort(indices, 0, batchCount, (a, b) -> Integer.compare(minDocIds[a], minDocIds[b]));
-
-                // Process batch in min doc ID order
-                for (int idx = 0; idx < batchCount; idx++) {
-                    // Check if we've scored enough docs before processing next posting list
-                    if (actualDocs >= expectedScored && actualDocs >= knnCollector.k()) {
-                        return;
-                    }
-
-                    int i = indices[idx];
-                    int scored = visitors[i].visitFiltered(knnCollector, incrementalFilterIterator, deduplicationFilter);
-                    actualDocs += scored;
-
-                    if (knnCollector.getSearchStrategy() != null) {
-                        knnCollector.getSearchStrategy().nextVectorsBlock();
-                    }
-
-                    // Check for early termination after each posting list
-                    if (knnCollector.earlyTerminated()) {
-                        return;
-                    }
+                CentroidMeta offsetAndLength = centroidIterator.nextCentroidMeta();
+                visitor.resetPostingsScorer(offsetAndLength.offset());
+                actualDocs += visitor.visitFiltered(knnCollector, incrementalFilterIterator, deduplicationFilter);
+                if (knnCollector.getSearchStrategy() != null) {
+                    knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
             }
         }
+//        // Phase 2: Filter compensation - if filtering is active, visit more centroids
+//        if (acceptDocs != null) {
+//            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
+//            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
+//            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+//            while (centroidIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+//                // Load next batch
+//                int batchCount = 0;
+//                PostingVisitor[] visitors = new PostingVisitor[BATCH_SIZE];
+//                int[] minDocIds = new int[BATCH_SIZE];
+//                long[] postingListSizes = new long[BATCH_SIZE];
+//
+//               while(centroidIterator.hasNext() && batchCount < BATCH_SIZE) {
+//                    CentroidMeta centroid = centroidIterator.nextCentroidMeta();
+//                    // Don't pass acceptDocs to visitor - we handle filtering via IncrementalFilterIterator
+//                    PostingVisitor visitor = getPostingVisitor(fieldInfo, postingListInput, target, null);
+//
+//                    long size = visitor.resetPostingsScorer(centroid.offset());
+//                    if (size > 0) {
+//                        int minDocId = visitor.peekFirstDocId();
+//                        visitors[batchCount] = visitor;
+//                        minDocIds[batchCount] = minDocId;
+//                        postingListSizes[batchCount] = size;  // Store size, don't increment expectedDocs yet
+//                        batchCount++;
+//                    }
+//                }
+//
+//                if (batchCount == 0) {
+//                    break;
+//                }
+//
+//                // Sort posting lists by min doc ID
+//                Integer[] indices = new Integer[batchCount];
+//                for (int i = 0; i < batchCount; i++) {
+//                    indices[i] = i;
+//                }
+//                java.util.Arrays.sort(indices, 0, batchCount, (a, b) -> Integer.compare(minDocIds[a], minDocIds[b]));
+//
+//                // Process batch in min doc ID order
+//                for (int idx = 0; idx < batchCount; idx++) {
+//                    // Check if we've scored enough docs before processing next posting list
+//                    if (actualDocs >= expectedScored && actualDocs >= knnCollector.k()) {
+//                        return;
+//                    }
+//
+//                    int i = indices[idx];
+//
+//                    // Increment expectedDocs just before processing (matching sequential behavior)
+//                    expectedDocs += postingListSizes[i];
+//
+//                    int scored = visitors[i].visitFiltered(knnCollector, incrementalFilterIterator, deduplicationFilter);
+//                    actualDocs += scored;
+//
+//                    if (knnCollector.getSearchStrategy() != null) {
+//                        knnCollector.getSearchStrategy().nextVectorsBlock();
+//                    }
+//
+//                    // Check for early termination after each posting list
+//                    if (knnCollector.earlyTerminated()) {
+//                        return;
+//                    }
+//                }
+//            }
+//        }
     }
 
     @Override

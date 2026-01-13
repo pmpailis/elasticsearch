@@ -1018,19 +1018,18 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                     centroidDp,
                     scores
                 );
-                scoredDocs += BULK_SIZE;
 
                 // Post-filter and collect results
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     for (int j = 0; j < BULK_SIZE; j++) {
-                        int doc = docIdsScratch[j];  // Already absolute doc ID from readDocIds
-                        if (false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
+                        int doc = docIdsScratch[j];
+                        if (doc == -1 || false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
                             continue;
                         }
                         knnCollector.collect(doc, scores[j]);
+                        scoredDocs++;
                     }
                 }
-                knnCollector.incVisitedCount(BULK_SIZE);
             }
 
             // Handle tail (partial batch) - score individually since data layout is different
@@ -1042,7 +1041,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 for (int j = 0; j < remaining; j++) {
                     int doc = docIdsScratch[j];
                     // Apply acceptDocs filter using incremental filter iterator
-                    if (false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
+                    if (doc == -1 || false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
                         indexInput.skipBytes(quantizedByteLength);
                         continue;
                     }
@@ -1069,6 +1068,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 knnCollector.incVisitedCount(remaining);
             }
 
+            if(scoredDocs > 0){
+                knnCollector.incVisitedCount(scoredDocs);
+            }
             return scoredDocs;
         }
     }
