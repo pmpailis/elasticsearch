@@ -28,6 +28,7 @@ import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.lucene.codecs.lucene102.Lucene102BinaryQuantizedVectorsFormat.QUERY_BITS;
@@ -177,7 +178,33 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
 
     @Override
     public List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int maxCentroids, String field, float visitRatio, long docsToExplore) throws IOException {
-        return null;
+        FloatVectorValues values = getReaderForField(field).getFloatVectorValues(field);
+        FieldEntry entry = fields.get(fieldInfo.number);
+        IndexInput postingListSlice = entry.postingListSlice(ivfClusters);
+        CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
+            fieldInfo,
+            entry.numCentroids(),
+            entry.centroidSlice(ivfCentroids),
+            queryVector,
+            postingListSlice,
+            null,
+            0,
+            values,
+            visitRatio
+        );
+        int centroidsAdded = 0;
+        List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
+        while (centroidPrefetchingIterator.hasNext() && centroidsAdded++ < maxCentroids) {
+            IVFCentroidQuery.IVFCentroidMeta centroidMeta = centroidPrefetchingIterator.nextCentroidMeta();
+            var slice = postingListSlice.slice(
+                "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
+            );
+            var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
+            centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
+                centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), postingVisitor
+            ));
+        }
+        return centroids;
     }
 
     private static CentroidIterator getCentroidIteratorNoParent(

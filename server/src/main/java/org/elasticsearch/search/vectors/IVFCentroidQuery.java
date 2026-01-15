@@ -51,6 +51,7 @@ public class IVFCentroidQuery extends Query {
     private final int maxVectorsPerCentroid;
     private final AtomicLong globalMinCompetitiveScore;
     private final Bits parentBitSet;
+    private final AtomicLong totalVectorsVisited;
 
     public IVFCentroidQuery(
         String field,
@@ -59,7 +60,8 @@ public class IVFCentroidQuery extends Query {
         LeafReaderContext ctx,
         int maxVectorsPerCentroid,
         AtomicLong globalMinCompetitiveScore,
-        Bits parentBitSet) {
+        Bits parentBitSet,
+        AtomicLong totalVectorsVisited) {
         this.field = field;
         this.queryVector = queryVector;
         this.centroidMeta = centroid;
@@ -67,6 +69,7 @@ public class IVFCentroidQuery extends Query {
         this.globalMinCompetitiveScore = globalMinCompetitiveScore;
         this.context = ctx;
         this.parentBitSet = parentBitSet;
+        this.totalVectorsVisited = totalVectorsVisited;
     }
 
     @Override
@@ -122,8 +125,10 @@ public class IVFCentroidQuery extends Query {
 
         @Override
         public ScorerSupplier scorerSupplier(LeafReaderContext context) throws IOException {
-            if (context != centroidQuery.context) {
-                // created by a different context
+            // Check if this scorer is for the correct context
+            // Each IVFCentroidQuery is tied to a specific leaf context
+            if (context.ord != centroidQuery.context.ord || context.docBase != centroidQuery.context.docBase) {
+                // This query is for a different segment
                 return null;
             }
             // Access IVFVectorsReader through CodecReader
@@ -147,7 +152,7 @@ public class IVFCentroidQuery extends Query {
 
                 @Override
                 public long cost() {
-                    return scorer.iterator().cost();
+                    return centroidQuery.maxVectorsPerCentroid;
                 }
             };
         }
@@ -166,7 +171,8 @@ public class IVFCentroidQuery extends Query {
                 boost,
                 centroidQuery.maxVectorsPerCentroid,
                 centroidQuery.globalMinCompetitiveScore,
-                centroidQuery.parentBitSet
+                centroidQuery.parentBitSet,
+                centroidQuery.totalVectorsVisited
             );
         }
 
@@ -188,6 +194,7 @@ public class IVFCentroidQuery extends Query {
         private final int maxVectorsToScore;
         private final AtomicLong globalMinCompetitiveScore;
         private final Bits parentBitSet;
+        private final AtomicLong totalVectorsVisited;
 
         private int docsScored = 0;
         private ScoringIterator scoringIterator;
@@ -198,7 +205,8 @@ public class IVFCentroidQuery extends Query {
             float boost,
             int maxVectorsToScore,
             AtomicLong globalMinCompetitiveScore,
-            Bits parentBitSet
+            Bits parentBitSet,
+            AtomicLong totalVectorsVisited
         ) {
             this.postingVisitor = postingVisitor;
             this.centroidMeta = centroidMeta;
@@ -206,9 +214,10 @@ public class IVFCentroidQuery extends Query {
             this.maxVectorsToScore = maxVectorsToScore;
             this.globalMinCompetitiveScore = globalMinCompetitiveScore;
             this.parentBitSet = parentBitSet;
+            this.totalVectorsVisited = totalVectorsVisited;
 
             // Create appropriate iterator based on whether we need diversification
-            PostingVisitorIterator baseIterator = new PostingVisitorIterator(postingVisitor);
+            PostingVisitorIterator baseIterator = new PostingVisitorIterator(postingVisitor, totalVectorsVisited, maxVectorsToScore);
             LimitedDocIdIterator limitedIterator = new LimitedDocIdIterator(baseIterator, maxVectorsToScore);
 
             if (parentBitSet != null) {
@@ -272,6 +281,8 @@ public class IVFCentroidQuery extends Query {
             private static final int BATCH_SIZE = 16;
 
             private final IVFVectorsReader.PostingVisitor postingVisitor;
+            private final AtomicLong totalVectorsVisited;
+            private final long estimatedCost;
 
             private final int[] docIdsCache = new int[BATCH_SIZE];
             private final float[] scoresCache = new float[BATCH_SIZE];
@@ -280,8 +291,10 @@ public class IVFCentroidQuery extends Query {
             private int position = -1;
             private int currentDoc = -1;
 
-            PostingVisitorIterator(IVFVectorsReader.PostingVisitor postingVisitor) {
+            PostingVisitorIterator(IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost) {
                 this.postingVisitor = postingVisitor;
+                this.totalVectorsVisited = totalVectorsVisited;
+                this.estimatedCost = estimatedCost;
             }
 
             @Override
@@ -304,6 +317,11 @@ public class IVFCentroidQuery extends Query {
                     }
                     // Score the batch
                     postingVisitor.scoreBulk(scoresCache);
+
+                    // Track vectors visited for this batch
+                    if (totalVectorsVisited != null) {
+                        totalVectorsVisited.addAndGet(cacheSize);
+                    }
                 }
 
                 currentDoc = docIdsCache[position - cacheStart];
@@ -321,7 +339,7 @@ public class IVFCentroidQuery extends Query {
 
             @Override
             public long cost() {
-                return 0;
+                return estimatedCost;
             }
 
             @Override
@@ -359,7 +377,7 @@ public class IVFCentroidQuery extends Query {
 
             LimitedDocIdIterator(ScoringIterator delegate, int maxDocs) {
                 this.delegate = delegate;
-                this.maxDocs = 1000;
+                this.maxDocs = maxDocs;
             }
 
             @Override

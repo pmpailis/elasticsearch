@@ -68,6 +68,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     private final float providedVisitRatio;
     private final int clusterSize;
     private final BitSetProducer parentsFilter; // null for non-diversifying
+    private final AtomicLong totalVectorsVisited;
 
     /**
      * Creates a new IVFQuery.
@@ -109,6 +110,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         this.providedVisitRatio = visitRatio;
         this.parentsFilter = parentsFilter;
         this.clusterSize = clusterSize;
+        this.totalVectorsVisited = new AtomicLong(0);
     }
 
     @Override
@@ -146,7 +148,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         // calculate effective visit ratio, i.e. how many vectors we're expected to visit
         float effectiveVisitRatio = calculateEffectiveVisitRatio(totalVectors);
-        long maxVectorVisited = Math.max(1, Math.round(2.0 * effectiveVisitRatio * totalVectors));
+        long maxVectorVisited = Math.max(100, Math.round(2.0 * effectiveVisitRatio * totalVectors));
 
         // cross-leaf competitive scores; replacing the collector
         // might need to revisit this to check if we can still use the collector
@@ -161,13 +163,18 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
         List<Query> allCentroidQueries = new ArrayList<>();
         for (LeafReaderContext context : reader.leaves()) {
-            tasks.add(() -> generateCentroidQueries(context, numCentroids, maxVectorVisited, globalMinCompetitiveScore));
+            tasks.add(() -> generateCentroidQueries(context, numCentroids, maxVectorVisited, globalMinCompetitiveScore, totalVectorsVisited));
         }
         List<List<IVFCentroidQuery>> perLeafResults = indexSearcher.getTaskExecutor().invokeAll(tasks).stream().toList();
         for (List<IVFCentroidQuery> centroidQueries : perLeafResults) {
             if (centroidQueries != null && false == centroidQueries.isEmpty()) {
                 allCentroidQueries.addAll(centroidQueries);
             }
+        }
+
+        if (allCentroidQueries.isEmpty()) {
+            vectorOpsCount = 0;
+            return Queries.NO_DOCS_INSTANCE;
         }
 
         // 7. Compose with DisMaxQuery
@@ -182,7 +189,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             ivfQuery = boolBuilder.build();
         }
         TopDocs topDocs = indexSearcher.search(ivfQuery, k);
-        vectorOpsCount = (int) topDocs.totalHits.value();
+        vectorOpsCount = (int) totalVectorsVisited.get();
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
@@ -321,7 +328,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         LeafReaderContext ctx,
         int numCentroids,
         long docsToExplore,
-        AtomicLong globalMinCompetitiveScore) throws IOException {
+        AtomicLong globalMinCompetitiveScore,
+        AtomicLong totalVectorsVisited) throws IOException {
         List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, docsToExplore);
 
 
@@ -347,7 +355,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                     ctx,
                     maxVectorsPerCentroid,
                     globalMinCompetitiveScore,
-                    parentBitSet
+                    parentBitSet,
+                    totalVectorsVisited
                 )
             );
         }
