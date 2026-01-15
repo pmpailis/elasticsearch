@@ -196,8 +196,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             boolBuilder.add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER);
             ivfQuery = boolBuilder.build();
         }
-        CollectorManager<TopScoreDocCollector, TopDocs> manager = new TopScoreDocCollectorManager(k, null, Integer.MAX_VALUE);
-        TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
+        TopDocs topDocs = indexSearcher.search(ivfQuery, k);
         vectorOpsCount = (int) totalVectorsVisited.get();
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -339,9 +338,9 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         long docsToExplore,
         AtomicLong globalMinCompetitiveScore,
         AtomicLong totalVectorsVisited) throws IOException {
-        var startTime = System.nanoTime();
+//        var startTime = System.nanoTime();
         List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, docsToExplore);
-        LogManager.getLogger("foo").error("topCentroids took: {} nanoseconds", System.nanoTime() - startTime);
+//        LogManager.getLogger("foo").error("topCentroids took: {} nanoseconds", System.nanoTime() - startTime);
 
         // Calculate max vectors per centroid
        if(topCentroids == null || topCentroids.isEmpty()) {
@@ -364,7 +363,6 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                     centroid,
                     ctx,
                     maxVectorsPerCentroid,
-                    globalMinCompetitiveScore,
                     parentBitSet,
                     totalVectorsVisited
                 )

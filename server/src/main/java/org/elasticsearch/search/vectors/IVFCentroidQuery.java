@@ -9,7 +9,6 @@
 
 package org.elasticsearch.search.vectors;
 
-import org.apache.logging.log4j.LogManager;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
@@ -25,7 +24,6 @@ import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.Bits;
-import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 
 import java.io.IOException;
@@ -39,18 +37,13 @@ public class IVFCentroidQuery extends Query {
      * metadata about a centroid and its posting list.
      * Used by the new query architecture to identify which centroids to explore.
      */
-    public record IVFCentroidMeta(
-        long offset,        // offset in posting list file
-        long length,        // length of posting list
-        int ordinal,         // ordinal of this centroid
-        IVFVectorsReader.PostingVisitor postingVisitor){ }
+    public record IVFCentroidMeta(long offset, long length, int ordinal, IVFVectorsReader.PostingVisitor postingVisitor){ }
 
     private final String field;
     private final float[] queryVector;
     private final IVFCentroidMeta centroidMeta;
     private final LeafReaderContext context;
     private final int maxVectorsPerCentroid;
-    private final AtomicLong globalMinCompetitiveScore;
     private final Bits parentBitSet;
     private final AtomicLong totalVectorsVisited;
 
@@ -60,14 +53,12 @@ public class IVFCentroidQuery extends Query {
         IVFCentroidMeta centroid,
         LeafReaderContext ctx,
         int maxVectorsPerCentroid,
-        AtomicLong globalMinCompetitiveScore,
         Bits parentBitSet,
         AtomicLong totalVectorsVisited) {
         this.field = field;
         this.queryVector = queryVector;
         this.centroidMeta = centroid;
         this.maxVectorsPerCentroid = maxVectorsPerCentroid;
-        this.globalMinCompetitiveScore = globalMinCompetitiveScore;
         this.context = ctx;
         this.parentBitSet = parentBitSet;
         this.totalVectorsVisited = totalVectorsVisited;
@@ -149,21 +140,22 @@ public class IVFCentroidQuery extends Query {
             }
 
             CentroidScorer scorer = getCentroidScorer(knnVectorsReader);
-            return new ScorerSupplier() {
-                @Override
-                public Scorer get(long leadCost) throws IOException {
-                    return scorer;
-                }
-
-                @Override
-                public long cost() {
-                    return centroidQuery.maxVectorsPerCentroid;
-                }
-            };
+            return new DefaultScorerSupplier(scorer);
+//            return new ScorerSupplier() {
+//                @Override
+//                public Scorer get(long leadCost) throws IOException {
+//                    return scorer;
+//                }
+//
+//                @Override
+//                public long cost() {
+//                    return centroidQuery.maxVectorsPerCentroid;
+//                }
+//            };
         }
 
         private CentroidScorer getCentroidScorer(KnnVectorsReader knnVectorsReader) throws IOException {
-            if (false == knnVectorsReader instanceof IVFVectorsReader ivfReader) {
+            if (false == knnVectorsReader instanceof IVFVectorsReader) {
                 throw new IllegalStateException("Expected IVFVectorsReader but got " + knnVectorsReader.getClass());
             }
             var visitor = centroidQuery.centroidMeta.postingVisitor();
@@ -175,7 +167,6 @@ public class IVFCentroidQuery extends Query {
                 centroidQuery.centroidMeta,
                 boost,
                 centroidQuery.maxVectorsPerCentroid,
-                centroidQuery.globalMinCompetitiveScore,
                 centroidQuery.parentBitSet,
                 centroidQuery.totalVectorsVisited
             );
@@ -183,7 +174,7 @@ public class IVFCentroidQuery extends Query {
 
         @Override
         public boolean isCacheable(LeafReaderContext ctx) {
-            return false;
+            return true;
         }
     }
 
@@ -193,37 +184,21 @@ public class IVFCentroidQuery extends Query {
      * Supports parent/child diversification when parentBitSet is provided.
      */
     private static class CentroidScorer extends Scorer {
-        private final IVFVectorsReader.PostingVisitor postingVisitor;
-        private final IVFCentroidMeta centroidMeta;
         private final float boost;
-        private final int maxVectorsToScore;
-        private final AtomicLong globalMinCompetitiveScore;
-        private final Bits parentBitSet;
-        private final AtomicLong totalVectorsVisited;
-
-        private int docsScored = 0;
-        private ScoringIterator scoringIterator;
+        private final ScoringIterator scoringIterator;
 
         CentroidScorer(
             IVFVectorsReader.PostingVisitor postingVisitor,
             IVFCentroidMeta centroidMeta,
             float boost,
             int maxVectorsToScore,
-            AtomicLong globalMinCompetitiveScore,
             Bits parentBitSet,
             AtomicLong totalVectorsVisited
         ) {
-            this.postingVisitor = postingVisitor;
-            this.centroidMeta = centroidMeta;
             this.boost = boost;
-            this.maxVectorsToScore = maxVectorsToScore;
-            this.globalMinCompetitiveScore = globalMinCompetitiveScore;
-            this.parentBitSet = parentBitSet;
-            this.totalVectorsVisited = totalVectorsVisited;
 
             // Create appropriate iterator based on whether we need diversification
             PostingVisitorIterator baseIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore);
-
             if (parentBitSet != null) {
                 // Wrap with diversifying iterator
                 this.scoringIterator = new DiversifyingIterator(baseIterator, parentBitSet);
@@ -246,18 +221,7 @@ public class IVFCentroidQuery extends Query {
         @Override
         public float score() throws IOException {
             float rawScore = scoringIterator.scoreCurrentDoc();
-            float finalScore = rawScore * boost;
-            docsScored++;
-
-            // Update global competitive score periodically (every 32 docs)
-            // This allows cross-leaf early termination
-            if (docsScored % 16 == 0 && globalMinCompetitiveScore != null) {
-                int currentDoc = scoringIterator.docID();
-                long encodedScore = NeighborQueue.encodeRaw(currentDoc, finalScore);
-                globalMinCompetitiveScore.accumulateAndGet(encodedScore, Math::max);
-            }
-
-            return finalScore;
+            return rawScore * boost;
         }
 
         @Override
@@ -272,9 +236,7 @@ public class IVFCentroidQuery extends Query {
         private abstract static class ScoringIterator extends DocIdSetIterator {
             abstract float scoreCurrentDoc() throws IOException;
 
-            public float maxScore(int upTo) {
-                return 1f;
-            }
+            public abstract float maxScore(int upTo) throws IOException;
         }
 
         /**
@@ -351,82 +313,23 @@ public class IVFCentroidQuery extends Query {
                 if (position < cacheStart || position >= cacheStart + cacheSize) {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
-                LogManager.getLogger("xoxo").error("scoring ordinal: {} at doc: " + "{}", ordinal, currentDoc);
+//                LogManager.getLogger("xoxo").error("scoring ordinal: {} at doc: " + "{}", ordinal, currentDoc);
                 return scoresCache[position - cacheStart];
             }
 
             @Override
             public float maxScore(int upTo){
                 if(upTo == -1 || upTo == NO_MORE_DOCS){
-                    return 0f;
+                    return 1f;
                 }
-                assert docIdsCache[position] == upTo;
+                assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;
-                for(int i=0;i<=position;i++){
+                for(int i=0;i<=position - cacheStart;i++){
                     if(scoresCache[i] > maxScore){
                         maxScore = scoresCache[i];
                     }
                 }
                 return maxScore;
-            }
-        }
-
-        /**
-         * Wraps a ScoringIterator and enforces a maximum number of documents to score.
-         * Once the limit is reached, the iterator returns NO_MORE_DOCS.
-         */
-        private static class LimitedDocIdIterator extends ScoringIterator {
-            private final ScoringIterator delegate;
-            private final int maxDocs;
-            private int docsReturned = 0;
-
-            LimitedDocIdIterator(ScoringIterator delegate, int maxDocs) {
-                this.delegate = delegate;
-                this.maxDocs = maxDocs;
-            }
-
-            @Override
-            public float maxScore(int upTo) {
-                return delegate.maxScore(upTo);
-            }
-
-            @Override
-            public int docID() {
-                if (docsReturned > maxDocs) {
-                    return NO_MORE_DOCS;
-                }
-                return delegate.docID();
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-                if (docsReturned >= maxDocs) {
-                    return NO_MORE_DOCS;
-                }
-                docsReturned++;
-                return delegate.nextDoc();
-            }
-
-            @Override
-            public int advance(int target) throws IOException {
-                if (docsReturned >= maxDocs) {
-                    return NO_MORE_DOCS;
-                }
-                int doc = delegate.advance(target);
-                if (doc != NO_MORE_DOCS) {
-                    docsReturned++;
-                }
-                return doc;
-            }
-
-            @Override
-            public long cost() {
-                return Math.min(delegate.cost(), maxDocs);
-            }
-
-            @Override
-            public float scoreCurrentDoc() throws IOException {
-                return delegate.scoreCurrentDoc();
             }
         }
 
@@ -450,7 +353,7 @@ public class IVFCentroidQuery extends Query {
                 this.parentBitSet = parentBitSet;
             }
             @Override
-            public float maxScore(int upTo) {
+            public float maxScore(int upTo) throws IOException {
                 return delegate.maxScore(upTo);
             }
 
