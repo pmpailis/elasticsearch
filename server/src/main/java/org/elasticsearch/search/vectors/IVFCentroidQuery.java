@@ -89,13 +89,13 @@ public class IVFCentroidQuery extends Query {
             return false;
         }
         final IVFCentroidQuery other = (IVFCentroidQuery) obj;
-        return field.equals(other.field) && Arrays.equals(queryVector, other.queryVector)
+        return field.equals(other.field)
             && centroidMeta.equals(other.centroidMeta);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(field, Arrays.hashCode(queryVector), centroidMeta);
+        return Objects.hash(field, centroidMeta.ordinal);
     }
 
     @Override
@@ -320,7 +320,7 @@ public class IVFCentroidQuery extends Query {
             @Override
             public float maxScore(int upTo){
                 if(upTo == -1 || upTo == NO_MORE_DOCS){
-                    return 1f;
+                    return Float.POSITIVE_INFINITY;
                 }
                 assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;

@@ -41,6 +41,7 @@ import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.search.DocValueFormat;
@@ -196,7 +197,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             boolBuilder.add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER);
             ivfQuery = boolBuilder.build();
         }
-        TopDocs topDocs = indexSearcher.search(ivfQuery, k);
+        TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, (int) maxVectorVisited);
+        TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
