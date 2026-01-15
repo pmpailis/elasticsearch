@@ -306,17 +306,8 @@ public class IVFCentroidQuery extends Query {
                     postingVisitor.scoreBulk(scoresCache);
                 }
 
-                // Get doc from cache, skipping filtered docs (-1)
-                while (position < cacheStart + cacheSize) {
-                    int doc = docIdsCache[position - cacheStart];
-                    if (doc != -1) {
-                        currentDoc = doc;
-                        return currentDoc;
-                    }
-                    position++;
-                }
-                currentDoc = NO_MORE_DOCS;
-                return NO_MORE_DOCS;
+                currentDoc = docIdsCache[position - cacheStart];
+                return currentDoc;
             }
 
             @Override
