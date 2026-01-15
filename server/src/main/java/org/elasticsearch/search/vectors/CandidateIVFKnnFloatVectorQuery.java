@@ -21,7 +21,6 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
@@ -30,18 +29,16 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
+import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
-import org.elasticsearch.index.Index;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
-import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,6 +47,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAccumulator;
 
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
@@ -114,6 +112,11 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     }
 
     @Override
+    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
+        return null;
+    }
+
+    @Override
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
         if (filter != null) {
             BooleanQuery booleanQuery = new BooleanQuery.Builder()
@@ -138,26 +141,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         if (totalVectors == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
-        return this;
-    }
-
-    @Override
-    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
-        return null;
-    }
-
-    @Override
-    public Weight createWeight(IndexSearcher indexSearcher, ScoreMode scoreMode, float boost) throws IOException {
         vectorOpsCount = 0;
         IndexReader reader = indexSearcher.getIndexReader();
-
-        int totalVectors = 0;
-        for (LeafReaderContext ctx : indexSearcher.getIndexReader().leaves()) {
-            FloatVectorValues values = ctx.reader().getFloatVectorValues(field);
-            if (values != null) {
-                totalVectors += values.size();
-            }
-        }
 
         // calculate effective visit ratio, i.e. how many vectors we're expected to visit
         float effectiveVisitRatio = calculateEffectiveVisitRatio(totalVectors);
@@ -197,7 +182,12 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             ivfQuery = boolBuilder.build();
         }
         TopDocs topDocs = indexSearcher.search(ivfQuery, k);
-        ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+        vectorOpsCount = (int) topDocs.totalHits.value();
+        if (topDocs.scoreDocs.length == 0) {
+            return Queries.NO_DOCS_INSTANCE;
+        }
+        return new KnnScoreDocQuery(topDocs.scoreDocs, reader);
+        /**
         int[] docs = new int[scoreDocs.length];
         for(int i = 0; i < scoreDocs.length; i++){
             docs[i] = scoreDocs[i].doc;
@@ -223,7 +213,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
                     @Override
                     public float score() throws IOException {
-                        return scoreDocs[upTo].score * boost;
+                        return scoreDocs[upTo].score;
                     }
 
                     @Override
@@ -293,7 +283,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                         }
                         float maxScore = 0;
                         for (int idx = Math.max(lower, upTo); idx < upper && scoreDocs[idx].doc <= doc; idx++) {
-                            maxScore = Math.max(maxScore, scoreDocs[idx].score * boost);
+                            maxScore = Math.max(maxScore, scoreDocs[idx].score);
                         }
                         return maxScore;
                     }
@@ -306,6 +296,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                 return false;
             }
         };
+         */
     }
 
     private static int[] findSegmentStarts(IndexReader reader, int[] docs){
