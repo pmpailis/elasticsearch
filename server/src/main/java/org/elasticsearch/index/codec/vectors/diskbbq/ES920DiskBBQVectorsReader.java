@@ -22,11 +22,13 @@ import org.apache.lucene.util.VectorUtil;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
+import org.elasticsearch.search.vectors.IVFCentroidMeta;
 import org.elasticsearch.simdvec.ES91OSQVectorsScorer;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.apache.lucene.codecs.lucene102.Lucene102BinaryQuantizedVectorsFormat.QUERY_BITS;
 import static org.apache.lucene.index.VectorSimilarityFunction.COSINE;
@@ -171,6 +173,11 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             globalCentroid,
             globalCentroidDp
         );
+    }
+
+    @Override
+    public List<IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int numCentroids) {
+        return null;
     }
 
     private static CentroidIterator getCentroidIteratorNoParent(
@@ -411,6 +418,8 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
         byte docEncoding;
         int docBase = 0;
 
+        int currentPosition = 0;
+        int lastReadCount;
         int vectors;
         boolean quantized = false;
         float centroidDp;
@@ -522,13 +531,86 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             }
         }
 
-        private void readDocIds(int count) throws IOException {
-            idsWriter.readInts(indexInput, count, docEncoding, docIdsScratch);
-            // reconstitute from the deltas
-            for (int j = 0; j < count; j++) {
+        @Override
+        public int readDocIds(int count, int[] docIds) throws IOException {
+            if (currentPosition >= vectors) {
+                return 0;
+            }
+
+            if (currentPosition == 0) {
+                indexInput.seek(slicePos);
+            }
+
+            int toRead = Math.min(count, vectors - currentPosition);
+
+            // Read the doc IDs using delta encoding
+            idsWriter.readInts(indexInput, toRead, docEncoding, docIdsScratch);
+
+            // Reconstitute absolute doc IDs from deltas
+            for (int j = 0; j < toRead; j++) {
                 docBase += docIdsScratch[j];
                 docIdsScratch[j] = docBase;
+                docIds[j] = docBase;
             }
+            currentPosition += toRead;
+            lastReadCount = toRead;
+            return toRead;
+        }
+
+        @Override
+        public float scoreBulk(float[] scores) throws IOException {
+            if (lastReadCount == 0) {
+                return Float.NEGATIVE_INFINITY;
+            }
+            assert scores.length == lastReadCount;
+            quantizeQueryIfNecessary();
+
+            float maxScore;
+            if (lastReadCount == BULK_SIZE) {
+                // Use bulk scoring optimization for full batches with enough valid docs
+                maxScore = osqVectorsScorer.scoreBulk(
+                    quantizedQueryScratch,
+                    queryCorrections.lowerInterval(),
+                    queryCorrections.upperInterval(),
+                    queryCorrections.quantizedComponentSum(),
+                    queryCorrections.additionalCorrection(),
+                    fieldInfo.getVectorSimilarityFunction(),
+                    centroidDp,
+                    this.scores
+                );
+                System.arraycopy(this.scores, 0, scores, 0, lastReadCount);
+            } else {
+                // Score individually for partial batches or heavily filtered batches
+                maxScore = Float.NEGATIVE_INFINITY;
+                for (int j = 0; j < lastReadCount; j++) {
+                    if (docIdsScratch[j] != -1) {
+                        float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                        indexInput.readFloats(correctiveValues, 0, 3);
+                        final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
+                        float score = osqVectorsScorer.score(
+                            queryCorrections.lowerInterval(),
+                            queryCorrections.upperInterval(),
+                            queryCorrections.quantizedComponentSum(),
+                            queryCorrections.additionalCorrection(),
+                            fieldInfo.getVectorSimilarityFunction(),
+                            centroidDp,
+                            correctiveValues[0],
+                            correctiveValues[1],
+                            quantizedComponentSum,
+                            correctiveValues[2],
+                            qcDist
+                        );
+                        scores[j] = score;
+                        if (score > maxScore) {
+                            maxScore = score;
+                        }
+                    } else {
+                        indexInput.skipBytes(quantizedByteLength);
+                        scores[j] = Float.NEGATIVE_INFINITY;
+                    }
+                }
+            }
+            return maxScore;
         }
 
         @Override
@@ -541,7 +623,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             // read Docs
             for (; i < limit; i += BULK_SIZE) {
                 // read the doc ids
-                readDocIds(BULK_SIZE);
+                readDocIds(BULK_SIZE, docIdsScratch);
                 final int docsToBulkScore = acceptDocs == null ? BULK_SIZE : docToBulkScore(docIdsScratch, acceptDocs);
                 if (docsToBulkScore == 0) {
                     indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
@@ -571,7 +653,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             // process tail
             // read the doc ids
             if (i < vectors) {
-                readDocIds(vectors - i);
+                readDocIds(vectors - i, docIdsScratch);
             }
             int count = 0;
             for (; i < vectors; i++) {

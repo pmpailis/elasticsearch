@@ -32,6 +32,7 @@ import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
+import org.elasticsearch.search.vectors.IVFCentroidMeta;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
 
 import java.io.Closeable;
@@ -351,6 +352,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         }
     }
 
+    public abstract List<IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int numCentroids);
+
     @Override
     public final void search(String field, byte[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) throws IOException {
         final FieldInfo fieldInfo = state.fieldInfos.fieldInfo(field);
@@ -475,5 +478,28 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /**
+         * Reads the next batch of document IDs from the posting list.
+         * Document IDs are returned as absolute values (not deltas).
+         *
+         * @param count maximum number of doc IDs to read
+         * @param docIds output array for doc IDs (must be at least count in size)
+         * @return number of doc IDs actually read (may be less than count if end reached)
+         * @throws IOException if an I/O error occurs
+         */
+        int readDocIds(int count, int[] docIds) throws IOException;
+
+        /**
+         * Scores the vectors corresponding to the last batch of doc IDs read via readDocIds().
+         * Must be called after readDocIds() and before the next readDocIds() call.
+         *
+         * @param scores output array for scores (must match size of last readDocIds call)
+         * @return maximum score in the batch
+         * @throws IOException if an I/O error occurs
+         */
+        default float scoreBulk(float[] scores) throws IOException {
+            throw new UnsupportedOperationException("scoreBulk not implemented");
+        }
     }
 }
