@@ -18,8 +18,10 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
@@ -36,16 +38,20 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.index.Index;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
+
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /**
  * IVF (Inverted File) vector search query that composes multiple CentroidQuery instances.
@@ -55,7 +61,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * This is a new architecture that separates centroid iteration from document collection,
  * enabling more flexible query composition and better integration with Lucene's query infrastructure.
  */
-public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfilerProvider {
+public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements QueryProfilerProvider {
     private final String field;
     private final float[] queryVector;
     private final int k;
@@ -64,8 +70,6 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
     private final float providedVisitRatio;
     private final int clusterSize;
     private final BitSetProducer parentsFilter; // null for non-diversifying
-
-    private int vectorOpsCount = 0;
 
     /**
      * Creates a new IVFQuery.
@@ -89,6 +93,7 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         int clusterSize,
         BitSetProducer parentsFilter
     ) {
+        super(field, visitRatio, k, k, filter);
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
         }
@@ -137,6 +142,11 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
     }
 
     @Override
+    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
+        return null;
+    }
+
+    @Override
     public Weight createWeight(IndexSearcher indexSearcher, ScoreMode scoreMode, float boost) throws IOException {
         vectorOpsCount = 0;
         IndexReader reader = indexSearcher.getIndexReader();
@@ -151,7 +161,7 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
 
         // calculate effective visit ratio, i.e. how many vectors we're expected to visit
         float effectiveVisitRatio = calculateEffectiveVisitRatio(totalVectors);
-        long maxVectorVisited = Math.round(2.0 * effectiveVisitRatio * totalVectors);
+        long maxVectorVisited = Math.max(1, Math.round(2.0 * effectiveVisitRatio * totalVectors));
 
         // cross-leaf competitive scores; replacing the collector
         // might need to revisit this to check if we can still use the collector
@@ -188,25 +198,60 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         }
         TopDocs topDocs = indexSearcher.search(ivfQuery, k);
         ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+        int[] docs = new int[scoreDocs.length];
+        for(int i = 0; i < scoreDocs.length; i++){
+            docs[i] = scoreDocs[i].doc;
+        }
+        Arrays.sort(docs);
+        int[] segmentStarts = findSegmentStarts(reader, docs);
         return new Weight(ivfQuery) {
             @Override
             public Explanation explain(LeafReaderContext context, int doc) throws IOException {
                 return null;
             }
 
+            public int count(LeafReaderContext context) {
+                return segmentStarts[context.ord + 1] - segmentStarts[context.ord];
+            }
+
             @Override
             public ScorerSupplier scorerSupplier(LeafReaderContext context) throws IOException {
                 Scorer scorer = new Scorer() {
-                    int idx = 0;
+                    final int lower = segmentStarts[context.ord];
+                    final int upper = segmentStarts[context.ord + 1];
+                    int upTo = -1;
 
                     @Override
                     public float score() throws IOException {
-                        return scoreDocs[idx].score;
+                        return scoreDocs[upTo].score * boost;
+                    }
+
+                    @Override
+                    public int advanceShallow(int docId) {
+                        int start = Math.max(upTo, lower);
+                        int docIdIndex = Arrays.binarySearch(docs, start, upper, docId + context.docBase);
+                        if (docIdIndex < 0) {
+                            docIdIndex = -1 - docIdIndex;
+                        }
+                        if (docIdIndex >= upper) {
+                            return NO_MORE_DOCS;
+                        }
+                        return scoreDocs[docIdIndex].doc;
                     }
 
                     @Override
                     public int docID() {
-                        return scoreDocs[idx].doc;
+                        return currentDocId();
+                    }
+
+                    private int currentDocId() {
+                        if (upTo == -1) {
+                            return -1;
+                        }
+                        if (upTo >= upper) {
+                            return NO_MORE_DOCS;
+                        }
+                        return docs[upTo] - context.docBase;
                     }
 
                     @Override
@@ -214,15 +259,17 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
                         return new DocIdSetIterator() {
                             @Override
                             public int docID() {
-                                return scoreDocs[idx].doc;
+                                return currentDocId();
                             }
 
                             @Override
-                            public int nextDoc() throws IOException {
-                                if (idx == scoreDocs.length) {
-                                    return NO_MORE_DOCS;
+                            public int nextDoc() {
+                                if (upTo == -1) {
+                                    upTo = lower;
+                                } else {
+                                    ++upTo;
                                 }
-                                return scoreDocs[idx++].doc;
+                                return currentDocId();
                             }
 
                             @Override
@@ -232,14 +279,23 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
 
                             @Override
                             public long cost() {
-                                return scoreDocs.length;
+                                return upper - lower;
                             }
                         };
                     }
 
                     @Override
-                    public float getMaxScore(int upTo) throws IOException {
-                        return scoreDocs[upTo].score;
+                    public float getMaxScore(int doc) throws IOException {
+                        // NO_MORE_DOCS indicates the maximum score for all docs in this segment
+                        // Anything less than must be accounted for via the docBase.
+                        if (doc != NO_MORE_DOCS) {
+                            doc += context.docBase;
+                        }
+                        float maxScore = 0;
+                        for (int idx = Math.max(lower, upTo); idx < upper && scoreDocs[idx].doc <= doc; idx++) {
+                            maxScore = Math.max(maxScore, scoreDocs[idx].score * boost);
+                        }
+                        return maxScore;
                     }
                 };
                 return new DefaultScorerSupplier(scorer);
@@ -252,15 +308,36 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         };
     }
 
+    private static int[] findSegmentStarts(IndexReader reader, int[] docs){
+        int[] starts = new int[reader.leaves().size() + 1];
+        starts[starts.length - 1] = docs.length;
+        if (starts.length == 2) {
+            return starts;
+        }
+        int resultIndex = 0;
+        for (int i = 1; i < starts.length - 1; i++) {
+            int upper = reader.leaves().get(i).docBase;
+            resultIndex = Arrays.binarySearch(docs, resultIndex, docs.length, upper);
+            if (resultIndex < 0) {
+                resultIndex = -1 - resultIndex;
+            }
+            starts[i] = resultIndex;
+        }
+        return starts;
+    }
+
     private List<IVFCentroidQuery> generateCentroidQueries(
         LeafReaderContext ctx,
         int numCentroids,
         long docsToExplore,
         AtomicLong globalMinCompetitiveScore) throws IOException {
-        List<IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, docsToExplore);
+        List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, docsToExplore);
 
 
         // Calculate max vectors per centroid
+       if(topCentroids == null || topCentroids.isEmpty()) {
+           return null;
+       }
         int maxVectorsPerCentroid = (int) Math.max(1, docsToExplore / topCentroids.size());
 
         // Get parent bitset if diversifying
@@ -270,7 +347,7 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         }
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
         // Create CentroidQuery for each selected centroid
-        for (IVFCentroidMeta centroid : topCentroids) {
+        for (IVFCentroidQuery.IVFCentroidMeta centroid : topCentroids) {
             allCentroidQueries.add(
                 new IVFCentroidQuery(
                     field,
@@ -286,7 +363,7 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         return allCentroidQueries;
     }
 
-    private List<IVFCentroidMeta>  findTopCentroids(LeafReaderContext ctx, int numCentroids, long docsToExplore) throws IOException {
+    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(LeafReaderContext ctx, int maxCentroids, long docsToExplore) throws IOException {
         LeafReader leafReader = ctx.reader();
         FloatVectorValues vectorValues = leafReader.getFloatVectorValues(field);
         if (vectorValues == null || vectorValues.size() == 0) {
@@ -311,7 +388,10 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
         return ivfReader.findTopCentroids(
             fieldInfo,
             queryVector,
-            numCentroids
+            maxCentroids,
+            field,
+            providedVisitRatio,
+            docsToExplore
         );
     }
 
@@ -359,11 +439,6 @@ public class CandidateIVFKnnFloatVectorQuery extends Query implements QueryProfi
     @Override
     public int hashCode() {
         return Objects.hash(field, k, numCands, providedVisitRatio, filter, parentsFilter);
-    }
-
-    @Override
-    public void profile(QueryProfiler queryProfiler) {
-        queryProfiler.addVectorOpsCount(vectorOpsCount);
     }
 
     /**

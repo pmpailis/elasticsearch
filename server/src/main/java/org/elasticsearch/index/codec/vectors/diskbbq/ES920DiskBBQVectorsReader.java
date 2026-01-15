@@ -22,7 +22,7 @@ import org.apache.lucene.util.VectorUtil;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
-import org.elasticsearch.search.vectors.IVFCentroidMeta;
+import org.elasticsearch.search.vectors.IVFCentroidQuery;
 import org.elasticsearch.simdvec.ES91OSQVectorsScorer;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -50,36 +50,36 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
     public CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice)
         throws IOException {
         return new CentroidIterator() {
-            CentroidOffsetAndLength nextOffsetAndLength = centroidIterator.hasNext()
-                ? centroidIterator.nextPostingListOffsetAndLength()
+            IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta = centroidIterator.hasNext()
+                ? centroidIterator.nextCentroidMeta()
                 : null;
 
             {
                 // prefetch the first one
-                if (nextOffsetAndLength != null) {
-                    prefetch(nextOffsetAndLength);
+                if (nextCentroidMeta != null) {
+                    prefetch(nextCentroidMeta);
                 }
             }
 
-            void prefetch(CentroidOffsetAndLength offsetAndLength) throws IOException {
+            void prefetch(IVFCentroidQuery.IVFCentroidMeta offsetAndLength) throws IOException {
                 postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
             }
 
             @Override
             public boolean hasNext() {
-                return nextOffsetAndLength != null;
+                return nextCentroidMeta != null;
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
-                CentroidOffsetAndLength offsetAndLength = nextOffsetAndLength;
+            public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
+                IVFCentroidQuery.IVFCentroidMeta centroidMeta = nextCentroidMeta;
                 if (centroidIterator.hasNext()) {
-                    nextOffsetAndLength = centroidIterator.nextPostingListOffsetAndLength();
-                    prefetch(nextOffsetAndLength);
+                    nextCentroidMeta = centroidIterator.nextCentroidMeta();
+                    prefetch(nextCentroidMeta);
                 } else {
-                    nextOffsetAndLength = null;  // indicate we reached the end
+                    nextCentroidMeta = null;  // indicate we reached the end
                 }
-                return offsetAndLength;
+                return centroidMeta;
             }
         };
     }
@@ -176,7 +176,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
     }
 
     @Override
-    public List<IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int numCentroids) {
+    public List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int maxCentroids, String field, float visitRatio, long docsToExplore) throws IOException {
         return null;
     }
 
@@ -209,12 +209,12 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
+            public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
                 int centroidOrdinal = neighborQueue.pop();
                 centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidOffsetAndLength(postingListOffset, postingListLength);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
             }
         };
     }
@@ -282,12 +282,12 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException {
+            public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
                 int centroidOrdinal = nextCentroid();
                 centroids.seek(childrenFileOffsets + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidOffsetAndLength(postingListOffset, postingListLength);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
             }
 
             private int nextCentroid() throws IOException {

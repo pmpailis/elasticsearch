@@ -32,7 +32,7 @@ import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
-import org.elasticsearch.search.vectors.IVFCentroidMeta;
+import org.elasticsearch.search.vectors.IVFCentroidQuery;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
 
 import java.io.Closeable;
@@ -53,7 +53,7 @@ import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsF
  */
 public abstract class IVFVectorsReader extends KnnVectorsReader {
 
-    private final IndexInput ivfCentroids, ivfClusters;
+    protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
     private final FieldInfos fieldInfos;
     protected final IntObjectHashMap<FieldEntry> fields;
@@ -244,7 +244,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         CodecUtil.checksumEntireFile(ivfClusters);
     }
 
-    private FlatVectorsReader getReaderForField(String field) {
+    protected FlatVectorsReader getReaderForField(String field) {
         FieldInfo info = fieldInfos.fieldInfo(field);
         if (info == null) throw new IllegalArgumentException("Could not find field [" + field + "]");
         return genericReaders.getReaderForField(info.number);
@@ -327,7 +327,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
             // todo do we actually need to know the score???
-            CentroidOffsetAndLength offsetAndLength = centroidPrefetchingIterator.nextPostingListOffsetAndLength();
+            IVFCentroidQuery.IVFCentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
             // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
             // is enough?
             expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
@@ -342,8 +342,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                CentroidOffsetAndLength offsetAndLength = centroidPrefetchingIterator.nextPostingListOffsetAndLength();
-                scorer.resetPostingsScorer(offsetAndLength.offset());
+                IVFCentroidQuery.IVFCentroidMeta centroidMeta = centroidPrefetchingIterator.nextCentroidMeta();
+                scorer.resetPostingsScorer(centroidMeta.offset());
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -352,7 +352,13 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         }
     }
 
-    public abstract List<IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int numCentroids);
+    public abstract List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
+        FieldInfo fieldInfo,
+        float[] queryVector,
+        int maxCentroids,
+        String field,
+        float visitRatio,
+        long docsToExplore) throws IOException;
 
     @Override
     public final void search(String field, byte[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) throws IOException {
@@ -469,7 +475,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
     public interface CentroidIterator {
         boolean hasNext();
 
-        CentroidOffsetAndLength nextPostingListOffsetAndLength() throws IOException;
+        IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException;
     }
 
     public interface PostingVisitor {
