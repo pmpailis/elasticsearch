@@ -9,6 +9,7 @@
 
 package org.elasticsearch.search.vectors;
 
+import org.apache.logging.log4j.LogManager;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
@@ -70,6 +71,10 @@ public class IVFCentroidQuery extends Query {
         this.context = ctx;
         this.parentBitSet = parentBitSet;
         this.totalVectorsVisited = totalVectorsVisited;
+    }
+
+    public int centroidOrdinal(){
+        return centroidMeta.ordinal();
     }
 
     @Override
@@ -217,15 +222,14 @@ public class IVFCentroidQuery extends Query {
             this.totalVectorsVisited = totalVectorsVisited;
 
             // Create appropriate iterator based on whether we need diversification
-            PostingVisitorIterator baseIterator = new PostingVisitorIterator(postingVisitor, totalVectorsVisited, maxVectorsToScore);
-            LimitedDocIdIterator limitedIterator = new LimitedDocIdIterator(baseIterator, maxVectorsToScore);
+            PostingVisitorIterator baseIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore);
 
             if (parentBitSet != null) {
                 // Wrap with diversifying iterator
-                this.scoringIterator = new DiversifyingIterator(limitedIterator, parentBitSet);
+                this.scoringIterator = new DiversifyingIterator(baseIterator, parentBitSet);
             } else {
                 // Use limited iterator directly
-                this.scoringIterator = limitedIterator;
+                this.scoringIterator = baseIterator;
             }
         }
 
@@ -247,7 +251,7 @@ public class IVFCentroidQuery extends Query {
 
             // Update global competitive score periodically (every 32 docs)
             // This allows cross-leaf early termination
-            if (docsScored % 32 == 0 && globalMinCompetitiveScore != null) {
+            if (docsScored % 16 == 0 && globalMinCompetitiveScore != null) {
                 int currentDoc = scoringIterator.docID();
                 long encodedScore = NeighborQueue.encodeRaw(currentDoc, finalScore);
                 globalMinCompetitiveScore.accumulateAndGet(encodedScore, Math::max);
@@ -290,8 +294,9 @@ public class IVFCentroidQuery extends Query {
             private int cacheSize = 0;
             private int position = -1;
             private int currentDoc = -1;
-
-            PostingVisitorIterator(IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost) {
+            private final int ordinal;
+            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost) {
+                this.ordinal = ordinal;
                 this.postingVisitor = postingVisitor;
                 this.totalVectorsVisited = totalVectorsVisited;
                 this.estimatedCost = estimatedCost;
@@ -323,7 +328,6 @@ public class IVFCentroidQuery extends Query {
                         totalVectorsVisited.addAndGet(cacheSize);
                     }
                 }
-
                 currentDoc = docIdsCache[position - cacheStart];
                 return currentDoc;
             }
@@ -347,6 +351,7 @@ public class IVFCentroidQuery extends Query {
                 if (position < cacheStart || position >= cacheStart + cacheSize) {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
+                LogManager.getLogger("xoxo").error("scoring ordinal: {} at doc: " + "{}", ordinal, currentDoc);
                 return scoresCache[position - cacheStart];
             }
 
