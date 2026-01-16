@@ -159,7 +159,7 @@ public class IVFCentroidQuery extends Query {
                 throw new IllegalStateException("Expected IVFVectorsReader but got " + knnVectorsReader.getClass());
             }
             var visitor = centroidQuery.centroidMeta.postingVisitor();
-            visitor.resetPostingsScorer(0);
+            visitor.resetPostingsScorer(0); // centroidQuery.centroidMeta.offset);
 
             // Create scorer
             return new CentroidScorer(
@@ -284,9 +284,7 @@ public class IVFCentroidQuery extends Query {
                         currentDoc = NO_MORE_DOCS;
                         return NO_MORE_DOCS;
                     }
-                    // Score the batch
                     postingVisitor.scoreBulk(scoresCache);
-
                     // Track vectors visited for this batch
                     if (totalVectorsVisited != null) {
                         totalVectorsVisited.addAndGet(cacheSize);

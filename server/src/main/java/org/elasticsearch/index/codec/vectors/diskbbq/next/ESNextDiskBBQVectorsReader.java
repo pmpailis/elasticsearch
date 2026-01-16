@@ -226,11 +226,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
         while (centroidPrefetchingIterator.hasNext() && centroidsAdded++ < maxCentroids) {
             IVFCentroidQuery.IVFCentroidMeta centroidMeta = centroidPrefetchingIterator.nextCentroidMeta();
-//            var slice = postingListSlice.slice(
-//                "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
-//            );
-//            slice.prefetch(0, centroidMeta.length());
-            var postingVisitor = getPostingVisitor(fieldInfo, centroidMeta., queryVector, null);
+            var slice = postingListSlice.slice(
+                "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
+            );
+            slice.prefetch(0, centroidMeta.length());
+            var postingVisitor = getPostingVisitor(fieldInfo, postingListSlice, queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
                 centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor
             ));
