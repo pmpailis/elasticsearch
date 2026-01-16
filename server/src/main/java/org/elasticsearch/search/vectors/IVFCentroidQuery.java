@@ -179,11 +179,6 @@ public class IVFCentroidQuery extends Query {
         }
     }
 
-    /**
-     * Scorer that iterates through a centroid's posting list and scores documents.
-     * Enforces exploration limits and tracks competitive scores across leaves.
-     * Supports parent/child diversification when parentBitSet is provided.
-     */
     private static class CentroidScorer extends Scorer {
         private final float boost;
         private final ScoringIterator scoringIterator;
@@ -223,20 +218,12 @@ public class IVFCentroidQuery extends Query {
             return scoringIterator.docID();
         }
 
-        /**
-         * Common abstract class for scoring iterators.
-         * Extends DocIdSetIterator (which is a class, not an interface) and adds scoring capability.
-         */
         private abstract static class ScoringIterator extends DocIdSetIterator {
             abstract float scoreCurrentDoc() throws IOException;
 
             public abstract float maxScore(int upTo) throws IOException;
         }
 
-        /**
-         * Iterator that uses PostingVisitor's readDocIds() and scoreBulk() methods.
-         * Maintains bulk scoring optimization by loading batches of 32 docs at a time.
-         */
         private static class PostingVisitorIterator extends ScoringIterator {
             private static final int BATCH_SIZE = 16;
 
