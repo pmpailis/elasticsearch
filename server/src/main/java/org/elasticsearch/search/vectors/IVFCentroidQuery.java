@@ -193,7 +193,6 @@ public class IVFCentroidQuery extends Query {
         ) throws IOException {
             this.boost = boost;
 
-            // Create appropriate iterator based on whether we need diversification
             this.scoringIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore, centroidMeta.score);
         }
 
