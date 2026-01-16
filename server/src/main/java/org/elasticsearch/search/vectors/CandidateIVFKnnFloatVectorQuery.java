@@ -211,7 +211,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             boolBuilder.add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER);
             ivfQuery = boolBuilder.build();
         }
-        TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, (int) maxVectorVisited);
+        TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, Integer.MAX_VALUE);
         TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
         LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);

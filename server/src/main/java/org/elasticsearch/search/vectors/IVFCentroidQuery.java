@@ -288,7 +288,6 @@ public class IVFCentroidQuery extends Query {
                         return NO_MORE_DOCS;
                     }
                     boolean found = false;
-
                     if (targetDoc >= 0) {
                         for (int i = 0; i < cacheSize; i++) {
                             if (targetDoc == docIdsCache[i]) {
@@ -298,7 +297,6 @@ public class IVFCentroidQuery extends Query {
                         }
                     }
                     if (targetDoc < 0 || found){
-                        targetDoc = -1;
                         postingVisitor.scoreBulk(scoresCache);
                         // otherwise skip bytes
 
@@ -321,12 +319,13 @@ public class IVFCentroidQuery extends Query {
                 while (doc < target) {
                     doc = nextDoc();
                 }
+                targetDoc = -1;
                 return doc;
             }
 
             @Override
             public long cost() {
-                return estimatedCost;
+                return postingVisitor.cost();
             }
 
             @Override
@@ -334,15 +333,13 @@ public class IVFCentroidQuery extends Query {
                 if (position < cacheStart || position >= cacheStart + cacheSize) {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
-//                LogManager.getLogger("xoxo").error("scoring ordinal: {} at doc: " + "{}", ordinal, currentDoc);
-//                targetDoc = -1;
                 return scoresCache[position - cacheStart];
             }
 
             @Override
             public float maxScore(int upTo){
                 if(upTo == -1 || upTo == NO_MORE_DOCS){
-                    return Float.MAX_VALUE;
+                    return Float.POSITIVE_INFINITY;
                 }
                 assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;
@@ -373,6 +370,7 @@ public class IVFCentroidQuery extends Query {
             DiversifyingIterator(ScoringIterator delegate, Bits parentBitSet) {
                 this.delegate = delegate;
                 this.parentBitSet = parentBitSet;
+                throw new IllegalArgumentException("DiversifyingIterator not supported yet");
             }
             @Override
             public float maxScore(int upTo) throws IOException {

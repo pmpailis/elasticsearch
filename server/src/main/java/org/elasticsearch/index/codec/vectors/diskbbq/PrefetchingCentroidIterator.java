@@ -105,7 +105,7 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
             bufferCount++;
 
             // Trigger prefetch for the newly added element
-            postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
+//            postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
         }
 
         return result;
