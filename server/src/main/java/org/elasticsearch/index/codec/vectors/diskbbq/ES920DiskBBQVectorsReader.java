@@ -25,6 +25,7 @@ import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.search.vectors.IVFCentroidQuery;
 import org.elasticsearch.simdvec.ES91OSQVectorsScorer;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
+import org.elasticsearch.simdvec.ESNextOSQVectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
 
 import java.io.IOException;
@@ -620,6 +621,11 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
         }
 
         @Override
+        public void skipBytes(int docs) throws IOException {
+            indexInput.skipBytes(quantizedByteLength * docs);
+        }
+
+        @Override
         public int visit(KnnCollector knnCollector) throws IOException {
             indexInput.seek(slicePos);
             // block processing
@@ -694,6 +700,11 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
                 knnCollector.incVisitedCount(scoredDocs);
             }
             return scoredDocs;
+        }
+
+        @Override
+        public int cost() {
+            return vectors;
         }
 
         private void quantizeQueryIfNecessary() {

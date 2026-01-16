@@ -490,6 +490,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
 
+        int cost();
         /**
          * Reads the next batch of document IDs from the posting list.
          * Document IDs are returned as absolute values (not deltas).
@@ -512,5 +513,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         default float scoreBulk(float[] scores) throws IOException {
             throw new UnsupportedOperationException("scoreBulk not implemented");
         }
+
+        void skipBytes(int docs) throws IOException;
     }
 }

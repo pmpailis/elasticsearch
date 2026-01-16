@@ -220,7 +220,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             0,
             values,
             visitRatio,
-            maxCentroids
+            1
         );
         int centroidsAdded = 0;
         List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
@@ -230,7 +230,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
             );
             slice.prefetch(0, centroidMeta.length());
-            var postingVisitor = getPostingVisitor(fieldInfo, postingListSlice, queryVector, null);
+            var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
                 centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor
             ));
@@ -809,6 +809,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return scoredDocs;
         }
 
+        @Override
+        public int cost() {
+            return vectors;
+        }
+
 
         @Override
         public float scoreBulk(float[] scores) throws IOException {
@@ -863,6 +868,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 }
             }
             return maxScore;
+        }
+
+        @Override
+        public void skipBytes(int docs) throws IOException {
+            indexInput.skipBytes(quantizedByteLength * docs);
         }
 
         private void quantizeQueryIfNecessary() {

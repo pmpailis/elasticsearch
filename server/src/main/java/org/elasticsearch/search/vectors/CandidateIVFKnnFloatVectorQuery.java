@@ -208,7 +208,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         if (filter != null) {
             BooleanQuery.Builder boolBuilder = new BooleanQuery.Builder();
-            boolBuilder.add(ivfQuery, BooleanClause.Occur.SHOULD);
+            boolBuilder.add(ivfQuery, BooleanClause.Occur.MUST);
             boolBuilder.add(filter, BooleanClause.Occur.FILTER);
             boolBuilder.add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER);
             ivfQuery = boolBuilder.build();

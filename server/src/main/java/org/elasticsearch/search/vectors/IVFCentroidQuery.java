@@ -29,6 +29,7 @@ import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class IVFCentroidQuery extends Query {
@@ -159,7 +160,7 @@ public class IVFCentroidQuery extends Query {
                 throw new IllegalStateException("Expected IVFVectorsReader but got " + knnVectorsReader.getClass());
             }
             var visitor = centroidQuery.centroidMeta.postingVisitor();
-            visitor.resetPostingsScorer(0); // centroidQuery.centroidMeta.offset);
+            visitor.resetPostingsScorer(0); //centroidQuery.centroidMeta.offset);
 
             // Create scorer
             return new CentroidScorer(
@@ -194,7 +195,7 @@ public class IVFCentroidQuery extends Query {
             int maxVectorsToScore,
             Bits parentBitSet,
             AtomicLong totalVectorsVisited
-        ) {
+        ) throws IOException {
             this.boost = boost;
 
             // Create appropriate iterator based on whether we need diversification
@@ -258,12 +259,14 @@ public class IVFCentroidQuery extends Query {
             private final float centroidScore;
             private int currentDoc = -1;
             private final int ordinal;
-            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) {
+            private int targetDoc =-1;
+            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) throws IOException {
                 this.ordinal = ordinal;
                 this.postingVisitor = postingVisitor;
                 this.totalVectorsVisited = totalVectorsVisited;
                 this.centroidScore = centroidScore;
-                this.estimatedCost = estimatedCost;
+                this.estimatedCost = postingVisitor.cost();
+                nextDoc();
             }
 
             @Override
@@ -284,10 +287,27 @@ public class IVFCentroidQuery extends Query {
                         currentDoc = NO_MORE_DOCS;
                         return NO_MORE_DOCS;
                     }
-                    postingVisitor.scoreBulk(scoresCache);
-                    // Track vectors visited for this batch
-                    if (totalVectorsVisited != null) {
-                        totalVectorsVisited.addAndGet(cacheSize);
+                    boolean found = false;
+
+                    if (targetDoc >= 0) {
+                        for (int i = 0; i < cacheSize; i++) {
+                            if (targetDoc == docIdsCache[i]) {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (targetDoc < 0 || found){
+                        targetDoc = -1;
+                        postingVisitor.scoreBulk(scoresCache);
+                        // otherwise skip bytes
+
+                        // Track vectors scored for this batch
+                        if (totalVectorsVisited != null) {
+                            totalVectorsVisited.addAndGet(cacheSize);
+                        }
+                    }else{
+                        postingVisitor.skipBytes(cacheSize);
                     }
                 }
                 currentDoc = docIdsCache[position - cacheStart];
@@ -296,6 +316,7 @@ public class IVFCentroidQuery extends Query {
 
             @Override
             public int advance(int target) throws IOException {
+                targetDoc = target;
                 int doc = docID();
                 while (doc < target) {
                     doc = nextDoc();
@@ -314,13 +335,14 @@ public class IVFCentroidQuery extends Query {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
 //                LogManager.getLogger("xoxo").error("scoring ordinal: {} at doc: " + "{}", ordinal, currentDoc);
+//                targetDoc = -1;
                 return scoresCache[position - cacheStart];
             }
 
             @Override
             public float maxScore(int upTo){
                 if(upTo == -1 || upTo == NO_MORE_DOCS){
-                    return centroidScore * 1.05f;
+                    return Float.MAX_VALUE;
                 }
                 assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;
