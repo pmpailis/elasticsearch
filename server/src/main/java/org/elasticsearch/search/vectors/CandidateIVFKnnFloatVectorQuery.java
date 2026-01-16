@@ -68,12 +68,8 @@ import java.util.concurrent.atomic.LongAccumulator;
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /**
- * IVF (Inverted File) vector search query that composes multiple CentroidQuery instances.
  * This query finds the nearest centroids and creates a CentroidQuery for each, then
  * combines them using DisjunctionMaxQuery for scoring.
- *
- * This is a new architecture that separates centroid iteration from document collection,
- * enabling more flexible query composition and better integration with Lucene's query infrastructure.
  */
 public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements QueryProfilerProvider {
     private final String field;
