@@ -177,7 +177,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         // calculate number of centroids to initially explore
         int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * (1 + (1 - filterSelectivity))) / clusterSize));
-
+        LogManager.getLogger("foo").error("centroids to explore: " + numCentroids);
         // or each leaf, find top centroids and create CentroidQueries
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
