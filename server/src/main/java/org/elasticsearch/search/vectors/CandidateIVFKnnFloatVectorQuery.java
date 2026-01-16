@@ -31,6 +31,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
@@ -156,6 +157,16 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         // calculate effective visit ratio, i.e. how many vectors we're expected to visit
         float effectiveVisitRatio = calculateEffectiveVisitRatio(totalVectors);
+        //calculate filter cost
+        float filterSelectivity = 0f;
+        if(filter != null) {
+            int filterCost = 0;
+            var filterWeight = indexSearcher.createWeight(filter, ScoreMode.COMPLETE_NO_SCORES, 1f);
+            for (LeafReaderContext ctx : indexSearcher.getIndexReader().leaves()) {
+                filterCost += Math.toIntExact(filterWeight.scorerSupplier(ctx).cost());
+            }
+            filterSelectivity = Math.min(1f, (float) filterCost / totalVectors);
+        }
         long maxVectorVisited = Math.max(100, Math.round(2.0 * effectiveVisitRatio * totalVectors));
 
         // cross-leaf competitive scores; replacing the collector
@@ -165,7 +176,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             : null;
 
         // calculate number of centroids to initially explore
-        int numCentroids = Math.max(1, (int) Math.ceil((float) maxVectorVisited / clusterSize));
+        int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * (1 + (1 - filterSelectivity))) / clusterSize));
 
         // or each leaf, find top centroids and create CentroidQueries
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());

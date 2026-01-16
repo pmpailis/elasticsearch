@@ -128,7 +128,7 @@ public class NeighborQueue {
         return NumericUtils.sortableIntToFloat((int) (order.apply(heapValue) >> 32));
     }
 
-    private int decodeNodeId(long heapValue) {
+    public int decodeNodeId(long heapValue) {
         return (int) ~(order.apply(heapValue));
     }
 
@@ -154,6 +154,15 @@ public class NeighborQueue {
         }
         heap.updateTop(raw);
         return decodeNodeId(top);
+    }
+
+    public long popRawAndAddRaw(long raw) {
+        long top = heap.top();
+        if (raw < top) {
+            return raw;
+        }
+        heap.updateTop(raw);
+        return top;
     }
 
     public void clear() {

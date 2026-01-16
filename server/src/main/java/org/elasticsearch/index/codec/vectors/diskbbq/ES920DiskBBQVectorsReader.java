@@ -201,7 +201,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             );
             var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
-                centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), postingVisitor
+                centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor
             ));
         }
         return centroids;
@@ -237,11 +237,13 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
 
             @Override
             public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
-                int centroidOrdinal = neighborQueue.pop();
+                long centroidOrdinalAndScore = neighborQueue.popRaw();
+                int centroidOrdinal = neighborQueue.decodeNodeId(centroidOrdinalAndScore);
+                float score = neighborQueue.decodeScore(centroidOrdinalAndScore);
                 centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, score,null);
             }
         };
     }
@@ -314,7 +316,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
                 centroids.seek(childrenFileOffsets + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, 1f, null);
             }
 
             private int nextCentroid() throws IOException {

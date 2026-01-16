@@ -37,7 +37,7 @@ public class IVFCentroidQuery extends Query {
      * metadata about a centroid and its posting list.
      * Used by the new query architecture to identify which centroids to explore.
      */
-    public record IVFCentroidMeta(long offset, long length, int ordinal, IVFVectorsReader.PostingVisitor postingVisitor){ }
+    public record IVFCentroidMeta(long offset, long length, int ordinal, float score, IVFVectorsReader.PostingVisitor postingVisitor){ }
 
     private final String field;
     private final float[] queryVector;
@@ -198,7 +198,7 @@ public class IVFCentroidQuery extends Query {
             this.boost = boost;
 
             // Create appropriate iterator based on whether we need diversification
-            PostingVisitorIterator baseIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore);
+            PostingVisitorIterator baseIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore, centroidMeta.score);
             if (parentBitSet != null) {
                 // Wrap with diversifying iterator
                 this.scoringIterator = new DiversifyingIterator(baseIterator, parentBitSet);
@@ -255,12 +255,14 @@ public class IVFCentroidQuery extends Query {
             private int cacheStart = 0;
             private int cacheSize = 0;
             private int position = -1;
+            private final float centroidScore;
             private int currentDoc = -1;
             private final int ordinal;
-            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost) {
+            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) {
                 this.ordinal = ordinal;
                 this.postingVisitor = postingVisitor;
                 this.totalVectorsVisited = totalVectorsVisited;
+                this.centroidScore = centroidScore;
                 this.estimatedCost = estimatedCost;
             }
 
@@ -320,7 +322,7 @@ public class IVFCentroidQuery extends Query {
             @Override
             public float maxScore(int upTo){
                 if(upTo == -1 || upTo == NO_MORE_DOCS){
-                    return Float.POSITIVE_INFINITY;
+                    return centroidScore * 1.05f;
                 }
                 assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;

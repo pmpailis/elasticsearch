@@ -258,7 +258,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             );
             var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
-                centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), postingVisitor
+                centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor
             ));
         }
         return centroids;
@@ -337,11 +337,13 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
             @Override
             public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
-                int centroidOrdinal = neighborQueue.pop();
+                long centroidOrdinalAndScore = neighborQueue.popRaw();
+                int centroidOrdinal = neighborQueue.decodeNodeId(centroidOrdinalAndScore);
+                float score = neighborQueue.decodeScore(centroidOrdinalAndScore);
                 centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, score,null);
             }
         };
     }
@@ -443,17 +445,19 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
 
             @Override
             public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
-                int centroidOrdinal = nextCentroid();
+                long centroidAndScore = nextCentroidAndScore();
+                int centroidOrdinal = neighborQueue.decodeNodeId(centroidAndScore);
+                float centroidScore = neighborQueue.decodeScore(centroidAndScore);
                 centroids.seek(childrenFileOffsets + (long) Long.BYTES * 2 * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, null);
+                return new IVFCentroidQuery.IVFCentroidMeta(postingListOffset, postingListLength, centroidOrdinal, centroidScore,null);
             }
 
-            private int nextCentroid() throws IOException {
+            private long nextCentroidAndScore() throws IOException {
                 if (currentParentQueue.size() > 0) {
                     // return next centroid and maybe add a children from the current parent queue
-                    return neighborQueue.popAndAddRaw(currentParentQueue.popRaw());
+                    return neighborQueue.popRawAndAddRaw(currentParentQueue.popRaw());
                 } else if (parentsQueue.size() > 0) {
                     // current parent queue is empty, populate it again with the next parent
                     int pop = parentsQueue.pop();
@@ -471,9 +475,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                         scores,
                         acceptCentroids
                     );
-                    return nextCentroid();
+                    return nextCentroidAndScore();
                 } else {
-                    return neighborQueue.pop();
+                    return neighborQueue.popRaw();
                 }
             }
         };
@@ -758,6 +762,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             for (int j = 0; j < toRead; j++) {
                 docBase += docIds[j];
                 docIds[j] = docBase;
+                docIdsScratch[j] = docBase;
             }
             currentPosition += toRead;
             lastReadCount = toRead;
