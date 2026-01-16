@@ -34,6 +34,7 @@ import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFCentroidQuery;
 import org.elasticsearch.simdvec.ES91OSQVectorsScorer;
+import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESNextOSQVectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -59,39 +60,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
     }
 
     CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
-        return new CentroidIterator() {
-            IVFCentroidQuery.IVFCentroidMeta nextOffsetAndLength = centroidIterator.hasNext()
-                ? centroidIterator.nextCentroidMeta()
-                : null;
-
-            {
-                // prefetch the first one
-                if (nextOffsetAndLength != null) {
-                    prefetch(nextOffsetAndLength);
-                }
-            }
-
-            void prefetch(IVFCentroidQuery.IVFCentroidMeta offsetAndLength) throws IOException {
-                postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
-            }
-
-            @Override
-            public boolean hasNext() {
-                return nextOffsetAndLength != null;
-            }
-
-            @Override
-            public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
-                IVFCentroidQuery.IVFCentroidMeta offsetAndLength = nextOffsetAndLength;
-                if (centroidIterator.hasNext()) {
-                    nextOffsetAndLength = centroidIterator.nextCentroidMeta();
-//                    prefetch(nextOffsetAndLength);
-                } else {
-                    nextOffsetAndLength = null;  // indicate we reached the end
-                }
-                return offsetAndLength;
-            }
-        };
+        // TODO we may want to prefetch more than one postings list, however, we will likely want to place a limit
+        // so we don't bother prefetching many lists we won't end up scoring
+        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice);
     }
 
     static long directWriterSizeOnDisk(long numValues, int bitsPerValue) {
@@ -121,7 +92,8 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio
+        float visitRatio,
+        int centroidsToLoad
     ) throws IOException {
         final FieldEntry fieldEntry = fields.get(fieldInfo.number);
         float approximateDocsPerCentroid = approximateCost / numCentroids;
@@ -247,17 +219,18 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             ESAcceptDocs.ESAcceptDocsAll.INSTANCE,
             0,
             values,
-            visitRatio
+            visitRatio,
+            maxCentroids
         );
         int centroidsAdded = 0;
         List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
         while (centroidPrefetchingIterator.hasNext() && centroidsAdded++ < maxCentroids) {
             IVFCentroidQuery.IVFCentroidMeta centroidMeta = centroidPrefetchingIterator.nextCentroidMeta();
-            var slice = postingListSlice.slice(
-                "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
-            );
-            slice.prefetch(0, centroidMeta.length());
-            var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
+//            var slice = postingListSlice.slice(
+//                "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
+//            );
+//            slice.prefetch(0, centroidMeta.length());
+            var postingVisitor = getPostingVisitor(fieldInfo, centroidMeta., queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
                 centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor
             ));

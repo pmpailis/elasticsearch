@@ -50,39 +50,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
 
     public CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice)
         throws IOException {
-        return new CentroidIterator() {
-            IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta = centroidIterator.hasNext()
-                ? centroidIterator.nextCentroidMeta()
-                : null;
-
-            {
-                // prefetch the first one
-                if (nextCentroidMeta != null) {
-                    prefetch(nextCentroidMeta);
-                }
-            }
-
-            void prefetch(IVFCentroidQuery.IVFCentroidMeta offsetAndLength) throws IOException {
-                postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
-            }
-
-            @Override
-            public boolean hasNext() {
-                return nextCentroidMeta != null;
-            }
-
-            @Override
-            public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
-                IVFCentroidQuery.IVFCentroidMeta centroidMeta = nextCentroidMeta;
-                if (centroidIterator.hasNext()) {
-                    nextCentroidMeta = centroidIterator.nextCentroidMeta();
-                    prefetch(nextCentroidMeta);
-                } else {
-                    nextCentroidMeta = null;  // indicate we reached the end
-                }
-                return centroidMeta;
-            }
-        };
+        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice);
     }
 
     @Override
@@ -95,7 +63,8 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio
+        float visitRatio,
+        int centroidsToLoad
     ) throws IOException {
         final FieldEntry fieldEntry = fields.get(fieldInfo.number);
         final float globalCentroidDp = fieldEntry.globalCentroidDp();
@@ -177,7 +146,14 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
     }
 
     @Override
-    public List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(FieldInfo fieldInfo, float[] queryVector, int maxCentroids, String field, float visitRatio, long docsToExplore) throws IOException {
+    public List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
+        FieldInfo fieldInfo,
+        float[] queryVector,
+        int maxCentroids,
+        String field,
+        float visitRatio,
+        long docsToExplore
+    ) throws IOException {
         FloatVectorValues values = getReaderForField(field).getFloatVectorValues(field);
         FieldEntry entry = fields.get(fieldInfo.number);
         IndexInput postingListSlice = entry.postingListSlice(ivfClusters);
@@ -190,7 +166,8 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             null,
             0,
             values,
-            visitRatio
+            visitRatio,
+            1
         );
         int centroidsAdded = 0;
         List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
