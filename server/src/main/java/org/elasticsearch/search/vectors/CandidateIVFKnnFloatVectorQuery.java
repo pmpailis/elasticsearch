@@ -202,8 +202,6 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             return Queries.NO_DOCS_INSTANCE;
         }
 
-        allCentroidQueries.sort(Comparator.comparingInt(IVFCentroidQuery::centroidOrdinal));
-
         Query ivfQuery = new DisjunctionMaxQuery(allCentroidQueries, 0.0f);
 
         if (filter != null) {
