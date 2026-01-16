@@ -85,7 +85,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 IVFCentroidQuery.IVFCentroidMeta offsetAndLength = nextOffsetAndLength;
                 if (centroidIterator.hasNext()) {
                     nextOffsetAndLength = centroidIterator.nextCentroidMeta();
-                    prefetch(nextOffsetAndLength);
+//                    prefetch(nextOffsetAndLength);
                 } else {
                     nextOffsetAndLength = null;  // indicate we reached the end
                 }
@@ -256,6 +256,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             var slice = postingListSlice.slice(
                 "centroidOrdinal: " + centroidMeta.ordinal(), centroidMeta.offset(), centroidMeta.length()
             );
+            slice.prefetch(0, centroidMeta.length());
             var postingVisitor = getPostingVisitor(fieldInfo, slice, queryVector, null);
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(
                 centroidMeta.offset(), centroidMeta.length(), centroidMeta.ordinal(), centroidMeta.score(), postingVisitor

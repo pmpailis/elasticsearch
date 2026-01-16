@@ -19,17 +19,22 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.CollectorManager;
+import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
+import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
@@ -41,6 +46,7 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
@@ -54,6 +60,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAccumulator;
@@ -197,10 +204,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         allCentroidQueries.sort(Comparator.comparingInt(IVFCentroidQuery::centroidOrdinal));
 
-        // 7. Compose with DisMaxQuery
         Query ivfQuery = new DisjunctionMaxQuery(allCentroidQueries, 0.0f);
 
-        // 8. Wrap with filter if needed - let BoolQuery handle filtering!
         if (filter != null) {
             BooleanQuery.Builder boolBuilder = new BooleanQuery.Builder();
             boolBuilder.add(ivfQuery, BooleanClause.Occur.SHOULD);
@@ -211,6 +216,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, (int) maxVectorVisited);
         TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
+        LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
