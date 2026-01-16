@@ -199,14 +199,7 @@ public class IVFCentroidQuery extends Query {
             this.boost = boost;
 
             // Create appropriate iterator based on whether we need diversification
-            PostingVisitorIterator baseIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore, centroidMeta.score);
-            if (parentBitSet != null) {
-                // Wrap with diversifying iterator
-                this.scoringIterator = new DiversifyingIterator(baseIterator, parentBitSet);
-            } else {
-                // Use limited iterator directly
-                this.scoringIterator = baseIterator;
-            }
+            this.scoringIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore, centroidMeta.score);
         }
 
         @Override
@@ -259,7 +252,8 @@ public class IVFCentroidQuery extends Query {
             private final float centroidScore;
             private int currentDoc = -1;
             private final int ordinal;
-            private int targetDoc =-1;
+            private int targetDoc = -1;
+
             PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) throws IOException {
                 this.ordinal = ordinal;
                 this.postingVisitor = postingVisitor;
@@ -296,7 +290,7 @@ public class IVFCentroidQuery extends Query {
                             }
                         }
                     }
-                    if (targetDoc < 0 || found){
+                    if (targetDoc < 0 || found) {
                         postingVisitor.scoreBulk(scoresCache);
                         // otherwise skip bytes
 
@@ -304,7 +298,7 @@ public class IVFCentroidQuery extends Query {
                         if (totalVectorsVisited != null) {
                             totalVectorsVisited.addAndGet(cacheSize);
                         }
-                    }else{
+                    } else {
                         postingVisitor.skipBytes(cacheSize);
                     }
                 }
@@ -337,122 +331,18 @@ public class IVFCentroidQuery extends Query {
             }
 
             @Override
-            public float maxScore(int upTo){
-                if(upTo == -1 || upTo == NO_MORE_DOCS){
+            public float maxScore(int upTo) {
+                if (upTo == -1 || upTo == NO_MORE_DOCS) {
                     return Float.POSITIVE_INFINITY;
                 }
                 assert docIdsCache[position - cacheStart] == upTo;
                 float maxScore = 0;
-                for(int i=0;i<=position - cacheStart;i++){
-                    if(scoresCache[i] > maxScore){
+                for (int i = 0; i <= position - cacheStart; i++) {
+                    if (scoresCache[i] > maxScore) {
                         maxScore = scoresCache[i];
                     }
                 }
                 return maxScore;
-            }
-        }
-
-        /**
-         * Diversifying iterator that ensures only the best child per parent is returned.
-         * Wraps a ScoringIterator and tracks the best score for each parent.
-         */
-        private static class DiversifyingIterator extends ScoringIterator {
-            private final ScoringIterator delegate;
-            private final Bits parentBitSet;
-
-            // Track best child per parent
-            private final java.util.HashMap<Integer, ChildScore> parentToChild = new java.util.HashMap<>();
-
-            // Current state
-            private int currentDoc = -1;
-            private float currentScore;
-
-            DiversifyingIterator(ScoringIterator delegate, Bits parentBitSet) {
-                this.delegate = delegate;
-                this.parentBitSet = parentBitSet;
-                throw new IllegalArgumentException("DiversifyingIterator not supported yet");
-            }
-            @Override
-            public float maxScore(int upTo) throws IOException {
-                return delegate.maxScore(upTo);
-            }
-
-            @Override
-            public int docID() {
-                return currentDoc;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-                while (true) {
-                    int childDoc = delegate.nextDoc();
-                    if (childDoc == NO_MORE_DOCS) {
-                        currentDoc = NO_MORE_DOCS;
-                        return NO_MORE_DOCS;
-                    }
-
-                    // Score this child
-                    float score = delegate.scoreCurrentDoc();
-
-                    // Find parent for this child
-                    int parent = findParent(childDoc);
-
-                    // Check if this is the best child for this parent
-                    ChildScore existing = parentToChild.get(parent);
-                    if (existing == null || score > existing.score) {
-                        // This is a new or better child for this parent
-                        parentToChild.put(parent, new ChildScore(childDoc, score));
-                        currentDoc = childDoc;
-                        currentScore = score;
-                        return childDoc;
-                    }
-                    // Otherwise, skip this child and continue to next
-                }
-            }
-
-            @Override
-            public int advance(int target) throws IOException {
-                int doc = docID();
-                while (doc < target) {
-                    doc = nextDoc();
-                }
-                return doc;
-            }
-
-            @Override
-            public long cost() {
-                return delegate.cost();
-            }
-
-            @Override
-            public float scoreCurrentDoc() throws IOException {
-                return currentScore;
-            }
-
-            /**
-             * Finds the parent document ID for a given child document.
-             * Uses the parentBitSet to identify which documents are parents.
-             */
-            private int findParent(int childDoc) {
-                // Find the next set bit at or after childDoc
-                // This gives us the parent for this child
-                for (int doc = childDoc; doc >= 0; doc--) {
-                    if (parentBitSet.get(doc)) {
-                        return doc;
-                    }
-                }
-                // If no parent found, child is its own parent
-                return childDoc;
-            }
-
-            private static class ChildScore {
-                final int childDoc;
-                final float score;
-
-                ChildScore(int childDoc, float score) {
-                    this.childDoc = childDoc;
-                    this.score = score;
-                }
             }
         }
     }
