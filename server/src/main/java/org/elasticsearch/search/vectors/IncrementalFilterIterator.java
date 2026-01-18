@@ -9,7 +9,6 @@
 package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.SparseFixedBitSet;
 
 import java.io.IOException;
@@ -64,8 +63,7 @@ public final class IncrementalFilterIterator {
         if (docId == currentPos) {
             // If docId equals current iterator position, it matches
             return true;
-        }
-        else if (docId < currentPos) {
+        } else if (docId < currentPos) {
             // If we've already scanned past this docId, check the backing bitset
             return backingBitset != null && backingBitset.get(docId);
         }

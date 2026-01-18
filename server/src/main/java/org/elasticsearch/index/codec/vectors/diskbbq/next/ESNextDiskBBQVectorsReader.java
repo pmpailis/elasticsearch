@@ -31,9 +31,9 @@ import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.DocIdsWriter;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.search.vectors.IncrementalDeduplicationFilter;
 import org.elasticsearch.search.vectors.IncrementalFilterIterator;
-import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESNextOSQVectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -954,7 +954,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return scoredDocs;
         }
 
-
         @Override
         public int peekFirstDocId() throws IOException {
             if (vectors == 0) {
@@ -1062,7 +1061,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 knnCollector.incVisitedCount(remaining);
             }
 
-            if(scoredDocs > 0){
+            if (scoredDocs > 0) {
                 knnCollector.incVisitedCount(scoredDocs);
             }
             return scoredDocs;

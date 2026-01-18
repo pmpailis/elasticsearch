@@ -242,7 +242,7 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         }
     }
 
-    public static final class DynamicFilterEsAcceptDocs  extends ESAcceptDocs {
+    public static final class DynamicFilterEsAcceptDocs extends ESAcceptDocs {
 
         private final DocIdSetIterator iterator;
         private final Bits liveDocs;
