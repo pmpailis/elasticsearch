@@ -57,10 +57,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         super(state, getFormatReader);
     }
 
-    CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
+    CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice, int prefetchBatch) throws IOException {
         // TODO we may want to prefetch more than one postings list, however, we will likely want to place a limit
         // so we don't bother prefetching many lists we won't end up scoring
-        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice);
+        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice, prefetchBatch);
     }
 
     static long directWriterSizeOnDisk(long numValues, int bitsPerValue) {
@@ -90,7 +90,8 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio
+        float visitRatio,
+        int prefetchBatch
     ) throws IOException {
         final FieldEntry fieldEntry = fields.get(fieldInfo.number);
         int bulkSize = fieldEntry.getBulkSize();
@@ -164,7 +165,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 bulkSize
             );
         }
-        return getPostingListPrefetchIterator(centroidIterator, postingListSlice);
+        return getPostingListPrefetchIterator(centroidIterator, postingListSlice, 1);
     }
 
     @Override
@@ -985,14 +986,13 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         @Override
         public int visitFiltered(
             KnnCollector knnCollector,
-            IncrementalFilterIterator filterIterator,
-            IncrementalDeduplicationFilter deduplicationFilter
+            IncrementalFilterIterator filterIterator
         ) throws IOException {
             if (vectors == 0) {
                 return 0;
             }
             // Seek to the beginning of the posting list data
-            indexInput.seek(slicePos);
+//            indexInput.seek(slicePos);
             int scoredDocs = 0;
             int limit = vectors - BULK_SIZE + 1;
             int i = 0;
@@ -1016,7 +1016,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     for (int j = 0; j < BULK_SIZE; j++) {
                         int doc = docIdsScratch[j];
-                        if (doc == -1 || false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
+                        if (doc == -1 || false == filterIterator.matches(doc)) {
                             continue;
                         }
                         knnCollector.collect(doc, scores[j]);
@@ -1034,7 +1034,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 for (int j = 0; j < remaining; j++) {
                     int doc = docIdsScratch[j];
                     // Apply acceptDocs filter using incremental filter iterator
-                    if (doc == -1 || false == deduplicationFilter.add(doc) || false == filterIterator.matches(doc)) {
+                    if (doc == -1 || false == filterIterator.matches(doc)) {
                         indexInput.skipBytes(quantizedByteLength);
                         continue;
                     }

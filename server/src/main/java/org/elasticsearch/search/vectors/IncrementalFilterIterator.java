@@ -8,7 +8,12 @@
  */
 package org.elasticsearch.search.vectors;
 
+import com.carrotsearch.hppc.IntHashSet;
+
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.util.BitSet;
+import org.apache.lucene.util.FixedBitSet;
+import org.apache.lucene.util.RoaringDocIdSet;
 import org.apache.lucene.util.SparseFixedBitSet;
 
 import java.io.IOException;
@@ -29,56 +34,102 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
  *   <li>Fallback: If iterator not available, use Bits directly (less efficient)</li>
  * </ul>
  */
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
+
+/**
+ * An incremental filter optimized for low-level Lucene access.
+ * Uses a FixedBitSet for O(1) history lookups and minimal memory footprint.
+ */
 public final class IncrementalFilterIterator {
+
     private final DocIdSetIterator iterator;
-    private final SparseFixedBitSet backingBitset;
+    // FixedBitSet is generally fastest for random access checks.
+    // If you have >100M docs and <1% matches, consider SparseFixedBitSet.
+    private final FixedBitSet visitedBits;
 
     /**
      * Creates a new incremental filter iterator.
      *
      * @param iterator the underlying DocIdSetIterator (can be null)
-     * @param maxDoc   the maximum document ID in the segment
+     * @param maxDoc   the maximum document ID (required for bitset sizing)
      */
     public IncrementalFilterIterator(DocIdSetIterator iterator, int maxDoc) {
-        assert iterator == null || iterator.docID() == -1;
-        this.backingBitset = iterator == null ? null : new SparseFixedBitSet(maxDoc);
-        this.iterator = iterator;
+        // Optimization: Use empty() to avoid null checks in hot paths
+        this.iterator = iterator == null ? DocIdSetIterator.empty() : iterator;
+        // Optimization: FixedBitSet is extremely fast for sequential writes and random reads
+        this.visitedBits = new FixedBitSet(maxDoc);
+
+        // Ensure iterator is at start to prevent state mismatches
+        assert this.iterator.docID() == -1 : "Iterator must be positioned at -1";
     }
 
     /**
-     * Checks if the given document ID matches the filter.
-     * This method advances the iterator as needed and builds the backing bitset incrementally.
-     *
-     * @param docId the document ID to check
-     * @return true if the document passes the filter (or no filter exists)
-     * @throws IOException if an I/O error occurs
+     * Manually advances the iterator.
+     * NOTE: Using this method creates "gaps" in the cache.
+     * Checks for docIds skipped by this advance will return false.
+     */
+    public void advance(int docId) throws IOException {
+        if (docId == NO_MORE_DOCS) {
+            return; // guard against overflow logic
+        }
+
+        // Only advance if the target is ahead of us
+        if (iterator.docID() < docId) {
+            int current = iterator.advance(docId);
+            // If we land on a valid doc, mark it immediately
+            if (current != NO_MORE_DOCS) {
+                visitedBits.set(current);
+            }
+        }
+    }
+
+    /**
+     * Checks if the given document ID matches, advancing the underlying iterator
+     * and caching results as needed.
      */
     public boolean matches(int docId) throws IOException {
-        if (iterator == null) {
-            return true;
-        }
-
         int currentPos = iterator.docID();
 
+        // 1. History Check: If we are past the requested docId, check the bitset.
+        // This is O(1) and extremely fast.
+        if (docId < currentPos) {
+            return visitedBits.get(docId);
+        }
+
+        // 2. Exact Match: If we are already on the doc.
         if (docId == currentPos) {
-            // If docId equals current iterator position, it matches
             return true;
-        } else if (docId < currentPos) {
-            // If we've already scanned past this docId, check the backing bitset
-            return backingBitset != null && backingBitset.get(docId);
         }
 
-        // Advance iterator until we reach or pass docId, marking matching docs as we go
-        int nextDocId;
-        while ((nextDocId = iterator.nextDoc()) < docId) {
-            backingBitset.set(nextDocId);
+        // 3. Forward Scan: We need to advance to docId.
+        // We MUST linear scan (nextDoc) to ensure we cache the history
+        // for future "backwards" lookups.
+        // If we used advance(docId), we would lose the status of skipped docs.
+        int nextDoc;
+        while ((nextDoc = iterator.nextDoc()) < docId) {
+            visitedBits.set(nextDoc);
         }
 
-        if (nextDocId != NO_MORE_DOCS) {
-            backingBitset.set(nextDocId);
+        // We either landed ON the docId, or passed it, or hit NO_MORE_DOCS.
+        if (nextDoc == docId) {
+            visitedBits.set(nextDoc);
+            return true;
         }
 
-        // Check if we landed exactly on docId
-        return nextDocId == docId;
+        // If we passed it (nextDoc > docId) or hit NO_MORE_DOCS,
+        // then docId is definitely not a match.
+        // (Note: If nextDoc != NO_MORE_DOCS, we should cache it for later)
+        if (nextDoc != NO_MORE_DOCS) {
+            visitedBits.set(nextDoc);
+        }
+
+        return false;
+    }
+
+    /**
+     * Optional: Expose the raw bitset if other low-level APIs need it.
+     */
+    public BitSet getBackingBitSet() {
+        return visitedBits;
     }
 }
