@@ -320,7 +320,6 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             values,
             visitRatio
         );
-        Bits acceptDocsBits = acceptDocs.bits();
 
         // TODO: Enable parallel posting list evaluation conditionally
         // For now, disabled by default - requires all readers to support batch operations
@@ -351,43 +350,40 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
                 // Continue with sequential implementation below
             }
         }
-
-        // Sequential implementation (original or fallback)
-        {
-            PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
-            long expectedDocs = 0;
-            long actualDocs = 0;
-            // initially we visit only the "centroids to search"
-            // Note, numCollected is doing the bare minimum here.
-            // TODO do we need to handle nested doc counts similarly to how we handle
-            // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
-            while (centroidPrefetchingIterator.hasNext()
-                && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-                // todo do we actually need to know the score???
+        Bits acceptDocsBits = acceptDocs.bits();
+        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
+        long expectedDocs = 0;
+        long actualDocs = 0;
+        // initially we visit only the "centroids to search"
+        // Note, numCollected is doing the bare minimum here.
+        // TODO do we need to handle nested doc counts similarly to how we handle
+        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
+        while (centroidPrefetchingIterator.hasNext()
+            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            // todo do we actually need to know the score???
+            CentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
+            // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
+            // is enough?
+            expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
+            actualDocs += scorer.visit(knnCollector);
+            if (knnCollector.getSearchStrategy() != null) {
+                knnCollector.getSearchStrategy().nextVectorsBlock();
+            }
+        }
+        if (acceptDocsBits != null) {
+            // TODO Adjust the value here when using centroid filtering
+            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
+            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
+            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+            while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
                 CentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
-                // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
-                // is enough?
-                expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
+                scorer.resetPostingsScorer(offsetAndLength.offset());
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
             }
-            if (acceptDocsBits != null) {
-                // TODO Adjust the value here when using centroid filtering
-                float unfilteredRatioVisited = (float) expectedDocs / numVectors;
-                int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-                float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
-                while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                    CentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
-                    scorer.resetPostingsScorer(offsetAndLength.offset());
-                    actualDocs += scorer.visit(knnCollector);
-                    if (knnCollector.getSearchStrategy() != null) {
-                        knnCollector.getSearchStrategy().nextVectorsBlock();
-                    }
-                }
-            }
-        } // End sequential implementation block
+        }
     }
 
     /**
@@ -419,8 +415,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // Strategy: Load doc IDs from multiple posting lists, filter them, then batch score
         // This separates cheap operations (doc ID loading + filtering) from expensive operations (vector scoring)
 
-        final int BATCH_SIZE = 8; // Number of posting lists to process in parallel
-        final IncrementalDeduplicationFilter deduplicationFilter = new IncrementalDeduplicationFilter(1000);
+        final int BATCH_SIZE = 1000; // Number of posting lists to process in parallel
+        final IncrementalDeduplicationFilter deduplicationFilter = new IncrementalDeduplicationFilter(10_000);
 
         // Initialize incremental filter iterator from acceptDocs
         // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
