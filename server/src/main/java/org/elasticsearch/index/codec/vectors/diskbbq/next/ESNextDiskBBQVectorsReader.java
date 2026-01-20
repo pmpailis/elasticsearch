@@ -839,7 +839,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             quantizeQueryIfNecessary();
 
             float maxScore;
-            if (lastReadCount == ES91OSQVectorsScorer.BULK_SIZE) {
+            if (lastReadCount == BULK_SIZE) {
                 // Use bulk scoring optimization for full batches with enough valid docs
                 maxScore = osqVectorsScorer.scoreBulk(
                     quantizedQueryScratch,
