@@ -419,8 +419,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
     ) throws IOException {
         // Strategy: Load doc IDs from multiple posting lists, filter them, then batch score
         // This separates cheap operations (doc ID loading + filtering) from expensive operations (vector scoring)
-
-        final int BATCH_SIZE = 50; // Number of posting lists to process in parallel
+        int centroidsProcessed = 0;
+        final int BATCH_SIZE = 100; // Number of posting lists to process in parallel
         // Initialize incremental filter iterator from acceptDocs
         // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
 
@@ -428,9 +428,9 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         long actualDocs = 0;     // Docs actually scored (after filtering)
         float unfilteredRatioVisited = (float) expectedDocs / numVectors;
         int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-         float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+        float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
         while (centroidIterator.hasNext()
-            && (maxVectorVisited > expectedDocs || actualDocs < expectedScored || actualDocs < knnCollector.k() || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            && (numCentroids > centroidsProcessed || maxVectorVisited > expectedDocs || actualDocs < expectedScored || actualDocs < knnCollector.k() || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
 
             // load BATCH_SIZE postings lists
             int batchCount = 0;
@@ -452,6 +452,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
                 var postVisitor = getPostingVisitor(fieldInfo, postingSlice, target, null);
                 long size = postVisitor.resetPostingsScorer(0);
                 if (size > 0) {
+                    centroidsProcessed++;
                     expectedDocs += size;
                     docIDs[batchCount] = new int[Math.min(BULK_SIZE, Math.toIntExact(size))];
                     postVisitor.readNextBatch(docIDs[batchCount]);
