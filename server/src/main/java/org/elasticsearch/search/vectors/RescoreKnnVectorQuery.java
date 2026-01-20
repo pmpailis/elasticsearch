@@ -172,9 +172,19 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
 
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
-            var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, innerQuery);
+            // Rewrite the inner query - this triggers the search and sets vectorOpsCount
+            // Note: totalVectorsVisited is now shared across all instances during rewrite
+            Query rewrittenInner = searcher.rewrite(innerQuery);
+            
+            // Extract vectorOpsCount - use getTotalVectorsVisited() which is shared across rewrites
+            if (innerQuery instanceof CandidateIVFKnnFloatVectorQuery candidateQuery) {
+                vectorOperations = candidateQuery.getTotalVectorsVisited();
+            } else if (innerQuery instanceof AbstractIVFKnnVectorQuery ivfQuery) {
+                vectorOperations = ivfQuery.vectorOpsCount;
+            }
+            
+            var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, rewrittenInner);
             var topDocs = searcher.search(rescoreQuery, k);
-            vectorOperations = topDocs.totalHits.value();
             return new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
         }
 
@@ -211,12 +221,20 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
             final TopDocs topDocs;
             // Retrieve top `rescoreK` documents from the inner query
             topDocs = searcher.search(innerQuery, rescoreK);
-            vectorOperations = topDocs.totalHits.value();
+            
+            // Extract vectorOpsCount - use getTotalVectorsVisited() which is shared across rewrites
+            if (innerQuery instanceof CandidateIVFKnnFloatVectorQuery candidateQuery) {
+                vectorOperations = candidateQuery.getTotalVectorsVisited();
+            } else if (innerQuery instanceof AbstractIVFKnnVectorQuery ivfQuery) {
+                vectorOperations = ivfQuery.vectorOpsCount;
+            } else {
+                vectorOperations = topDocs.totalHits.value();
+            }
 
             // Retrieve top `k` documents from the top `rescoreK` query
             var topDocsQuery = new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
             var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, topDocsQuery);
-            var rescoreTopDocs = searcher.search(rescoreQuery.rewrite(searcher), k);
+            var rescoreTopDocs = searcher.search(searcher.rewrite(rescoreQuery), k);
             return new KnnScoreDocQuery(rescoreTopDocs.scoreDocs, searcher.getIndexReader());
         }
 

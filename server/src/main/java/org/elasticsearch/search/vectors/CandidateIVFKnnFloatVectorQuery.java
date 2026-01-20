@@ -82,6 +82,10 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     private final BitSetProducer parentsFilter; // null for non-diversifying
     private final AtomicLong totalVectorsVisited;
 
+    public long getTotalVectorsVisited() {
+        return totalVectorsVisited.get();
+    }
+
     /**
      * Creates a new IVFQuery.
      *
@@ -104,6 +108,20 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         int clusterSize,
         BitSetProducer parentsFilter
     ) {
+        this(field, queryVector, k, numCands, filter, visitRatio, clusterSize, parentsFilter, new AtomicLong(0));
+    }
+
+    private CandidateIVFKnnFloatVectorQuery(
+        String field,
+        float[] queryVector,
+        int k,
+        int numCands,
+        Query filter,
+        float visitRatio,
+        int clusterSize,
+        BitSetProducer parentsFilter,
+        AtomicLong totalVectorsVisited
+    ) {
         super(field, visitRatio, k, k, filter);
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
@@ -122,7 +140,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         this.providedVisitRatio = visitRatio;
         this.parentsFilter = parentsFilter;
         this.clusterSize = clusterSize;
-        this.totalVectorsVisited = new AtomicLong(0);
+        this.totalVectorsVisited = totalVectorsVisited;
     }
 
     @Override
@@ -139,8 +157,9 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                 .build();
             Query filterRewritten = indexSearcher.rewrite(booleanQuery);
             if (false == filter.equals(filterRewritten)) {
+                // Pass the same totalVectorsVisited instance to preserve count across rewrites
                 return new CandidateIVFKnnFloatVectorQuery(
-                    field, queryVector, k, numCands, filterRewritten, providedVisitRatio, clusterSize, parentsFilter
+                    field, queryVector, k, numCands, filterRewritten, providedVisitRatio, clusterSize, parentsFilter, totalVectorsVisited
                 );
             }
         }
@@ -181,7 +200,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         // calculate number of centroids to initially explore
         var oversample = filterSelectivity > 0 ? (1 + (1 - filterSelectivity)) : 1;
         int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * oversample) / clusterSize));
-        LogManager.getLogger("foo").error("centroids to explore: " + numCentroids);
+//        LogManager.getLogger("foo").error("centroids to explore: " + numCentroids);
         // or each leaf, find top centroids and create CentroidQueries
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
@@ -211,7 +230,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, Integer.MAX_VALUE);
         TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
-        LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);
+//        LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }

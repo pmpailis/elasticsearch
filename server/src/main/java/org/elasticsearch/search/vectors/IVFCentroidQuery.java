@@ -224,7 +224,7 @@ public class IVFCentroidQuery extends Query {
         }
 
         private static class PostingVisitorIterator extends ScoringIterator {
-            private static final int BATCH_SIZE = 16;
+            private static final int BATCH_SIZE = 32; // Must match ESNextOSQVectorsScorer.BULK_SIZE
 
             private final IVFVectorsReader.PostingVisitor postingVisitor;
             private final AtomicLong totalVectorsVisited;
@@ -239,6 +239,7 @@ public class IVFCentroidQuery extends Query {
             private int currentDoc = -1;
             private final int ordinal;
             private int targetDoc = -1;
+            private boolean currentBatchScored = false;
 
             PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) throws IOException {
                 this.ordinal = ordinal;
@@ -268,6 +269,7 @@ public class IVFCentroidQuery extends Query {
                         return NO_MORE_DOCS;
                     }
                     boolean found = false;
+                    boolean shouldSkip = false;
                     if (targetDoc >= 0) {
                         for (int i = 0; i < cacheSize; i++) {
                             if (targetDoc == docIdsCache[i]) {
@@ -276,7 +278,10 @@ public class IVFCentroidQuery extends Query {
                             }
                         }
                     }
-                    if (targetDoc < 0 || found) {
+                    if(docIdsCache[cacheSize - 1] < targetDoc) {
+                        shouldSkip = true;
+                    }
+                    if (targetDoc < 0 || found || (false == shouldSkip)) {
                         postingVisitor.scoreBulk(scoresCache);
                         // otherwise skip bytes
 
