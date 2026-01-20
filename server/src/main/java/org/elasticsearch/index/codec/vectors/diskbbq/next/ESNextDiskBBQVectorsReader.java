@@ -633,6 +633,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         private float scoreIndividually() throws IOException {
             return scoreIndividually(BULK_SIZE);
         }
+
         private float scoreIndividually(int count) throws IOException {
             float maxScore = Float.NEGATIVE_INFINITY;
             // score individually, first the quantized byte chunk
@@ -792,11 +793,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         }
 
         @Override
-        public boolean hasNextBatch() {
-            return vectorsRead < vectors;
-        }
-
-        @Override
         public int readNextBatch(int[] docIds) throws IOException {
             if (vectorsRead >= vectors) {
                 currentBatchSize = 0;
@@ -804,15 +800,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 return 0;
             }
 
-            // Position at the start of the next batch
-            indexInput.seek(slicePos);
-
-            // Calculate how many docs to read in this batch
             int toRead = Math.min(BULK_SIZE, vectors - vectorsRead);
-            if(docIds == null){
+            if (docIds == null) {
                 docIds = new int[toRead];
             }
-            // Read doc ID deltas
+
             idsWriter.readInts(indexInput, toRead, docEncoding, docIdsScratch);
             for (int j = 0; j < toRead; j++) {
                 docBase += docIdsScratch[j];
@@ -822,35 +814,15 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             // Store batch size and update counters
             currentBatchSize = toRead;
             vectorsRead += toRead;
-
-            // The quantized vectors and corrections are still in the file
-            // Save the position where quantized data starts for this batch
-            currentBatchDataPos = indexInput.getFilePointer();
-
-            // Calculate the size of the quantized data for this batch
-            long quantizedDataSize = (long) toRead * quantizedVectorByteSize + // quantized vectors
-                (long) Float.BYTES * toRead + // correctionsLower
-                (long) Float.BYTES * toRead + // correctionsUpper
-                (long) Short.BYTES * toRead + // correctionsSum
-                (long) Float.BYTES * toRead; // correctionsAdd
-
-            // Position for next batch will be after current quantized data
-            slicePos = currentBatchDataPos + quantizedDataSize;
-
             return toRead;
         }
 
         @Override
-        public int getMinDocInCurrentBatch() {
-            return minDocInBatch;
-        }
-
-        @Override
         public int scoreCurrentBatch(int[] docIDs, KnnCollector knnCollector) throws IOException {
-            int scoredDocs = 0;
             if (currentBatchSize == 0) {
                 return 0;
             }
+            int scoredDocs = 0;
             quantizeQueryIfNecessary();
             for (int i = 0; i < currentBatchSize; i++) {
                 int docId = docIDs[i];
@@ -875,124 +847,35 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                     centroidDp,
                     scores
                 );
-            } else {
-                maxScore = scoreIndividually(currentBatchSize);
-            }
-            if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                collectBulk(knnCollector, scores);
-            }
-            if (scoredDocs > 0) {
-                knnCollector.incVisitedCount(scoredDocs);
-            }
-            return scoredDocs;
-        }
-
-        @Override
-        public int peekFirstDocId() throws IOException {
-            if (vectors == 0) {
-                return Integer.MAX_VALUE;
-            }
-
-            // Save current position
-            long savedPos = indexInput.getFilePointer();
-            int savedDocBase = docBase;
-
-            try {
-                // Seek to start of posting list data
-                indexInput.seek(slicePos);
-                docBase = 0;
-
-                // Read first doc ID
-                int[] docId = new int[1];
-                idsWriter.readInts(indexInput, 1, docEncoding, docId);
-                docBase += docId[0];
-
-                return docBase;
-            } finally {
-                // Restore position
-                indexInput.seek(savedPos);
-                docBase = savedDocBase;
-            }
-        }
-
-        @Override
-        public int visitFiltered(
-            KnnCollector knnCollector,
-            IncrementalFilterIterator filterIterator
-        ) throws IOException {
-            if (vectors == 0) {
-                return 0;
-            }
-            // Seek to the beginning of the posting list data
-//            indexInput.seek(slicePos);
-            int scoredDocs = 0;
-            int limit = vectors - BULK_SIZE + 1;
-            int i = 0;
-            quantizeQueryIfNecessary();
-            // Process full batches
-            for (; i < limit; i += BULK_SIZE) {
-                readDocIds(BULK_SIZE);
-                // Score all docs in batch using bulk SIMD operations
-                float maxScore = osqVectorsScorer.scoreBulk(
-                    quantizedQueryScratch,
-                    queryCorrections.lowerInterval(),
-                    queryCorrections.upperInterval(),
-                    queryCorrections.quantizedComponentSum(),
-                    queryCorrections.additionalCorrection(),
-                    fieldInfo.getVectorSimilarityFunction(),
-                    centroidDp,
-                    scores
-                );
-
-                // Post-filter and collect results
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                    for (int j = 0; j < BULK_SIZE; j++) {
-                        int doc = docIdsScratch[j];
-                        if (doc == -1 || false == filterIterator.matches(doc)) {
-                            continue;
-                        }
-                        knnCollector.collect(doc, scores[j]);
-                        scoredDocs++;
-                    }
+                    collectBulk(knnCollector, scores);
                 }
-            }
-
-            // Handle tail (partial batch) - score individually since data layout is different
-            final int remaining = vectors - i;
-            if (remaining > 0) {
-                quantizeQueryIfNecessary();
-                readDocIds(remaining);
-                // Process each doc individually
-                for (int j = 0; j < remaining; j++) {
+            } else {
+                for (int j = 0; j < currentBatchSize; j++) {
                     int doc = docIdsScratch[j];
-                    // Apply acceptDocs filter using incremental filter iterator
-                    if (doc == -1 || false == filterIterator.matches(doc)) {
+                    if (doc == -1) {
                         indexInput.skipBytes(quantizedByteLength);
-                        continue;
+                    } else {
+                        float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                        indexInput.readFloats(correctiveValues, 0, 3);
+                        final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
+                        float score = osqVectorsScorer.score(
+                            queryCorrections.lowerInterval(),
+                            queryCorrections.upperInterval(),
+                            queryCorrections.quantizedComponentSum(),
+                            queryCorrections.additionalCorrection(),
+                            fieldInfo.getVectorSimilarityFunction(),
+                            centroidDp,
+                            correctiveValues[0],
+                            correctiveValues[1],
+                            quantizedComponentSum,
+                            correctiveValues[2],
+                            qcDist
+                        );
+                        knnCollector.collect(doc, score);
                     }
-                    // Score this document
-                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
-                    indexInput.readFloats(correctiveValues, 0, 3);
-                    final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
-                    float score = osqVectorsScorer.score(
-                        queryCorrections.lowerInterval(),
-                        queryCorrections.upperInterval(),
-                        queryCorrections.quantizedComponentSum(),
-                        queryCorrections.additionalCorrection(),
-                        fieldInfo.getVectorSimilarityFunction(),
-                        centroidDp,
-                        correctiveValues[0],
-                        correctiveValues[1],
-                        quantizedComponentSum,
-                        correctiveValues[2],
-                        qcDist
-                    );
-                    scoredDocs++;
-                    knnCollector.collect(doc, score);
                 }
-                knnCollector.incVisitedCount(remaining);
             }
-
             if (scoredDocs > 0) {
                 knnCollector.incVisitedCount(scoredDocs);
             }

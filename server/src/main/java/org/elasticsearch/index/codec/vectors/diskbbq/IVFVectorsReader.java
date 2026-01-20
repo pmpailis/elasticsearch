@@ -424,19 +424,20 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // Initialize incremental filter iterator from acceptDocs
         // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
 
-        PostingVisitor[] postingVisitors = new PostingVisitor[BATCH_SIZE];
         long expectedDocs = 0;   // Total vectors in posting lists we've loaded
         long actualDocs = 0;     // Docs actually scored (after filtering)
         float unfilteredRatioVisited = (float) expectedDocs / numVectors;
         int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-        int[][] docIDs = new int[BATCH_SIZE][];
-        float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+         float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
         while (centroidIterator.hasNext()
             && (maxVectorVisited > expectedDocs || actualDocs < expectedScored || actualDocs < knnCollector.k() || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
 
             // load BATCH_SIZE postings lists
             int batchCount = 0;
             DocIdSetIterator filterIterator = acceptDocs == null ? null : ((ESAcceptDocs.DynamicFilterEsAcceptDocs)acceptDocs).reloadIterator();
+            PostingVisitor[] postingVisitors = new PostingVisitor[BATCH_SIZE];
+            int[][] docIDs = new int[BATCH_SIZE][];
+
             // while there are more centroids to explore and we haven't reached our batch_size
             // let's load another set of centroids
             while (centroidIterator.hasNext() && batchCount < BATCH_SIZE) {
