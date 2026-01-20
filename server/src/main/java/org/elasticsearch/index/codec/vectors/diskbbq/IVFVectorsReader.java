@@ -597,105 +597,12 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
 
-        /**
-         * Checks if there are more batches to read from the current posting list.
-         * Must be called after {@link #resetPostingsScorer(long)}.
-         *
-         * @return true if more batches are available
-         */
-        default boolean hasNextBatch() {
-            throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
-        }
-
-        /**
-         * Reads the next batch of document IDs (without scoring).
-         * Returns the document IDs in ascending order within the batch.
-         * Must be called after {@link #resetPostingsScorer(long)}.
-         *
-         * @param docIds array to store the document IDs (must be at least 32 elements)
-         * @return the number of document IDs read (0 if no more batches)
-         * @throws IOException if an I/O error occurs
-         */
         default int readNextBatch(int[] docIds) throws IOException {
             throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
         }
 
-        /**
-         * Returns the minimum document ID in the most recently read batch.
-         * Valid after calling {@link #readNextBatch(int[])}.
-         *
-         * @return the minimum document ID in the current batch, or Integer.MAX_VALUE if no batch loaded
-         */
-        default int getMinDocInCurrentBatch() {
-            return Integer.MAX_VALUE;
-        }
-
-        /**
-         * Scores documents from the current batch and collects them.
-         * Only scores documents whose IDs are in the provided array.
-         * Must be called after {@link #readNextBatch(int[])}.
-         *
-         * @param docID
-         * @param collector the collector to receive scored documents
-         * @throws IOException if an I/O error occurs
-         */
         default int scoreCurrentBatch(int[] docID, KnnCollector collector) throws IOException {
             throw new UnsupportedOperationException("Batch-level operations not supported by this visitor");
-        }
-
-        /**
-         * Scores ALL documents in batch using POST-FILTERING approach.
-         * Scores all docs first (bulk efficiency), then applies filter + dedup to results.
-         * Must be called after {@link #readNextBatch(int[])}.
-         *
-         * @param docIds all document IDs in the batch
-         * @param count the number of document IDs
-         * @param filterIterator incremental filter iterator for checking filter
-         * @param deduplicationFilter deduplication filter
-         * @param collector the collector to receive scored documents
-         * @return the number of documents scored (before filtering)
-         * @throws IOException if an I/O error occurs
-         */
-        default int scoreBulkWithPostFiltering(
-            int[] docIds,
-            int count,
-            IncrementalFilterIterator filterIterator,
-            IncrementalDeduplicationFilter deduplicationFilter,
-            KnnCollector collector
-        ) throws IOException {
-            throw new UnsupportedOperationException("Post-filtering batch operations not supported by this visitor");
-        }
-
-        /**
-         * Peeks at the first document ID in the posting list without advancing the reader.
-         * This is used to determine the minimum doc ID for sorting posting lists.
-         * Must be called after {@link #resetPostingsScorer(long)}.
-         *
-         * @return the first document ID in the posting list
-         * @throws IOException if an I/O error occurs
-         */
-        default int peekFirstDocId() throws IOException {
-            throw new UnsupportedOperationException("peekFirstDocId not supported by this visitor");
-        }
-
-        /**
-         * Visits all documents in the posting list, applying post-filtering.
-         * This implements the score-then-filter strategy:
-         * 1. Read and score all docs from the posting list in batches
-         * 2. Apply acceptDocs filter and deduplication to scored results
-         * 3. Collect only filtered docs
-         *
-         * Must be called after {@link #resetPostingsScorer(long)}.
-         *
-         * @param collector the collector to receive scored documents
-         * @return the number of documents actually collected (after filtering)
-         * @throws IOException if an I/O error occurs
-         */
-        default int visitFiltered(
-            KnnCollector collector,
-            IncrementalFilterIterator filterIterator
-        ) throws IOException {
-            throw new UnsupportedOperationException("visitFiltered not supported by this visitor");
         }
     }
 }
