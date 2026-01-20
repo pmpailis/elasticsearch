@@ -19,10 +19,12 @@
  */
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FilteredDocIdSetIterator;
 import org.apache.lucene.search.ScorerSupplier;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.Bits;
@@ -244,12 +246,15 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
 
     public static final class DynamicFilterEsAcceptDocs extends ESAcceptDocs {
 
-        private final DocIdSetIterator iterator;
+        private DocIdSetIterator iterator;
         private final Bits liveDocs;
         private final int approximateCost;
+        private final LeafReaderContext ctx;
+        private final Weight filterWeight;
 
-        public DynamicFilterEsAcceptDocs(ScorerSupplier supplier, Bits liveDocs) throws IOException {
-            this.iterator = supplier.get(NO_MORE_DOCS).iterator();
+        public DynamicFilterEsAcceptDocs(LeafReaderContext ctx, Weight filterWeight, ScorerSupplier supplier, Bits liveDocs) throws IOException {
+            this.ctx = ctx;
+            this.filterWeight = filterWeight;
             this.liveDocs = liveDocs;
             this.approximateCost = Math.toIntExact(supplier.cost());
         }
@@ -269,8 +274,15 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
             return null;
         }
 
+        private void refreshIteratorIfNeeded() throws IOException {
+        if(iterator == null){
+            iterator = reloadIterator();
+        }
+    }
+
         @Override
         public DocIdSetIterator iterator() throws IOException {
+            refreshIteratorIfNeeded();
             return liveDocs == null ? iterator : new FilteredDocIdSetIterator(iterator) {
                 @Override
                 protected boolean match(int doc) {
@@ -282,6 +294,10 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         @Override
         public int cost() throws IOException {
             return 0;
+        }
+
+        public DocIdSetIterator reloadIterator() throws IOException {
+            return filterWeight.scorer(ctx).iterator();
         }
     }
 }
