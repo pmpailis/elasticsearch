@@ -841,6 +841,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             if (currentBatchSize == 0) {
                 return 0;
             }
+            // Seek to the start of the quantized data for this batch
+            indexInput.seek(currentBatchDataPos);
+            
             int scoredDocs = 0;
             quantizeQueryIfNecessary();
             for (int i = 0; i < currentBatchSize; i++) {
@@ -869,7 +872,14 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     collectBulk(knnCollector, scores);
                 }
+            } else if (currentBatchSize == BULK_SIZE) {
+                // Full batch but low scoredDocs - data is in bulk format, use scoreIndividually
+                maxScore = scoreIndividually(currentBatchSize);
+                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                    collectBulk(knnCollector, scores);
+                }
             } else {
+                // Tail batch - data is in interleaved format
                 for (int j = 0; j < currentBatchSize; j++) {
                     int doc = docIdsScratch[j];
                     if (doc == -1) {
