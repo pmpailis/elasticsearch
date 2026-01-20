@@ -800,6 +800,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 return 0;
             }
 
+            // Position at the start of the next batch
+            indexInput.seek(slicePos);
+
+            // Calculate how many docs to read in this batch
             int toRead = Math.min(BULK_SIZE, vectors - vectorsRead);
             if (docIds == null) {
                 docIds = new int[toRead];
@@ -814,6 +818,21 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             // Store batch size and update counters
             currentBatchSize = toRead;
             vectorsRead += toRead;
+
+            // the quantized vectors and corrections are still in the file
+            // Save the position where quantized data starts for this batch
+            currentBatchDataPos = indexInput.getFilePointer();
+
+            // Calculate the size of the quantized data for this batch
+            long quantizedDataSize = (long) toRead * quantizedVectorByteSize + // quantized vectors
+                (long) Float.BYTES * toRead + // correctionsLower
+                (long) Float.BYTES * toRead + // correctionsUpper
+                (long) Short.BYTES * toRead + // correctionsSum
+                (long) Float.BYTES * toRead; // correctionsAdd
+
+            // Position for next batch will be after current quantized data
+            slicePos = currentBatchDataPos + quantizedDataSize;
+
             return toRead;
         }
 
@@ -836,7 +855,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 return scoredDocs;
             }
             float maxScore;
-            if (scoredDocs >= BULK_SIZE / 2) {
+            if (currentBatchSize == BULK_SIZE && scoredDocs >= BULK_SIZE / 2) {
                 maxScore = osqVectorsScorer.scoreBulk(
                     quantizedQueryScratch,
                     queryCorrections.lowerInterval(),

@@ -434,7 +434,10 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
             // load BATCH_SIZE postings lists
             int batchCount = 0;
-            DocIdSetIterator filterIterator = acceptDocs == null ? null : ((ESAcceptDocs.DynamicFilterEsAcceptDocs)acceptDocs).reloadIterator();
+            DocIdSetIterator filterIterator = null;
+            if(acceptDocs instanceof ESAcceptDocs.DynamicFilterEsAcceptDocs) {
+                filterIterator = ((ESAcceptDocs.DynamicFilterEsAcceptDocs) acceptDocs).reloadIterator();
+            }
             PostingVisitor[] postingVisitors = new PostingVisitor[BATCH_SIZE];
             int[][] docIDs = new int[BATCH_SIZE][];
 
