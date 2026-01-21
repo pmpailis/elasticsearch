@@ -52,6 +52,7 @@ import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.search.DocValueFormat;
+import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.security.Timestamp;
@@ -66,6 +67,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAccumulator;
 
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
+import static org.elasticsearch.common.lucene.Lucene.EMPTY_TOP_DOCS;
 
 /**
  * This query finds the nearest centroids and creates a CentroidQuery for each, then
@@ -198,8 +200,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             : null;
 
         // calculate number of centroids to initially explore
-        var oversample = filterSelectivity > 0 ? (1 + (1 - filterSelectivity)) : 1;
-        int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * oversample) / clusterSize));
+        filterSelectivity = filter != null ? (1 + (1 - filterSelectivity)) : 1;
+        int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * filterSelectivity) / clusterSize));
 //        LogManager.getLogger("foo").error("centroids to explore: " + numCentroids);
         // or each leaf, find top centroids and create CentroidQueries
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
@@ -227,7 +229,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
             boolBuilder.add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER);
             ivfQuery = boolBuilder.build();
         }
-        TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, Integer.MAX_VALUE);
+        TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, (int) maxVectorVisited);
         TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
 //        LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);

@@ -112,9 +112,10 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
     @Override
     public void profile(QueryProfiler queryProfiler) {
         if (innerQuery instanceof QueryProfilerProvider queryProfilerProvider) {
-            queryProfilerProvider.profile(queryProfiler);
+            if (false == innerQuery instanceof CandidateIVFKnnFloatVectorQuery) {
+                queryProfilerProvider.profile(queryProfiler);
+            }
         }
-
         queryProfiler.addVectorOpsCount(vectorOperations);
     }
 
@@ -172,17 +173,12 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
 
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
-            // Rewrite the inner query - this triggers the search and sets vectorOpsCount
-            // Note: totalVectorsVisited is now shared across all instances during rewrite
             Query rewrittenInner = searcher.rewrite(innerQuery);
-            
-            // Extract vectorOpsCount - use getTotalVectorsVisited() which is shared across rewrites
             if (innerQuery instanceof CandidateIVFKnnFloatVectorQuery candidateQuery) {
                 vectorOperations = candidateQuery.getTotalVectorsVisited();
             } else if (innerQuery instanceof AbstractIVFKnnVectorQuery ivfQuery) {
                 vectorOperations = ivfQuery.vectorOpsCount;
             }
-            
             var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, rewrittenInner);
             var topDocs = searcher.search(rescoreQuery, k);
             return new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
@@ -219,10 +215,8 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
             final TopDocs topDocs;
-            // Retrieve top `rescoreK` documents from the inner query
             topDocs = searcher.search(innerQuery, rescoreK);
-            
-            // Extract vectorOpsCount - use getTotalVectorsVisited() which is shared across rewrites
+
             if (innerQuery instanceof CandidateIVFKnnFloatVectorQuery candidateQuery) {
                 vectorOperations = candidateQuery.getTotalVectorsVisited();
             } else if (innerQuery instanceof AbstractIVFKnnVectorQuery ivfQuery) {

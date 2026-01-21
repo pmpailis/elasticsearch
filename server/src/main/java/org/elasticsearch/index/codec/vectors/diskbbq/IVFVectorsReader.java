@@ -488,6 +488,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         boolean hasNext();
 
         IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException;
+
+        default void skip(int skip) throws IOException {}
     }
 
     public interface PostingVisitor {

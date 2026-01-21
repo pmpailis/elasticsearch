@@ -24,12 +24,15 @@ import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.Bits;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class IVFCentroidQuery extends Query {
@@ -232,13 +235,12 @@ public class IVFCentroidQuery extends Query {
 
             private final int[] docIdsCache = new int[BATCH_SIZE];
             private final float[] scoresCache = new float[BATCH_SIZE];
-            private int cacheStart = 0;
+//            private int cacheStart = 0;
             private int cacheSize = 0;
             private int position = -1;
             private final float centroidScore;
             private int currentDoc = -1;
             private final int ordinal;
-            private int targetDoc = -1;
             private boolean currentBatchScored = false;
 
             PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) throws IOException {
@@ -247,7 +249,7 @@ public class IVFCentroidQuery extends Query {
                 this.totalVectorsVisited = totalVectorsVisited;
                 this.centroidScore = centroidScore;
                 this.estimatedCost = postingVisitor.cost();
-                nextDoc();
+//                nextDoc();
             }
 
             @Override
@@ -260,51 +262,37 @@ public class IVFCentroidQuery extends Query {
                 position++;
 
                 // Check if we need to load next batch
-                if (position >= cacheStart + cacheSize) {
+                if (position >= cacheSize) {
                     // Load next batch
-                    cacheStart = position;
                     cacheSize = postingVisitor.readDocIds(BATCH_SIZE, docIdsCache);
                     if (cacheSize == 0) {
                         currentDoc = NO_MORE_DOCS;
                         return NO_MORE_DOCS;
                     }
-                    boolean found = false;
-                    boolean shouldSkip = false;
-                    if (targetDoc >= 0) {
-                        for (int i = 0; i < cacheSize; i++) {
-                            if (targetDoc == docIdsCache[i]) {
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if(docIdsCache[cacheSize - 1] < targetDoc) {
-                        shouldSkip = true;
-                    }
-                    if (targetDoc < 0 || found || (false == shouldSkip)) {
-                        postingVisitor.scoreBulk(scoresCache);
-                        // otherwise skip bytes
-
-                        // Track vectors scored for this batch
-                        if (totalVectorsVisited != null) {
-                            totalVectorsVisited.addAndGet(cacheSize);
-                        }
-                    } else {
-                        postingVisitor.skipBytes(cacheSize);
+                    position = 0;
+                    currentBatchScored = false;
+                    // Track vectors scored for this batch
+                    if (totalVectorsVisited != null) {
+                        totalVectorsVisited.addAndGet(cacheSize);
                     }
                 }
-                currentDoc = docIdsCache[position - cacheStart];
+                currentDoc = docIdsCache[position];
                 return currentDoc;
             }
 
             @Override
             public int advance(int target) throws IOException {
-                targetDoc = target;
                 int doc = docID();
                 while (doc < target) {
+                    if (target > docIdsCache[cacheSize - 1]) {
+                        //skip entire batch
+                        position = cacheSize;
+                        if (false == currentBatchScored) {
+                            postingVisitor.skipBytes(cacheSize);
+                        }
+                    }
                     doc = nextDoc();
                 }
-                targetDoc = -1;
                 return doc;
             }
 
@@ -315,10 +303,14 @@ public class IVFCentroidQuery extends Query {
 
             @Override
             float scoreCurrentDoc() throws IOException {
-                if (position < cacheStart || position >= cacheStart + cacheSize) {
+                if (position >= cacheSize) {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
-                return scoresCache[position - cacheStart];
+                if(false == currentBatchScored){
+                    postingVisitor.scoreBulk(scoresCache);
+                    currentBatchScored = true;
+                }
+                return scoresCache[position];
             }
 
             @Override
@@ -326,9 +318,9 @@ public class IVFCentroidQuery extends Query {
                 if (upTo == -1 || upTo == NO_MORE_DOCS) {
                     return Float.POSITIVE_INFINITY;
                 }
-                assert docIdsCache[position - cacheStart] == upTo;
-                float maxScore = 0;
-                for (int i = 0; i <= position - cacheStart; i++) {
+                assert docIdsCache[position] == upTo;
+                float maxScore = Float.NEGATIVE_INFINITY;
+                for (int i = 0; i <= position; i++) {
                     if (scoresCache[i] > maxScore) {
                         maxScore = scoresCache[i];
                     }

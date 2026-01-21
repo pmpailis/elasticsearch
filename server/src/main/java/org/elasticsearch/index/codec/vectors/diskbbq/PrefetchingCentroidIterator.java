@@ -110,4 +110,11 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
 
         return result;
     }
+
+    @Override
+    public void skip(int toSkip) throws IOException {
+        while(delegate.hasNext() && toSkip-- > 0) {
+            delegate.nextCentroidMeta();
+        }
+    }
 }
