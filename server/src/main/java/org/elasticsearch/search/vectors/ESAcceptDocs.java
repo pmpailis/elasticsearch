@@ -297,7 +297,8 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         }
 
         public DocIdSetIterator reloadIterator() throws IOException {
-            return filterWeight.scorer(ctx).iterator();
+            iterator = filterWeight.scorer(ctx).iterator();
+            return iterator();
         }
     }
 }

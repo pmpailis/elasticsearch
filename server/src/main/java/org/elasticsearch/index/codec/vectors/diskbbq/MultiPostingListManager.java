@@ -75,8 +75,7 @@ public class MultiPostingListManager {
         if (filterIterator.docID() == doc) {
             return doc;
         }
-        filterIterator.advance(doc);
-        if (filterIterator.docID() == doc) {
+        if (doc == filterIterator.advance(doc)) {
             return doc;
         }
         return -1;
