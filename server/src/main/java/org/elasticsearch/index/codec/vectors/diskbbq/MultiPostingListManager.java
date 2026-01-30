@@ -11,6 +11,8 @@ package org.elasticsearch.index.codec.vectors.diskbbq;
 
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.KnnCollector;
+import org.apache.lucene.util.BitSet;
+import org.apache.lucene.util.BitSetIterator;
 
 import java.io.IOException;
 import java.util.NoSuchElementException;
@@ -21,6 +23,7 @@ public class MultiPostingListManager {
 
     private final IVFVectorsReader.PostingVisitor[] postingVisitors;
     private final DocIdSetIterator filterIterator;
+    private final BitSet filterBitSet;  // O(1) lookups if filter is BitSet-backed
     private final KnnCollector knnCollector;
     private int scoredDocs = 0;
 
@@ -63,6 +66,12 @@ public class MultiPostingListManager {
         this.docIDs = docIDs;
         this.postingVisitors = postingVisitors;
         this.filterIterator = filterIterator;
+        // Extract BitSet for O(1) lookups if available
+        if (filterIterator instanceof BitSetIterator bsi) {
+            this.filterBitSet = bsi.getBitSet();
+        } else {
+            this.filterBitSet = null;
+        }
         this.knnCollector = knnCollector;
         this.heap = new long[docIDs.length];
         this.heapSize = 0;
@@ -87,6 +96,12 @@ public class MultiPostingListManager {
     public int accepts(int doc) throws IOException {
         if (filterIterator == null) return doc;
 
+        // Fast path: O(1) BitSet lookup
+        if (filterBitSet != null) {
+            return filterBitSet.get(doc) ? doc : -1;
+        }
+
+        // Slow path: Iterator-based lookup with O(log n) advance
         if (filterIterator.docID() == DocIdSetIterator.NO_MORE_DOCS || filterIterator.docID() > doc) {
             return -1;
         }
