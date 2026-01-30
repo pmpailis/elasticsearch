@@ -420,7 +420,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // Strategy: Load doc IDs from multiple posting lists, filter them, then batch score
         // This separates cheap operations (doc ID loading + filtering) from expensive operations (vector scoring)
         int centroidsProcessed = 0;
-        final int BATCH_SIZE = 1000; // Number of posting lists to process in parallel
+        final int BATCH_SIZE = 100; // Number of posting lists to process in parallel
         // Initialize incremental filter iterator from acceptDocs
         // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
 
