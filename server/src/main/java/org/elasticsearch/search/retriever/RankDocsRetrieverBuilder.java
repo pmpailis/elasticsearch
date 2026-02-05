@@ -49,8 +49,9 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
         return NAME;
     }
 
-    private boolean sourceHasMinScore() {
-        return this.minScore != null || sources.stream().anyMatch(x -> x.minScore() != null);
+    @Override
+    protected boolean hasMinScore() {
+        return this.minScore != null || sources.stream().anyMatch(RetrieverBuilder::hasMinScore);
     }
 
     private boolean sourceShouldRewrite(QueryRewriteContext ctx) throws IOException {
@@ -133,7 +134,7 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
         if (searchSourceBuilder.size() < 0) {
             searchSourceBuilder.size(rankWindowSize);
         }
-        if (sourceHasMinScore()) {
+        if (hasMinScore()) {
             searchSourceBuilder.minScore(this.minScore == null ? Float.MIN_VALUE : this.minScore);
         }
 
@@ -159,7 +160,7 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
     }
 
     private boolean shouldTrackTotalHits(SearchSourceBuilder searchSourceBuilder) {
-        return searchSourceBuilder.trackTotalHitsUpTo() == null || searchSourceBuilder.trackTotalHitsUpTo() > rankDocs.get().length;
+        return searchSourceBuilder.trackTotalHitsUpTo() != null && searchSourceBuilder.trackTotalHitsUpTo() == Integer.MAX_VALUE;
     }
 
     @Override
