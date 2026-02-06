@@ -179,7 +179,7 @@ public class KnnScoreDocQueryBuilder extends AbstractQueryBuilder<KnnScoreDocQue
     protected Query doToQuery(SearchExecutionContext context) throws IOException {
         var query = new KnnScoreDocQuery(scoreDocs, context.getIndexReader());
         var fieldType = (DenseVectorFieldMapper.DenseVectorFieldType) context.getFieldType(fieldName);
-        if (fieldType.needsRescore(oversample)) {
+        if (fieldType != null && fieldType.needsRescore(oversample)) {
             int localK = k == null ? scoreDocs.length : k;
             var similarityFunction = fieldType.getSimilarity()
                 .vectorSimilarityFunction(context.indexVersionCreated(), fieldType.getElementType());
