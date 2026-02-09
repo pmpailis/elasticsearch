@@ -499,8 +499,8 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         }
         if (optimizedRescoring) {
             Float oversample = getOversampleFactor(searchExecutionContext);
-            int localK = oversample <= 1 ? k : (int) Math.ceil(k * oversample);
-            int localNumcands = oversample == 0 ? numCands : Math.max(localK, numCands);
+            int localK = (oversample == null || oversample < 1) ? k : (int) Math.ceil(k * oversample);
+            int localNumcands = (oversample == null || oversample < 1) ? numCands : Math.max(localK, numCands);
             return new KnnVectorQueryBuilder(field, queryVector, localK, localNumcands, visitPercentage, NO_RESCORING, similarity).boost(
                 boost
             ).queryName(queryName).addFilterQueries(filterQueries);
@@ -515,13 +515,16 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         if (false == optimizedRescoring) {
             return null;
         }
-        return rescoreVectorBuilder != null
-            ? rescoreVectorBuilder.oversample()
-            : getDefaultOversampleForField(field, searchExecutionContext);
+        if (rescoreVectorBuilder != null) {
+            return rescoreVectorBuilder.oversample();
+        }
+        if (searchExecutionContext == null) {
+            return null;
+        }
+        return getDefaultOversampleForField(field, searchExecutionContext);
     }
 
-    private static float getDefaultOversampleForField(String fieldName, SearchExecutionContext searchExecutionContext) {
-        assert searchExecutionContext != null : "[searchExecutionContext] should be available";
+    private static Float getDefaultOversampleForField(String fieldName, SearchExecutionContext searchExecutionContext) {
         var fieldType = searchExecutionContext.getFieldType(fieldName);
         var indexOptions = fieldType instanceof DenseVectorFieldMapper.DenseVectorFieldType
             ? ((DenseVectorFieldMapper.DenseVectorFieldType) fieldType).getIndexOptions()
@@ -529,7 +532,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         var quantizedIndexOptions = indexOptions instanceof DenseVectorFieldMapper.QuantizedIndexOptions
             ? ((DenseVectorFieldMapper.QuantizedIndexOptions) indexOptions).getRescoreVector()
             : null;
-        return quantizedIndexOptions != null ? quantizedIndexOptions.oversample() : 0f;
+        return quantizedIndexOptions != null ? quantizedIndexOptions.oversample() : null;
     }
 
     public Float getSimilarity() {
@@ -619,7 +622,9 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         if (rescoreVectorBuilder != null) {
             builder.field(RESCORE_VECTOR_FIELD.getPreferredName(), rescoreVectorBuilder);
         }
-        builder.field(OPTIMIZED_RESCORING_FIELD.getPreferredName(), optimizedRescoring);
+        if (optimizedRescoring) {
+            builder.field(OPTIMIZED_RESCORING_FIELD.getPreferredName(), optimizedRescoring);
+        }
 
         return builder;
     }

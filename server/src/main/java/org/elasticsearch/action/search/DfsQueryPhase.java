@@ -231,7 +231,7 @@ class DfsQueryPhase extends SearchPhase {
         for (int i = 0; i < source.knnSearch().size(); i++) {
             int localK = k[i] != null ? k[i] : source.knnSearch().get(i).k();
             int resultsToKeep = localK;
-            if (oversampling[i] != null && oversampling[i] > 1) {
+            if (oversampling[i] != null && oversampling[i] >= 1) {
                 resultsToKeep = (int) Math.ceil(oversampling[i] * localK);
             }
             TopDocs mergedTopDocs = TopDocs.merge(resultsToKeep, topDocsLists.get(i).toArray(new TopDocs[0]));

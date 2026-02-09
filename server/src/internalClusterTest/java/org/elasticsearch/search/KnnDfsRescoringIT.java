@@ -135,9 +135,6 @@ public class KnnDfsRescoringIT extends ESIntegTestCase {
             for (var hit : response.getHits().getHits()) {
                 topDocIds.add(hit.getId());
             }
-            for (var hit : response.getHits().getHits()) {
-                topDocIds.add(hit.getId());
-            }
             for (int i = 0; i < Math.min(k, response.getHits().getHits().length); i++) {
                 assertTrue("Expected doc " + i + " to be in top results", topDocIds.contains(String.valueOf(i)) || topDocIds.size() < k);
             }
