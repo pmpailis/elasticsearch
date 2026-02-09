@@ -219,8 +219,10 @@ class DfsQueryPhase extends SearchPhase {
                     // There are two options here:
                     // * either the value is null indicating an older node
                     // * or the value is consistent amongst all other nodes (it is picked up by the search request or the index settings)
-                    oversampling[i] = knnResults.oversample() != null ? knnResults.oversample() : null;
-                    k[i] = knnResults.k() != null ? knnResults.k() : null;
+                    if (oversampling[i] == null) {
+                        oversampling[i] = knnResults.oversample() != null ? knnResults.oversample() : null;
+                        k[i] = knnResults.k() != null ? knnResults.k() : null;
+                    }
                 }
             }
         }

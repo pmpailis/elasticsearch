@@ -352,6 +352,8 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         this.rescoreVectorBuilder = in.readOptional(RescoreVectorBuilder::new);
         if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
             this.optimizedRescoring = in.readBoolean();
+        } else {
+            this.optimizedRescoring = false;
         }
     }
 
@@ -486,7 +488,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         return this;
     }
 
-    private KnnSearchBuilder optimizedRescoring(boolean optimizedRescoring) {
+    KnnSearchBuilder optimizedRescoring(boolean optimizedRescoring) {
         this.optimizedRescoring = optimizedRescoring;
         return this;
     }

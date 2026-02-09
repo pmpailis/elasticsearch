@@ -75,6 +75,7 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         for (int i = 0; i < numFilters; i++) {
             builder.addFilterQuery(QueryBuilders.termQuery(randomAlphaOfLength(5), randomAlphaOfLength(10)));
         }
+        builder.optimizedRescoring(randomBoolean());
 
         return builder;
     }

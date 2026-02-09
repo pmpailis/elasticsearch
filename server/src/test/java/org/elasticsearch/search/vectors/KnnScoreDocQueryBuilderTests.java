@@ -70,8 +70,8 @@ public class KnnScoreDocQueryBuilderTests extends AbstractQueryTestCase<KnnScore
             randomBoolean() ? VectorData.fromFloats(randomVector(10)) : null,
             randomBoolean() ? randomFloat() : null,
             filters,
-            null,
-            10
+            randomBoolean() ? randomFloat() : null,
+            randomBoolean() ? randomIntBetween(1, 100) : null
         );
     }
 
