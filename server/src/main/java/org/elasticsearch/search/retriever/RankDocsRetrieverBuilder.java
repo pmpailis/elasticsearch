@@ -9,6 +9,7 @@
 
 package org.elasticsearch.search.retriever;
 
+import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
@@ -24,12 +25,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import static org.elasticsearch.search.internal.SearchContext.DEFAULT_TRACK_TOTAL_HITS_UP_TO;
-
 /**
  * An {@link RetrieverBuilder} that is used to retrieve documents based on the rank of the documents.
  */
 public class RankDocsRetrieverBuilder extends RetrieverBuilder {
+
+    public static final NodeFeature NESTED_RETRIEVER_MIN_SCORE_TOTAL_HITS_FIX = new NodeFeature(
+        "nested_retriever_min_score_total_hits_fix"
+    );
 
     public static final String NAME = "rank_docs_retriever";
     final int rankWindowSize;
