@@ -24,6 +24,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
+import static org.elasticsearch.search.internal.SearchContext.DEFAULT_TRACK_TOTAL_HITS_UP_TO;
+
 /**
  * An {@link RetrieverBuilder} that is used to retrieve documents based on the rank of the documents.
  */
@@ -126,7 +128,7 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
                 );
             }
         } else {
-            rankQuery = new RankDocsQueryBuilder(rankDocResults, null, false);
+            rankQuery = new RankDocsQueryBuilder(rankDocResults, null, true);
         }
         rankQuery.queryName(retrieverName());
         // ignore prefilters of this level, they were already propagated to children
@@ -160,7 +162,7 @@ public class RankDocsRetrieverBuilder extends RetrieverBuilder {
     }
 
     private boolean shouldTrackTotalHits(SearchSourceBuilder searchSourceBuilder) {
-        return searchSourceBuilder.trackTotalHitsUpTo() != null && searchSourceBuilder.trackTotalHitsUpTo() == Integer.MAX_VALUE;
+        return searchSourceBuilder.trackTotalHitsUpTo() == null || searchSourceBuilder.trackTotalHitsUpTo() > rankDocs.get().length;
     }
 
     @Override
