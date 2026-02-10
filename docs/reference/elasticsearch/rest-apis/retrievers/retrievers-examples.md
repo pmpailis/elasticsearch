@@ -1418,6 +1418,8 @@ Documents are first matched by the innermost `standard` retriever using a query_
 
 The `total_hits` value in this scenario is constrained by the `rank_window_size` parameters, as parent retrievers only have access to the top documents from their children.
 
+**Pagination behavior**: When using `from` and `size` at the top level of the search request, pagination is limited to the documents available at the outermost retriever's `rank_window_size`. In this example, even though the inner retrievers process more documents (100 for `linear`, 50 for inner `rrf`), the outer `rrf` only receives 50 documents and produces a final set of 20 documents. Therefore, `from` and `size` can only paginate through these top 20 documents.
+
 ```console
 GET /retrievers_example/_search
 {
