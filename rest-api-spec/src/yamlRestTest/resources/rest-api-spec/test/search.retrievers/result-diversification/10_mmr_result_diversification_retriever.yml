@@ -89,27 +89,27 @@ setup:
         refresh: true
         body: |
           {"index":{}}
-          {"textbody": "id": 1, "first text", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1"}
+          {"id": 1, "textbody": "first text", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1"}
           {"index":{}}
-          {"textbody": "id": 2, "second text", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2"}
+          {"id": 2, "textbody": "second text", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2"}
           {"index":{}}
-          {"textbody": "id": 3, "second text duplicate", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup"}
+          {"id": 3, "textbody": "second text duplicate", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup"}
           {"index":{}}
-          {"textbody": "id": 4, "third text", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3"}
+          {"id": 4, "textbody": "third text", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3"}
           {"index":{}}
-          {"textbody": "id": 5, "third text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_dup"}
+          {"id": 5, "textbody": "third text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_dup"}
           {"index":{}}
-          {"textbody": "id": 6, "fourth text", "textvector": [0.1, 0.9, 0.5, 0.6], "keywordfield": "test4"}
+          {"id": 6, "textbody": "fourth text", "textvector": [0.1, 0.9, 0.5, 0.6], "keywordfield": "test4"}
           {"index":{}}
-          {"textbody": "id": 7, "fifth text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test5"}
+          {"id": 7, "textbody": "fifth text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test5"}
           {"index":{}}
-          {"textbody": "id": 8, "sixth text", "textvector": [0.05, 0.05, 0.05, 0.05], "keywordfield": "test6"}
+          {"id": 8, "textbody": "sixth text", "textvector": [0.05, 0.05, 0.05, 0.05], "keywordfield": "test6"}
           {"index":{}}
-          {"textbody": "id": 9, "seventh text", "textvector": [0.1, 0.4, 0.5, 0.9], "keywordfield": "test7"}
+          {"id": 9, "textbody": "seventh text", "textvector": [0.1, 0.4, 0.5, 0.9], "keywordfield": "test7"}
           {"index":{}}
-          {"textbody": "id": 10, "eighth text", "textvector": [0.1, 0.9, 0.7, 0.9], "keywordfield": "test8"}
+          {"id": 10, "textbody": "eighth text", "textvector": [0.1, 0.9, 0.7, 0.9], "keywordfield": "test8"}
           {"index":{}}
-          {"textbody": "id": 11, "ninth text", "textvector": [0.2, 0.05, 0.2, 0.05], "keywordfield": "test9"}
+          {"id": 11, "textbody": "ninth text", "textvector": [0.2, 0.05, 0.2, 0.05], "keywordfield": "test9"}
 
   - do:
       headers:
@@ -119,21 +119,21 @@ setup:
         refresh: true
         body: |
           {"index":{}}
-          {"textbody": "id": 1, "first text other", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1"}
+          {"id": 1, "textbody": "first text other", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1"}
           {"index":{}}
-          {"textbody": "id": 2, "second text other", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2"}
+          {"id": 2, "textbody": "second text other", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2"}
           {"index":{}}
-          {"textbody": "id": 3, "second text duplicate other", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup"}
+          {"id": 3, "textbody": "second text duplicate other", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup"}
           {"index":{}}
-          {"textbody": "id": 4, "third text other", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3"}
+          {"id": 4, "textbody": "third text other", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3"}
           {"index":{}}
-          {"textbody": "id": 5, "third text duplicate other", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_dup"}
+          {"id": 5, "textbody": "third text duplicate other", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_dup"}
           {"index":{}}
-          {"textbody": "id": 6, "fourth text other", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test4"}
+          {"id": 6, "textbody": "fourth text other", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test4"}
           {"index":{}}
-          {"textbody": "id": 7, "fifth text other", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test5"}
+          {"id": 7, "textbody": "fifth text other", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test5"}
           {"index":{}}
-          {"textbody": "id": 8, "sixth text other", "textvector": [0.05, 0.05, 0.05, 0.05], "keywordfield": "test6"}
+          {"id": 8, "textbody": "sixth text other", "textvector": [0.05, 0.05, 0.05, 0.05], "keywordfield": "test6"}
 
   - do:
       headers:
@@ -143,19 +143,19 @@ setup:
         refresh: true
         body: |
           {"index":{}}
-          {"textbody": "id": 1, "first text", "textvector": "0BB8", "keywordfield": "test1"}
+          {"id": 1, "textbody": "first text", "textvector": "0BB8", "keywordfield": "test1"}
           {"index":{}}
-          {"textbody": "id": 2, "second text", "textvector": "94A2", "keywordfield": "test2"}
+          {"id": 2, "textbody": "second text", "textvector": "94A2", "keywordfield": "test2"}
           {"index":{}}
-          {"textbody": "id": 3, "second text duplicate", "textvector": "94A2", "keywordfield": "test2_dup"}
+          {"id": 3, "textbody": "second text duplicate", "textvector": "94A2", "keywordfield": "test2_dup"}
           {"index":{}}
-          {"textbody": "id": 4, "third text", "textvector": "0560", "keywordfield": "test3"}
+          {"id": 4, "textbody": "third text", "textvector": "0560", "keywordfield": "test3"}
           {"index":{}}
-          {"textbody": "id": 5, "third text duplicate", "textvector": "0560", "keywordfield": "test3_dup"}
+          {"id": 5, "textbody": "third text duplicate", "textvector": "0560", "keywordfield": "test3_dup"}
           {"index":{}}
-          {"textbody": "id": 6, "fourth text", "textvector": "2112", "keywordfield": "test4"}
+          {"id": 6, "textbody": "fourth text", "textvector": "2112", "keywordfield": "test4"}
           {"index":{}}
-          {"textbody": "id": 7, "fifth text", "textvector": "5051", "keywordfield": "test5"}
+          {"id": 7, "textbody": "fifth text", "textvector": "5051", "keywordfield": "test5"}
 
   - do:
       headers:
@@ -165,21 +165,21 @@ setup:
         refresh: true
         body: |
           {"index":{}}
-          {"textbody": "id": 1, "first text", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1", "rankfield": 1}
+          {"id": 1, "textbody": "first text", "textvector": [0.4, 0.2, 0.4, 0.4], "keywordfield": "test1", "rankfield": 1}
           {"index":{}}
-          {"textbody": "id": 2, "second text", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2", "rankfield": 2}
+          {"id": 2, "textbody": "second text", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2", "rankfield": 2}
           {"index":{}}
-          {"textbody": "id": 3, "second text duplicate", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup", "rankfield": 3}
+          {"id": 3, "textbody": "second text duplicate", "textvector": [0.4, 0.2, 0.3, 0.3], "keywordfield": "test2_dup", "rankfield": 3}
           {"index":{}}
-          {"textbody": "id": 4, "another first text", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test1_another", "rankfield": 4}
+          {"id": 4, "textbody": "another first text", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test1_another", "rankfield": 4}
           {"index":{}}
-          {"textbody": "id": 5, "another first text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test1_another_dup", "rankfield": 5}
+          {"id": 5, "textbody": "another first text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test1_another_dup", "rankfield": 5}
           {"index":{}}
-          {"textbody": "id": 6, "third and fourth first text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_4_1_dup", "rankfield": 6}
+          {"id": 6, "textbody": "third and fourth first text duplicate", "textvector": [0.4, 0.1, 0.3, 0.3], "keywordfield": "test3_4_1_dup", "rankfield": 6}
           {"index":{}}
-          {"textbody": "id": 7, "fourth text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test4", "rankfield": 7}
+          {"id": 7, "textbody": "fourth text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test4", "rankfield": 7}
           {"index":{}}
-          {"textbody": "id": 8, "more first text to add additional results text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test1_more", "rankfield": 8}
+          {"id": 8, "textbody": "more first text to add additional results text", "textvector": [0.1, 0.9, 0.5, 0.9], "keywordfield": "test1_more", "rankfield": 8}
 
 ---
 teardown:
