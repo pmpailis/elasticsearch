@@ -15,6 +15,7 @@ import org.elasticsearch.xpack.rank.rrf.RRFRetrieverBuilder;
 import java.util.Set;
 
 import static org.elasticsearch.search.retriever.CompoundRetrieverBuilder.INNER_RETRIEVERS_FILTER_SUPPORT;
+import static org.elasticsearch.search.retriever.RankDocsRetrieverBuilder.NESTED_RETRIEVER_MIN_SCORE_TOTAL_HITS_FIX;
 import static org.elasticsearch.xpack.rank.linear.L2ScoreNormalizer.LINEAR_RETRIEVER_L2_NORM;
 import static org.elasticsearch.xpack.rank.linear.LinearRetrieverBuilder.LINEAR_RETRIEVER_MINSCORE_FIX;
 import static org.elasticsearch.xpack.rank.linear.MinMaxScoreNormalizer.LINEAR_RETRIEVER_MINMAX_SINGLE_DOC_FIX;
@@ -40,7 +41,8 @@ public class RankRRFFeatures implements FeatureSpecification {
             LINEAR_RETRIEVER_L2_NORM,
             LINEAR_RETRIEVER_MINSCORE_FIX,
             LinearRetrieverBuilder.MULTI_FIELDS_QUERY_FORMAT_SUPPORT,
-            RRFRetrieverBuilder.MULTI_FIELDS_QUERY_FORMAT_SUPPORT
+            RRFRetrieverBuilder.MULTI_FIELDS_QUERY_FORMAT_SUPPORT,
+            NESTED_RETRIEVER_MIN_SCORE_TOTAL_HITS_FIX
         );
     }
 }
