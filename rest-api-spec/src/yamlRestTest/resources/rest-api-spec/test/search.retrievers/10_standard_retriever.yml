@@ -528,7 +528,7 @@ setup:
 
   - do:
       search:
-        index: test
+        index: animals
         body:
           track_total_hits: true
           fields: [ "text", "keyword" ]
