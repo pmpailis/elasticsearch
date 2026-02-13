@@ -399,6 +399,10 @@ setup:
 
 ---
 "rrf retriever with a standard retriever with no query but a sort":
+  - requires:
+      cluster_features: [ "standard_retriever.fix_for_empty_query_in_compound_retrievers" ]
+      reason: "requires fix for unspecified query in standard retrievers when combined in compound retrievers"
+
 
   - do:
       search:
@@ -437,6 +441,9 @@ setup:
 
 ---
 "rrf retriever with a standard retriever with no query and no filter":
+  - requires:
+      cluster_features: [ "standard_retriever.fix_for_empty_query_in_compound_retrievers" ]
+      reason: "requires fix for unspecified query in standard retrievers when combined in compound retrievers"
 
   - do:
       search:
