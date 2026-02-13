@@ -1162,6 +1162,7 @@ setup:
                       - linear:
                           retrievers: [
                             {
+                              normalizer: "minmax"
                               retriever: {
                                 standard: {
                                   query: {
@@ -1176,7 +1177,6 @@ setup:
                           ]
                           rank_window_size: 100
                           min_score: 0.5
-                          normalizer: "minmax"
                     rank_window_size: 100
               rank_window_size: 100
           size: 10
