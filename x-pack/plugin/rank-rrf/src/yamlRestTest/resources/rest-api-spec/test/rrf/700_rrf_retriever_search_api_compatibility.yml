@@ -1162,7 +1162,7 @@ setup:
                       - linear:
                           retrievers: [
                             {
-                              normalizer: "minmax"
+                              normalizer: "minmax",
                               retriever: {
                                 standard: {
                                   query: {
