@@ -270,27 +270,24 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
             }
             var taskExecutor = indexSearcher.getTaskExecutor();
             List<List<ScoreDoc>> perLeafResults = taskExecutor.invokeAll(tasks);
-            ScoreDoc[] arrayResults = perLeafResults.stream()
-                .filter(Objects::nonNull)
-                .flatMap(List::stream)
-                .toArray(ScoreDoc[]::new);
+            ScoreDoc[] arrayResults = perLeafResults.stream().flatMap(List::stream).toArray(ScoreDoc[]::new);
             return new KnnScoreDocQuery(arrayResults, indexSearcher.getIndexReader());
         }
 
-        private List<ScoreDoc> rescoreLeaf(IndexSearcher indexSearcher, LeafReaderContext ctx, Query rewritterQuery) throws IOException {
+        private List<ScoreDoc> rescoreLeaf(IndexSearcher indexSearcher, LeafReaderContext ctx, Query rewrittenQuery) throws IOException {
             var knnVectorValues = ctx.reader().getFloatVectorValues(fieldName);
             if (knnVectorValues == null) {
-                return null;
+                return List.of();
             }
             if (knnVectorValues.dimension() != floatTarget.length) {
                 throw new IllegalArgumentException(
                     "vector query dimension: " + floatTarget.length + " differs from field dimension: " + knnVectorValues.dimension()
                 );
             }
-            var weight = rewritterQuery.createWeight(indexSearcher, ScoreMode.COMPLETE_NO_SCORES, 1.0f);
+            var weight = rewrittenQuery.createWeight(indexSearcher, ScoreMode.COMPLETE_NO_SCORES, 1.0f);
             var scorer = weight.scorer(ctx);
             if (scorer == null) {
-                return null;
+                return List.of();
             }
             List<ScoreDoc> results = new ArrayList<>(10);
             List<CheckedRunnable<IOException>> buffer = new LinkedList<>();
@@ -354,9 +351,6 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
                 assert doc == vectorIter.docID();
                 final int docID = doc;
                 final int ord = vectorIter.index();
-                if (input != null) {
-                    input.prefetch((long) ord * vectorByteSize, vectorByteSize);
-                }
 
                 if (buffer.size() == PREFETCH_BUFFER_SIZE) {
                     for (var runnable : buffer) {
@@ -365,6 +359,9 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
                     buffer.clear();
                 }
 
+                if (input != null) {
+                    input.prefetch((long) ord * vectorByteSize, vectorByteSize);
+                }
                 buffer.add(() -> {
                     float[] vector = knnVectorValues.vectorValue(ord);
                     float score = function.compare(floatTarget, vector);
