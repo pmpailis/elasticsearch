@@ -271,6 +271,7 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
             var taskExecutor = indexSearcher.getTaskExecutor();
             List<List<ScoreDoc>> perLeafResults = taskExecutor.invokeAll(tasks);
             ScoreDoc[] arrayResults = perLeafResults.stream()
+                .filter(Objects::nonNull)
                 .flatMap(List::stream)
                 .toArray(ScoreDoc[]::new);
             return new KnnScoreDocQuery(arrayResults, indexSearcher.getIndexReader());
