@@ -254,7 +254,9 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         }
 
         int adjustedK = k;
-        if (rescoreVectorBuilder != null) {
+        boolean optimizedRescoring = randomBoolean();
+        builder.optimizedRescoring(optimizedRescoring);
+        if (optimizedRescoring && rescoreVectorBuilder != null) {
             adjustedK = Math.min((int) Math.ceil(k * rescoreVectorBuilder.oversample()), OVERSAMPLE_LIMIT);
         }
         QueryBuilder expected = new KnnVectorQueryBuilder(
