@@ -95,10 +95,7 @@ class DfsQueryPhase extends SearchPhase {
             final SearchShardTarget shardTarget = dfsResult.getSearchShardTarget();
             final int shardIndex = dfsResult.getShardIndex();
             ShardSearchRequest rewrittenRequest = rewriteShardSearchRequest(knnResults, dfsResult.getShardSearchRequest());
-            List<DfsKnnRescoreInfo> knnRescoreInfos = buildKnnRescoreInfos(
-                knnResults,
-                dfsResult.getShardSearchRequest()
-            );
+            List<DfsKnnRescoreInfo> knnRescoreInfos = buildKnnRescoreInfos(knnResults, dfsResult.getShardSearchRequest());
             QuerySearchRequest querySearchRequest = new QuerySearchRequest(
                 context.getOriginalIndices(shardIndex),
                 dfsResult.getContextId(),
@@ -355,14 +352,16 @@ class DfsQueryPhase extends SearchPhase {
             shardDocs.sort(Comparator.comparingInt(scoreDoc -> scoreDoc.doc));
             KnnSearchBuilder knnSearch = source.knnSearch().get(i);
             // Always include entry (even if empty) to maintain consistent positional ordering across shards
-            rescoreInfos.add(new DfsKnnRescoreInfo(
-                shardDocs.toArray(Lucene.EMPTY_SCORE_DOCS),
-                knnSearch.getField(),
-                knnSearch.getQueryVector(),
-                dfsKnnResults.k(),
-                knnSearch.boost(),
-                knnSearch.queryName()
-            ));
+            rescoreInfos.add(
+                new DfsKnnRescoreInfo(
+                    shardDocs.toArray(Lucene.EMPTY_SCORE_DOCS),
+                    knnSearch.getField(),
+                    knnSearch.getQueryVector(),
+                    dfsKnnResults.k(),
+                    knnSearch.boost(),
+                    knnSearch.queryName()
+                )
+            );
         }
         return rescoreInfos;
     }

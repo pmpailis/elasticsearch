@@ -61,11 +61,11 @@ import org.elasticsearch.core.RefCounted;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.TimeValue;
-import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.query.CoordinatorRewriteContextProvider;
@@ -135,9 +135,9 @@ import org.elasticsearch.search.sort.FieldSortBuilder;
 import org.elasticsearch.search.sort.MinAndMax;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.sort.SortBuilder;
-import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
+import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.tasks.CancellableTask;
 import org.elasticsearch.tasks.TaskCancelledException;
 import org.elasticsearch.telemetry.tracing.Tracer;
@@ -1173,11 +1173,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
      * For each KNN rescore request, reads float vectors from the index and computes exact similarity scores.
      * Results are attached to the QuerySearchResult as a side channel for the coordinator to merge.
      */
-    private static void executeKnnRescore(
-        SearchContext searchContext,
-        List<DfsKnnRescoreInfo> rescoreInfos,
-        QuerySearchResult queryResult
-    ) throws IOException {
+    private static void executeKnnRescore(SearchContext searchContext, List<DfsKnnRescoreInfo> rescoreInfos, QuerySearchResult queryResult)
+        throws IOException {
         var executionContext = searchContext.getSearchExecutionContext();
         IndexVersion indexVersion = executionContext.indexVersionCreated();
         var searcher = searchContext.searcher();
