@@ -103,7 +103,8 @@ public class KnnScoreDocQueryBuilderTests extends AbstractQueryTestCase<KnnScore
                 "query" : [
                   1.0,
                   2.0
-                ]
+                ],
+                "k" : 10
               }
             }""";
         assertEquals(expected, query.toString());

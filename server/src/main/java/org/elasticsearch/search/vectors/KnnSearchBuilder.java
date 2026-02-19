@@ -622,9 +622,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         if (rescoreVectorBuilder != null) {
             builder.field(RESCORE_VECTOR_FIELD.getPreferredName(), rescoreVectorBuilder);
         }
-        if (optimizedRescoring) {
-            builder.field(OPTIMIZED_RESCORING_FIELD.getPreferredName(), optimizedRescoring);
-        }
+        builder.field(OPTIMIZED_RESCORING_FIELD.getPreferredName(), optimizedRescoring);
 
         return builder;
     }

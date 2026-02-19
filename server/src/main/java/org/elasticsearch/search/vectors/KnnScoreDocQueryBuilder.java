@@ -178,6 +178,9 @@ public class KnnScoreDocQueryBuilder extends AbstractQueryBuilder<KnnScoreDocQue
     @Override
     protected Query doToQuery(SearchExecutionContext context) throws IOException {
         var query = new KnnScoreDocQuery(scoreDocs, context.getIndexReader());
+        if (fieldName == null) {
+            return query;
+        }
         var mappedFieldType = context.getFieldType(fieldName);
         if (mappedFieldType instanceof DenseVectorFieldMapper.DenseVectorFieldType fieldType && fieldType.needsRescore(oversample)) {
             int localK = k == null ? scoreDocs.length : k;
