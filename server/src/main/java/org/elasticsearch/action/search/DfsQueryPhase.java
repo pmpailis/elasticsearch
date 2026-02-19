@@ -94,8 +94,8 @@ class DfsQueryPhase extends SearchPhase {
         for (final DfsSearchResult dfsResult : searchResults) {
             final SearchShardTarget shardTarget = dfsResult.getSearchShardTarget();
             final int shardIndex = dfsResult.getShardIndex();
-            ShardSearchRequest rewrittenRequest = rewriteShardSearchRequest(knnResults, dfsResult.getShardSearchRequest());
             List<DfsKnnRescoreInfo> knnRescoreInfos = buildKnnRescoreInfos(knnResults, dfsResult.getShardSearchRequest());
+            ShardSearchRequest rewrittenRequest = rewriteShardSearchRequest(knnResults, dfsResult.getShardSearchRequest());
             QuerySearchRequest querySearchRequest = new QuerySearchRequest(
                 context.getOriginalIndices(shardIndex),
                 dfsResult.getContextId(),
