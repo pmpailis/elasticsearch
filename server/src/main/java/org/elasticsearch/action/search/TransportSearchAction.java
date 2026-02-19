@@ -1836,7 +1836,11 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
 
         Map<String, Float> concreteIndexBoosts = resolveIndexBoosts(searchRequest, projectState.cluster());
 
-        adjustSearchType(searchRequest, shardIterators.size() == 1, (feature) -> projectState.cluster().getMinTransportVersion().supports(feature));
+        adjustSearchType(
+            searchRequest,
+            shardIterators.size() == 1,
+            (feature) -> projectState.cluster().getMinTransportVersion().supports(feature)
+        );
         final DiscoveryNodes nodes = projectState.cluster().nodes();
         BiFunction<String, String, Transport.Connection> connectionLookup = buildConnectionLookup(
             searchRequest.getLocalClusterAlias(),

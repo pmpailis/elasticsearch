@@ -31,7 +31,14 @@ public class DfsKnnRescoreInfo implements Writeable {
     @Nullable
     private final String queryName;
 
-    public DfsKnnRescoreInfo(ScoreDoc[] scoreDocs, String fieldName, VectorData queryVector, int k, float boost, @Nullable String queryName) {
+    public DfsKnnRescoreInfo(
+        ScoreDoc[] scoreDocs,
+        String fieldName,
+        VectorData queryVector,
+        int k,
+        float boost,
+        @Nullable String queryName
+    ) {
         this.scoreDocs = scoreDocs;
         this.fieldName = fieldName;
         this.queryVector = queryVector;
