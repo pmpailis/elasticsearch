@@ -812,11 +812,7 @@ public class VectorSearchIT extends AbstractRollingUpgradeTestCase {
 
         List<Map<String, Object>> hits = extractValue(response, "hits.hits");
         assertThat(hits, notNullValue());
-        if (isUpgradedCluster()) {
-            assertThat(hits.size(), equalTo(6));
-        } else {
-            assertThat(hits.size(), equalTo(3));
-        }
+        assertThat(hits.size(), equalTo(3));
         assertThat(hits.getFirst().get("_id"), equalTo("1"));
     }
 

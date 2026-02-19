@@ -176,15 +176,16 @@ class DfsQueryPhase extends SearchPhase {
         SearchRequest searchRequest = context.getRequest();
         List<DfsKnnResults> globalKnnTopK = new ArrayList<>(numKnnSearches);
 
-        // Find the original k values from the knnSearch builders (accounting for optimized KNN searches only)
         List<Integer> kValues = new ArrayList<>(numKnnSearches);
         List<Float> boosts = new ArrayList<>(numKnnSearches);
         List<String> queryNames = new ArrayList<>(numKnnSearches);
         if (searchRequest.source() != null) {
             for (KnnSearchBuilder knn : searchRequest.source().knnSearch()) {
-                kValues.add(knn.k());
-                boosts.add(knn.boost());
-                queryNames.add(knn.queryName());
+                if (knn.isOptimizedRescoring()) {
+                    kValues.add(knn.k());
+                    boosts.add(knn.boost());
+                    queryNames.add(knn.queryName());
+                }
             }
         }
 

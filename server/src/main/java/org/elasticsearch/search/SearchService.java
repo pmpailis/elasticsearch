@@ -16,6 +16,7 @@ import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
@@ -1134,8 +1135,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                         if (request.knnRescoreInfos().isEmpty() == false) {
                             executeKnnRescore(searchContext, request.knnRescoreInfos(), queryResult);
                         }
-                        if (queryResult.hasSearchContext() == false && readerContext.singleSession()) {
-                            // no hits, we can release the context since there will be no fetch phase
+                        boolean hasKnnRescoreHits = queryResult.knnRescoreResults() != null
+                            && queryResult.knnRescoreResults().stream().anyMatch(t -> t.topDocs.scoreDocs.length > 0);
+                        if (queryResult.hasSearchContext() == false && hasKnnRescoreHits == false && readerContext.singleSession()) {
                             freeReaderContext(readerContext.id());
                         }
                         opsListener.onQueryPhase(searchContext, System.nanoTime() - before);
@@ -1180,6 +1182,12 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         var searcher = searchContext.searcher();
         List<TopDocsAndMaxScore> rescoreResults = new ArrayList<>(rescoreInfos.size());
         for (DfsKnnRescoreInfo rescoreInfo : rescoreInfos) {
+            if (rescoreInfo.scoreDocs().length == 0) {
+                rescoreResults.add(
+                    new TopDocsAndMaxScore(new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), Lucene.EMPTY_SCORE_DOCS), Float.NaN)
+                );
+                continue;
+            }
             var mappedFieldType = executionContext.getFieldType(rescoreInfo.fieldName());
             if (mappedFieldType instanceof DenseVectorFieldMapper.DenseVectorFieldType fieldType) {
                 VectorSimilarityFunction similarityFunction = fieldType.getSimilarity()

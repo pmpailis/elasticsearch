@@ -488,6 +488,10 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         return this;
     }
 
+    public boolean isOptimizedRescoring() {
+        return optimizedRescoring;
+    }
+
     public KnnSearchBuilder optimizedRescoring(boolean optimizedRescoring) {
         this.optimizedRescoring = optimizedRescoring;
         return this;
