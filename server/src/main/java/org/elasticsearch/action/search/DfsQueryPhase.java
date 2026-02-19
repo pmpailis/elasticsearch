@@ -18,6 +18,8 @@ import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.lucene.Lucene;
+import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
+import org.elasticsearch.index.query.MatchNoneQueryBuilder;
 import org.elasticsearch.index.query.NestedQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.SearchPhaseResult;
@@ -25,15 +27,18 @@ import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.builder.SubSearchSourceBuilder;
 import org.elasticsearch.search.dfs.AggregatedDfs;
+import org.elasticsearch.search.dfs.DfsKnnRescoreInfo;
 import org.elasticsearch.search.dfs.DfsKnnResults;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.vectors.KnnScoreDocQueryBuilder;
+import org.elasticsearch.search.vectors.KnnSearchBuilder;
 import org.elasticsearch.transport.Transport;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -89,11 +94,17 @@ class DfsQueryPhase extends SearchPhase {
         for (final DfsSearchResult dfsResult : searchResults) {
             final SearchShardTarget shardTarget = dfsResult.getSearchShardTarget();
             final int shardIndex = dfsResult.getShardIndex();
+            ShardSearchRequest rewrittenRequest = rewriteShardSearchRequest(knnResults, dfsResult.getShardSearchRequest());
+            List<DfsKnnRescoreInfo> knnRescoreInfos = buildKnnRescoreInfos(
+                knnResults,
+                dfsResult.getShardSearchRequest()
+            );
             QuerySearchRequest querySearchRequest = new QuerySearchRequest(
                 context.getOriginalIndices(shardIndex),
                 dfsResult.getContextId(),
-                rewriteShardSearchRequest(knnResults, dfsResult.getShardSearchRequest()),
-                dfs
+                rewrittenRequest,
+                dfs,
+                knnRescoreInfos
             );
             final Transport.Connection connection;
             try {
@@ -135,7 +146,122 @@ class DfsQueryPhase extends SearchPhase {
     private void onFinish(AggregatedDfs dfs) {
         context.getSearchResponseMetrics()
             .recordSearchPhaseDuration(getName(), System.nanoTime() - phaseStartTimeInNanos, context.getSearchRequestAttributes());
+        mergeKnnRescoreResultsIntoTopDocs();
         context.executeNextPhase(NAME, () -> nextPhase(dfs));
+    }
+
+    /**
+     * Merges KNN float-precision rescore results from all shards into each shard's TopDocs.
+     * For each optimized KNN search:
+     *   1. Collect float-scored TopDocs from all shards
+     *   2. Merge to global top-k
+     *   3. Add surviving docs to each shard's TopDocs (disjunctive combination with BM25)
+     */
+    private void mergeKnnRescoreResultsIntoTopDocs() {
+        List<SearchPhaseResult> results = queryResult.getAtomicArray().asList();
+        if (results.isEmpty()) {
+            return;
+        }
+        // Determine how many KNN rescore results each shard has
+        int numKnnSearches = 0;
+        for (SearchPhaseResult result : results) {
+            QuerySearchResult qsr = result.queryResult();
+            if (qsr != null && qsr.isNull() == false && qsr.knnRescoreResults() != null) {
+                numKnnSearches = qsr.knnRescoreResults().size();
+                break;
+            }
+        }
+        if (numKnnSearches == 0) {
+            return;
+        }
+
+        // Collect and merge per KNN search
+        SearchRequest searchRequest = context.getRequest();
+        List<DfsKnnResults> globalKnnTopK = new ArrayList<>(numKnnSearches);
+
+        // Find the original k values from the knnSearch builders (accounting for optimized KNN searches only)
+        List<Integer> kValues = new ArrayList<>(numKnnSearches);
+        List<Float> boosts = new ArrayList<>(numKnnSearches);
+        List<String> queryNames = new ArrayList<>(numKnnSearches);
+        if (searchRequest.source() != null) {
+            for (KnnSearchBuilder knn : searchRequest.source().knnSearch()) {
+                kValues.add(knn.k());
+                boosts.add(knn.boost());
+                queryNames.add(knn.queryName());
+            }
+        }
+
+        for (int knnIdx = 0; knnIdx < numKnnSearches; knnIdx++) {
+            List<TopDocs> perShardTopDocs = new ArrayList<>();
+            for (SearchPhaseResult result : results) {
+                QuerySearchResult qsr = result.queryResult();
+                if (qsr == null || qsr.isNull() || qsr.knnRescoreResults() == null || knnIdx >= qsr.knnRescoreResults().size()) {
+                    continue;
+                }
+                TopDocs shardTopDocs = qsr.knnRescoreResults().get(knnIdx).topDocs;
+                SearchPhaseController.setShardIndex(shardTopDocs, qsr.getShardIndex());
+                perShardTopDocs.add(shardTopDocs);
+            }
+            if (perShardTopDocs.isEmpty()) {
+                continue;
+            }
+            int k = knnIdx < kValues.size() ? kValues.get(knnIdx) : 10;
+            TopDocs merged = TopDocs.merge(k, perShardTopDocs.toArray(new TopDocs[0]));
+            globalKnnTopK.add(new DfsKnnResults(null, merged.scoreDocs, null, k));
+        }
+
+        // Inject KNN top-k docs into each shard's TopDocs
+        for (SearchPhaseResult result : results) {
+            QuerySearchResult qsr = result.queryResult();
+            if (qsr == null || qsr.isNull() || qsr.hasConsumedTopDocs()) {
+                continue;
+            }
+            TopDocsAndMaxScore existing = qsr.topDocs();
+            ScoreDoc[] bm25Docs = existing.topDocs.scoreDocs;
+            int shardIndex = qsr.getShardIndex();
+
+            // Collect all KNN docs assigned to this shard from the global top-k
+            Map<Integer, Float> knnDocScores = new HashMap<>();
+            for (int knnIdx = 0; knnIdx < globalKnnTopK.size(); knnIdx++) {
+                float boost = knnIdx < boosts.size() ? boosts.get(knnIdx) : 1.0f;
+                for (ScoreDoc sd : globalKnnTopK.get(knnIdx).scoreDocs()) {
+                    if (sd.shardIndex == shardIndex) {
+                        knnDocScores.merge(sd.doc, sd.score * boost, Float::sum);
+                    }
+                }
+            }
+
+            if (knnDocScores.isEmpty() && bm25Docs.length == 0) {
+                continue;
+            }
+
+            // Disjunctive merge: combine BM25 and KNN scores
+            Map<Integer, Float> combinedScores = new HashMap<>();
+            for (ScoreDoc sd : bm25Docs) {
+                combinedScores.put(sd.doc, sd.score);
+            }
+            for (var entry : knnDocScores.entrySet()) {
+                combinedScores.merge(entry.getKey(), entry.getValue(), Float::sum);
+            }
+
+            ScoreDoc[] combinedDocs = new ScoreDoc[combinedScores.size()];
+            int idx = 0;
+            float maxScore = Float.NEGATIVE_INFINITY;
+            for (var entry : combinedScores.entrySet()) {
+                float score = entry.getValue();
+                combinedDocs[idx++] = new ScoreDoc(entry.getKey(), score, shardIndex);
+                maxScore = Math.max(maxScore, score);
+            }
+            // Sort by score descending, then by doc ascending for tie-breaking
+            Arrays.sort(combinedDocs, (a, b) -> {
+                int cmp = Float.compare(b.score, a.score);
+                return cmp != 0 ? cmp : Integer.compare(a.doc, b.doc);
+            });
+
+            TotalHits totalHits = new TotalHits(combinedDocs.length, TotalHits.Relation.EQUAL_TO);
+            TopDocs newTopDocs = new TopDocs(totalHits, combinedDocs);
+            qsr.topDocs(new TopDocsAndMaxScore(newTopDocs, maxScore == Float.NEGATIVE_INFINITY ? Float.NaN : maxScore), null);
+        }
     }
 
     private void shardFailure(
@@ -161,8 +287,14 @@ class DfsQueryPhase extends SearchPhase {
 
         int i = 0;
         for (DfsKnnResults dfsKnnResults : knnResults) {
+            boolean optimizedRescoring = dfsKnnResults.oversample() != null;
+            if (optimizedRescoring) {
+                // KNN rescore will be handled as a separate side channel via DfsKnnRescoreInfo,
+                // not as a sub-search in the combined query
+                i++;
+                continue;
+            }
             List<ScoreDoc> scoreDocs = new ArrayList<>();
-            // identify all docs for the specific shard from the combined result set
             for (ScoreDoc scoreDoc : dfsKnnResults.scoreDocs()) {
                 if (scoreDoc.shardIndex == request.shardRequestIndex()) {
                     scoreDocs.add(scoreDoc);
@@ -185,10 +317,54 @@ class DfsQueryPhase extends SearchPhase {
             subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
             i++;
         }
+        // If all KNN searches are optimized and there are no other sub-searches,
+        // add a match_none so the query phase produces empty BM25 TopDocs
+        if (subSearchSourceBuilders.isEmpty()) {
+            subSearchSourceBuilders.add(new SubSearchSourceBuilder(new MatchNoneQueryBuilder()));
+        }
         source = source.shallowCopy().subSearches(subSearchSourceBuilders).knnSearch(List.of());
         request.source(source);
 
         return request;
+    }
+
+    /**
+     * Builds per-shard KNN rescore instructions for KNN searches using optimized rescoring.
+     * These are sent as a side channel alongside the query phase request.
+     */
+    private static List<DfsKnnRescoreInfo> buildKnnRescoreInfos(List<DfsKnnResults> knnResults, ShardSearchRequest request) {
+        if (knnResults == null) {
+            return List.of();
+        }
+        SearchSourceBuilder source = request.source();
+        if (source == null || source.knnSearch().isEmpty()) {
+            return List.of();
+        }
+        List<DfsKnnRescoreInfo> rescoreInfos = new ArrayList<>();
+        for (int i = 0; i < knnResults.size(); i++) {
+            DfsKnnResults dfsKnnResults = knnResults.get(i);
+            if (dfsKnnResults.oversample() == null) {
+                continue;
+            }
+            List<ScoreDoc> shardDocs = new ArrayList<>();
+            for (ScoreDoc scoreDoc : dfsKnnResults.scoreDocs()) {
+                if (scoreDoc.shardIndex == request.shardRequestIndex()) {
+                    shardDocs.add(scoreDoc);
+                }
+            }
+            shardDocs.sort(Comparator.comparingInt(scoreDoc -> scoreDoc.doc));
+            KnnSearchBuilder knnSearch = source.knnSearch().get(i);
+            // Always include entry (even if empty) to maintain consistent positional ordering across shards
+            rescoreInfos.add(new DfsKnnRescoreInfo(
+                shardDocs.toArray(Lucene.EMPTY_SCORE_DOCS),
+                knnSearch.getField(),
+                knnSearch.getQueryVector(),
+                dfsKnnResults.k(),
+                knnSearch.boost(),
+                knnSearch.queryName()
+            ));
+        }
+        return rescoreInfos;
     }
 
     private static List<DfsKnnResults> mergeKnnResults(SearchRequest request, List<DfsSearchResult> dfsSearchResults) {

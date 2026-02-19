@@ -12,8 +12,10 @@ package org.elasticsearch.search;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
@@ -41,6 +43,7 @@ import org.elasticsearch.common.component.Lifecycle;
 import org.elasticsearch.common.logging.LoggerMessageFormat;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
@@ -58,11 +61,13 @@ import org.elasticsearch.core.RefCounted;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.engine.Engine;
+import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.query.CoordinatorRewriteContextProvider;
 import org.elasticsearch.index.query.InnerHitContextBuilder;
 import org.elasticsearch.index.query.InnerHitsRewriteContext;
@@ -94,6 +99,7 @@ import org.elasticsearch.search.builder.PointInTimeBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.builder.SubSearchSourceBuilder;
 import org.elasticsearch.search.collapse.CollapseContext;
+import org.elasticsearch.search.dfs.DfsKnnRescoreInfo;
 import org.elasticsearch.search.dfs.DfsPhase;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
@@ -129,6 +135,7 @@ import org.elasticsearch.search.sort.FieldSortBuilder;
 import org.elasticsearch.search.sort.MinAndMax;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.sort.SortBuilder;
+import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
 import org.elasticsearch.tasks.CancellableTask;
@@ -1124,6 +1131,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                         searchContext.searcher().setAggregatedDfs(request.dfs());
                         QueryPhase.execute(searchContext);
                         queryResult = searchContext.queryResult();
+                        if (request.knnRescoreInfos().isEmpty() == false) {
+                            executeKnnRescore(searchContext, request.knnRescoreInfos(), queryResult);
+                        }
                         if (queryResult.hasSearchContext() == false && readerContext.singleSession()) {
                             // no hits, we can release the context since there will be no fetch phase
                             freeReaderContext(readerContext.id());
@@ -1156,6 +1166,46 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 onlinePrewarmingService.prewarm(readerContext.indexShard());
             }
         }));
+    }
+
+    /**
+     * Executes deferred KNN float-vector rescoring during the query phase.
+     * For each KNN rescore request, reads float vectors from the index and computes exact similarity scores.
+     * Results are attached to the QuerySearchResult as a side channel for the coordinator to merge.
+     */
+    private static void executeKnnRescore(
+        SearchContext searchContext,
+        List<DfsKnnRescoreInfo> rescoreInfos,
+        QuerySearchResult queryResult
+    ) throws IOException {
+        var executionContext = searchContext.getSearchExecutionContext();
+        IndexVersion indexVersion = executionContext.indexVersionCreated();
+        var searcher = searchContext.searcher();
+        List<TopDocsAndMaxScore> rescoreResults = new ArrayList<>(rescoreInfos.size());
+        for (DfsKnnRescoreInfo rescoreInfo : rescoreInfos) {
+            var mappedFieldType = executionContext.getFieldType(rescoreInfo.fieldName());
+            if (mappedFieldType instanceof DenseVectorFieldMapper.DenseVectorFieldType fieldType) {
+                VectorSimilarityFunction similarityFunction = fieldType.getSimilarity()
+                    .vectorSimilarityFunction(indexVersion, fieldType.getElementType());
+                float[] floatTarget = rescoreInfo.queryVector().asFloatVector();
+                TopDocs topDocs = RescoreKnnVectorQuery.rescoreDocs(
+                    searcher,
+                    rescoreInfo.scoreDocs(),
+                    rescoreInfo.fieldName(),
+                    floatTarget,
+                    similarityFunction
+                );
+                float maxScore = Float.NaN;
+                if (topDocs.scoreDocs.length > 0) {
+                    maxScore = topDocs.scoreDocs[0].score;
+                    for (ScoreDoc sd : topDocs.scoreDocs) {
+                        maxScore = Math.max(maxScore, sd.score);
+                    }
+                }
+                rescoreResults.add(new TopDocsAndMaxScore(topDocs, maxScore));
+            }
+        }
+        queryResult.knnRescoreResults(rescoreResults);
     }
 
     private Executor getExecutor(IndexShard indexShard) {

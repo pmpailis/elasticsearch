@@ -38,9 +38,12 @@ import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.transport.LeakTracker;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.elasticsearch.common.lucene.Lucene.readTopDocs;
 import static org.elasticsearch.common.lucene.Lucene.writeTopDocs;
+import static org.elasticsearch.search.vectors.KnnScoreDocQueryBuilder.KNN_DFS_RESCORING_TOP_K_ON_SHARDS;
 
 public final class QuerySearchResult extends SearchPhaseResult {
     private static final TransportVersion TIMESTAMP_RANGE_TELEMETRY = TransportVersion.fromName("timestamp_range_telemetry");
@@ -81,6 +84,8 @@ public final class QuerySearchResult extends SearchPhaseResult {
 
     @Nullable
     private Long timeRangeFilterFromMillis;
+
+    private List<TopDocsAndMaxScore> knnRescoreResults;
 
     public QuerySearchResult() {
         this(false);
@@ -459,6 +464,15 @@ public final class QuerySearchResult extends SearchPhaseResult {
             if (in.getTransportVersion().supports(TIMESTAMP_RANGE_TELEMETRY)) {
                 timeRangeFilterFromMillis = in.readOptionalLong();
             }
+            if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+                int numKnnRescoreResults = in.readVInt();
+                if (numKnnRescoreResults > 0) {
+                    knnRescoreResults = new ArrayList<>(numKnnRescoreResults);
+                    for (int i = 0; i < numKnnRescoreResults; i++) {
+                        knnRescoreResults.add(readTopDocs(in));
+                    }
+                }
+            }
             success = true;
         } finally {
             if (success == false) {
@@ -527,6 +541,16 @@ public final class QuerySearchResult extends SearchPhaseResult {
         if (out.getTransportVersion().supports(TIMESTAMP_RANGE_TELEMETRY)) {
             out.writeOptionalLong(timeRangeFilterFromMillis);
         }
+        if (out.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+            if (knnRescoreResults != null) {
+                out.writeVInt(knnRescoreResults.size());
+                for (TopDocsAndMaxScore topDocs : knnRescoreResults) {
+                    writeTopDocs(out, topDocs);
+                }
+            } else {
+                out.writeVInt(0);
+            }
+        }
     }
 
     @Nullable
@@ -536,6 +560,15 @@ public final class QuerySearchResult extends SearchPhaseResult {
 
     public float getMaxScore() {
         return maxScore;
+    }
+
+    public void knnRescoreResults(List<TopDocsAndMaxScore> knnRescoreResults) {
+        this.knnRescoreResults = knnRescoreResults;
+    }
+
+    @Nullable
+    public List<TopDocsAndMaxScore> knnRescoreResults() {
+        return knnRescoreResults;
     }
 
     @Override

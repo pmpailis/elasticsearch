@@ -106,6 +106,24 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
         return innerQuery;
     }
 
+    /**
+     * Rescores a set of documents with float-precision vectors and returns all results.
+     * Used by the query phase to execute deferred KNN rescoring as a side channel.
+     *
+     * @return TopDocs with float-precision scores for all input documents
+     */
+    public static TopDocs rescoreDocs(
+        IndexSearcher searcher,
+        ScoreDoc[] scoreDocs,
+        String fieldName,
+        float[] floatTarget,
+        VectorSimilarityFunction vectorSimilarityFunction
+    ) throws IOException {
+        var innerQuery = new KnnScoreDocQuery(scoreDocs, searcher.getIndexReader());
+        var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, innerQuery);
+        return searcher.search(rescoreQuery, scoreDocs.length);
+    }
+
     public int k() {
         return k;
     }

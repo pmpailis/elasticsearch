@@ -338,6 +338,7 @@ public class DfsQueryPhaseTests extends ESTestCase {
     }
 
     public void testRewriteShardSearchRequestWithRank() {
+        // With optimized rescoring (oversample != null), KNN searches are NOT added as sub-searches
         List<DfsKnnResults> dkrs = List.of(
             new DfsKnnResults(
                 null,
@@ -370,14 +371,55 @@ public class DfsQueryPhaseTests extends ESTestCase {
 
         dqp.rewriteShardSearchRequest(dkrs, ssr);
 
+        // Optimized path: only BM25 remains as sub-search, KNN is handled via side channel
+        assertEquals(1, ssr.source().subSearches().size());
+        assertEquals(bm25, ssr.source().subSearches().get(0).getQueryBuilder());
+        assertTrue(ssr.source().knnSearch().isEmpty());
+        mspc.results.close();
+    }
+
+    public void testRewriteShardSearchRequestNonOptimized() {
+        // Without optimized rescoring (oversample == null), KNN searches are added as sub-searches (legacy behavior)
+        List<DfsKnnResults> dkrs = List.of(
+            new DfsKnnResults(
+                null,
+                new ScoreDoc[] { new ScoreDoc(1, 3.0f, 1), new ScoreDoc(4, 1.5f, 1), new ScoreDoc(7, 0.1f, 2) },
+                null,
+                null
+            ),
+            new DfsKnnResults(
+                null,
+                new ScoreDoc[] { new ScoreDoc(2, 1.75f, 2), new ScoreDoc(1, 2.0f, 1), new ScoreDoc(3, 0.25f, 2), new ScoreDoc(6, 2.5f, 2) },
+                null,
+                null
+            )
+        );
+        MockSearchPhaseContext mspc = new MockSearchPhaseContext(2);
+        mspc.searchTransport = new SearchTransportService(null, null, null);
+        DfsQueryPhase dqp = new DfsQueryPhase(mock(QueryPhaseResultConsumer.class), null, mspc);
+
+        QueryBuilder bm25 = new TermQueryBuilder("field", "term");
+        SearchSourceBuilder ssb = new SearchSourceBuilder().query(bm25)
+            .knnSearch(
+                List.of(
+                    new KnnSearchBuilder("vector", new float[] { 0.0f }, 10, 100, 10f, null, null),
+                    new KnnSearchBuilder("vector2", new float[] { 0.0f }, 10, 100, 10f, null, null)
+                )
+            )
+            .rankBuilder(new TestRankBuilder(100));
+        SearchRequest sr = new SearchRequest().allowPartialSearchResults(true).source(ssb);
+        ShardSearchRequest ssr = new ShardSearchRequest(null, sr, new ShardId("test", "testuuid", 1), 1, 1, null, 1.0f, 0, null);
+
+        dqp.rewriteShardSearchRequest(dkrs, ssr);
+
         KnnScoreDocQueryBuilder ksdqb0 = new KnnScoreDocQueryBuilder(
             new ScoreDoc[] { new ScoreDoc(1, 3.0f, 1), new ScoreDoc(4, 1.5f, 1) },
             "vector",
             VectorData.fromFloats(new float[] { 0.0f }),
             null,
             List.of(),
-            1f,
-            10
+            null,
+            null
         );
         KnnScoreDocQueryBuilder ksdqb1 = new KnnScoreDocQueryBuilder(
             new ScoreDoc[] { new ScoreDoc(1, 2.0f, 1) },
@@ -385,8 +427,8 @@ public class DfsQueryPhaseTests extends ESTestCase {
             VectorData.fromFloats(new float[] { 0.0f }),
             null,
             List.of(),
-            1f,
-            10
+            null,
+            null
         );
         assertEquals(
             List.of(bm25, ksdqb0, ksdqb1),
