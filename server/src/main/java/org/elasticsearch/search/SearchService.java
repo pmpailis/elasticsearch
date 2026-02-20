@@ -1208,6 +1208,14 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                     }
                 }
                 rescoreResults.add(new TopDocsAndMaxScore(topDocs, maxScore));
+            } else {
+                // Keep list size aligned with rescoreInfos so coordinator can index by position
+                rescoreResults.add(
+                    new TopDocsAndMaxScore(
+                        new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), Lucene.EMPTY_SCORE_DOCS),
+                        Float.NaN
+                    )
+                );
             }
         }
         queryResult.knnRescoreResults(rescoreResults);
