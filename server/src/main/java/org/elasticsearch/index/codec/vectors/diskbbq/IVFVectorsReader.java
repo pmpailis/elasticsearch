@@ -33,6 +33,7 @@ import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
+import org.elasticsearch.search.vectors.KnnSearchProfileData;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -298,9 +299,17 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             // clip so we visit at least one vector
             visitRatio = estimated / numVectors;
         }
+        final KnnSearchProfileData profileData;
+        if (knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy ivfStrategy && ivfStrategy.getProfileData() != null) {
+            profileData = ivfStrategy.getProfileData();
+        } else {
+            profileData = null;
+        }
+
         // we account for soar vectors here. We can potentially visit a vector twice so we multiply by 2 here.
         long maxVectorVisited = (long) (2.0 * visitRatio * numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
+        long centroidIteratorStart = System.nanoTime();
         CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
             fieldInfo,
             entry.numCentroids,
@@ -312,36 +321,58 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             values,
             visitRatio
         );
+        if (profileData != null) {
+            profileData.addCentroidIteratorCreateTimeNs(System.nanoTime() - centroidIteratorStart);
+        }
         Bits acceptDocsBits = acceptDocs.bits();
         PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits, entry.centroidSlice(ivfCentroids));
         long expectedDocs = 0;
         long actualDocs = 0;
-        // initially we visit only the "centroids to search"
-        // Note, numCollected is doing the bare minimum here.
-        // TODO do we need to handle nested doc counts similarly to how we handle
-        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
+        int centroidsEvaluated = 0;
+        long postingVisitTimeNs = 0;
+        long resetScorerTimeNs = 0;
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
             PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            long resetStart = System.nanoTime();
             expectedDocs += scorer.resetPostingsScorer(postingMetadata);
+            resetScorerTimeNs += System.nanoTime() - resetStart;
+            long visitStart = System.nanoTime();
             actualDocs += scorer.visit(knnCollector);
+            postingVisitTimeNs += System.nanoTime() - visitStart;
+            centroidsEvaluated++;
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
             }
         }
         if (acceptDocsBits != null) {
-            // TODO Adjust the value here when using centroid filtering
             float unfilteredRatioVisited = (float) expectedDocs / numVectors;
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
                 PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+                long resetStart = System.nanoTime();
                 scorer.resetPostingsScorer(postingMetadata);
+                resetScorerTimeNs += System.nanoTime() - resetStart;
+                long visitStart = System.nanoTime();
                 actualDocs += scorer.visit(knnCollector);
+                postingVisitTimeNs += System.nanoTime() - visitStart;
+                centroidsEvaluated++;
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
             }
+        }
+        if (profileData != null) {
+            profileData.addCentroidsEvaluated(centroidsEvaluated);
+            profileData.addPostingVisitTimeNs(postingVisitTimeNs);
+            profileData.addResetPostingsScorerTimeNs(resetScorerTimeNs);
+            profileData.addPostingsScored(actualDocs);
+            profileData.addExpectedDocs(expectedDocs);
+            profileData.addDocIdReadTimeNs(scorer.getDocIdReadTimeNs());
+            profileData.addScoringTimeNs(scorer.getScoringTimeNs());
+            profileData.addQueryQuantizationTimeNs(scorer.getQueryQuantizationTimeNs());
+            profileData.addCentroidReadTimeNs(scorer.getCentroidReadTimeNs());
         }
     }
 
@@ -473,5 +504,25 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /** Accumulated time reading and decoding doc IDs */
+        default long getDocIdReadTimeNs() {
+            return 0;
+        }
+
+        /** Accumulated time in quantized scoring (SIMD bulk + individual) */
+        default long getScoringTimeNs() {
+            return 0;
+        }
+
+        /** Accumulated time quantizing the query vector against each centroid */
+        default long getQueryQuantizationTimeNs() {
+            return 0;
+        }
+
+        /** Accumulated time reading centroid vectors in resetPostingsScorer */
+        default long getCentroidReadTimeNs() {
+            return 0;
+        }
     }
 }

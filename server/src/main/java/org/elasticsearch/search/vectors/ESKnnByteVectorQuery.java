@@ -9,18 +9,25 @@
 
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnByteVectorQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
+import org.apache.lucene.search.TimeLimitingKnnCollectorManager;
 import org.elasticsearch.search.profile.query.QueryProfiler;
+
+import java.io.IOException;
 
 public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryProfilerProvider {
     private final int kParam;
     private long vectorOpsCount;
     private final boolean earlyTermination;
+    private KnnSearchProfileData profileData;
 
     public ESKnnByteVectorQuery(String field, byte[] target, int k, int numCands, Query filter, KnnSearchStrategy strategy) {
         this(field, target, k, numCands, filter, strategy, false);
@@ -41,9 +48,38 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     }
 
     @Override
+    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+        profileData = new KnnSearchProfileData();
+        profileData.setAlgorithmType("hnsw");
+        profileData.setHnswQueryParams(kParam, getK(), getFilter() != null);
+        long start = System.nanoTime();
+        Query result = super.rewrite(indexSearcher);
+        profileData.setTotalSearchTimeNs(System.nanoTime() - start);
+        return result;
+    }
+
+    @Override
+    protected TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, TimeLimitingKnnCollectorManager cm) throws IOException {
+        long start = System.nanoTime();
+        TopDocs result = super.searchLeaf(ctx, filterWeight, cm);
+        if (profileData != null) {
+            profileData.addHnswLeafSearch(
+                System.nanoTime() - start,
+                result.totalHits.value(),
+                result.scoreDocs.length
+            );
+        }
+        return result;
+    }
+
+    @Override
     protected TopDocs mergeLeafResults(TopDocs[] perLeafResults) {
-        // if k param is set, we get only top k results from each shard
+        long start = System.nanoTime();
         TopDocs topK = TopDocs.merge(kParam, perLeafResults);
+        if (profileData != null) {
+            profileData.setMergeTimeNs(System.nanoTime() - start);
+            profileData.setEarlyTerminated(topK.totalHits.relation() == TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        }
         vectorOpsCount = topK.totalHits.value();
         return topK;
     }
@@ -51,6 +87,9 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     @Override
     public void profile(QueryProfiler queryProfiler) {
         queryProfiler.addVectorOpsCount(vectorOpsCount);
+        if (profileData != null) {
+            queryProfiler.setKnnProfileBreakdown(profileData.toMap());
+        }
     }
 
     public Integer kParam() {

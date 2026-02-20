@@ -660,6 +660,7 @@ public enum SearchResponseUtils {
         return PROFILE_DFS_PHASE_RESULT_PARSER.parse(parser, null);
     }
 
+    @SuppressWarnings("unchecked")
     public static QueryProfileShardResult parseQueryProfileShardResult(XContentParser parser) throws IOException {
         XContentParser.Token token = parser.currentToken();
         ensureExpectedToken(XContentParser.Token.START_OBJECT, token, parser);
@@ -668,6 +669,7 @@ public enum SearchResponseUtils {
         long rewriteTime = 0;
         Long vectorOperationsCount = null;
         CollectorResult collector = null;
+        Map<String, Object> knnProfileBreakdown = null;
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 currentFieldName = parser.currentName();
@@ -691,11 +693,17 @@ public enum SearchResponseUtils {
                 } else {
                     parser.skipChildren();
                 }
+            } else if (token == XContentParser.Token.START_OBJECT) {
+                if (QueryProfileShardResult.KNN_PROFILE.equals(currentFieldName)) {
+                    knnProfileBreakdown = parser.map();
+                } else {
+                    parser.skipChildren();
+                }
             } else {
                 parser.skipChildren();
             }
         }
-        return new QueryProfileShardResult(queryProfileResults, rewriteTime, collector, vectorOperationsCount);
+        return new QueryProfileShardResult(queryProfileResults, rewriteTime, collector, vectorOperationsCount, knnProfileBreakdown);
     }
 
     public static SearchHits parseSearchHits(XContentParser parser) throws IOException {

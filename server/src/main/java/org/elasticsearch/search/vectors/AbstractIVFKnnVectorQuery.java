@@ -29,6 +29,7 @@ import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TaskExecutor;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopDocsCollector;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
@@ -56,6 +57,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected final Query filter;
     protected int vectorOpsCount;
     protected boolean doPrecondition;
+    protected KnnSearchProfileData profileData;
 
     protected AbstractIVFKnnVectorQuery(String field, float visitRatio, int k, int numCands, Query filter, boolean doPrecondition) {
         if (k < 1) {
@@ -100,9 +102,13 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     @Override
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+        long rewriteStartNs = System.nanoTime();
         vectorOpsCount = 0;
+        profileData = new KnnSearchProfileData();
+        profileData.setAlgorithmType("ivf");
         IndexReader reader = indexSearcher.getIndexReader();
 
+        long filterStartNs = System.nanoTime();
         final Weight filterWeight;
         if (filter != null) {
             BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
@@ -116,6 +122,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         } else {
             filterWeight = null;
         }
+        profileData.setFilterTimeNs(System.nanoTime() - filterStartNs);
 
         // we request numCands as we are using it as an approximation measure
         // we need to ensure we are getting at least 2*k results to ensure we cover overspill duplicates
@@ -145,6 +152,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         } else {
             visitRatio = providedVisitRatio;
         }
+        profileData.setVisitRatioUsed(visitRatio);
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
@@ -155,9 +163,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        // Merge sort the results
+        long mergeStartNs = System.nanoTime();
         TopDocs topK = TopDocs.merge(k, perLeafResults);
+        profileData.setMergeTimeNs(System.nanoTime() - mergeStartNs);
+
         vectorOpsCount = (int) topK.totalHits.value();
+        profileData.setEarlyTerminated(topK.totalHits.relation() == TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        profileData.setTotalSearchTimeNs(System.nanoTime() - rewriteStartNs);
+
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
@@ -233,6 +246,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     @Override
     public final void profile(QueryProfiler queryProfiler) {
         queryProfiler.addVectorOpsCount(vectorOpsCount);
+        if (profileData != null) {
+            queryProfiler.setKnnProfileBreakdown(profileData.toMap());
+        }
     }
 
     static class IVFCollectorManager implements KnnCollectorManager {

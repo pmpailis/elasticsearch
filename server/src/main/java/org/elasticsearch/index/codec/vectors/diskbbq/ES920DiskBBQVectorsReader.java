@@ -441,6 +441,12 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
         final float[] correctiveValues = new float[3];
         final long quantizedVectorByteSize;
 
+        // profiling accumulators
+        long profileDocIdReadTimeNs;
+        long profileScoringTimeNs;
+        long profileQueryQuantizationTimeNs;
+        long profileCentroidReadTimeNs;
+
         MemorySegmentPostingsVisitor(
             QueryQuantizer queryQuantizer,
             IndexInput indexInput,
@@ -462,6 +468,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
 
         @Override
         public int resetPostingsScorer(PostingMetadata postingMetadata) throws IOException {
+            long t0 = System.nanoTime();
             indexInput.seek(postingMetadata.offset());
             indexInput.readFloats(centroid, 0, centroid.length);
             centroidDp = Float.intBitsToFloat(indexInput.readInt());
@@ -469,6 +476,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
             docEncoding = indexInput.readByte();
             docBase = 0;
             slicePos = indexInput.getFilePointer();
+            profileCentroidReadTimeNs += System.nanoTime() - t0;
             queryQuantizer.reset(centroid, postingMetadata.queryCentroidOrdinal());
             return vectors;
         }
@@ -550,20 +558,23 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
         @Override
         public int visit(KnnCollector knnCollector) throws IOException {
             indexInput.seek(slicePos);
-            // block processing
             int scoredDocs = 0;
             int limit = vectors - BULK_SIZE + 1;
             int i = 0;
-            // read Docs
+            long t0;
             for (; i < limit; i += BULK_SIZE) {
-                // read the doc ids
+                t0 = System.nanoTime();
                 readDocIds(BULK_SIZE);
+                profileDocIdReadTimeNs += System.nanoTime() - t0;
                 final int docsToBulkScore = acceptDocs == null ? BULK_SIZE : docToBulkScore(docIdsScratch, acceptDocs);
                 if (docsToBulkScore == 0) {
                     indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
                     continue;
                 }
+                t0 = System.nanoTime();
                 queryQuantizer.quantizeQueryIfNecessary();
+                profileQueryQuantizationTimeNs += System.nanoTime() - t0;
+                t0 = System.nanoTime();
                 final float maxScore;
                 if (docsToBulkScore < BULK_SIZE / 2) {
                     maxScore = scoreIndividually();
@@ -579,21 +590,26 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
                         scores
                     );
                 }
+                profileScoringTimeNs += System.nanoTime() - t0;
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     collectBulk(knnCollector, scores);
                 }
                 scoredDocs += docsToBulkScore;
             }
-            // process tail
-            // read the doc ids
+            // tail
             if (i < vectors) {
+                t0 = System.nanoTime();
                 readDocIds(vectors - i);
+                profileDocIdReadTimeNs += System.nanoTime() - t0;
             }
             int count = 0;
             for (; i < vectors; i++) {
                 int doc = docIdsScratch[count++];
                 if (acceptDocs == null || acceptDocs.get(doc)) {
+                    t0 = System.nanoTime();
                     queryQuantizer.quantizeQueryIfNecessary();
+                    profileQueryQuantizationTimeNs += System.nanoTime() - t0;
+                    t0 = System.nanoTime();
                     float qcDist = osqVectorsScorer.quantizeScore(queryQuantizer.getQuantizedTarget());
                     indexInput.readFloats(correctiveValues, 0, 3);
                     final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
@@ -610,6 +626,7 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
                         correctiveValues[2],
                         qcDist
                     );
+                    profileScoringTimeNs += System.nanoTime() - t0;
                     scoredDocs++;
                     if (knnCollector.minCompetitiveSimilarity() < score) {
                         knnCollector.collect(doc, score);
@@ -622,6 +639,26 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader {
                 knnCollector.incVisitedCount(scoredDocs);
             }
             return scoredDocs;
+        }
+
+        @Override
+        public long getDocIdReadTimeNs() {
+            return profileDocIdReadTimeNs;
+        }
+
+        @Override
+        public long getScoringTimeNs() {
+            return profileScoringTimeNs;
+        }
+
+        @Override
+        public long getQueryQuantizationTimeNs() {
+            return profileQueryQuantizationTimeNs;
+        }
+
+        @Override
+        public long getCentroidReadTimeNs() {
+            return profileCentroidReadTimeNs;
         }
     }
 

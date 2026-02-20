@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -59,6 +60,9 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
     protected final int k;
     protected final Query innerQuery;
     protected long vectorOperations = 0;
+    protected long innerQueryTimeNs;
+    protected long rescoreTimeNs;
+    protected int rescoreDocCount;
 
     private RescoreKnnVectorQuery(
         String fieldName,
@@ -116,6 +120,18 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
         }
 
         queryProfiler.addVectorOpsCount(vectorOperations);
+
+        Map<String, Object> existing = queryProfiler.getKnnProfileBreakdown();
+        if (existing == null) {
+            existing = new java.util.LinkedHashMap<>();
+            queryProfiler.setKnnProfileBreakdown(existing);
+        }
+        Map<String, Object> rescore = new java.util.LinkedHashMap<>();
+        rescore.put("type", getClass().getSimpleName().replace("Query", "").toLowerCase(java.util.Locale.ROOT));
+        rescore.put("time_ns", rescoreTimeNs);
+        rescore.put("inner_query_time_ns", innerQueryTimeNs);
+        rescore.put("doc_count", rescoreDocCount);
+        existing.put("rescore", rescore);
     }
 
     @Override
@@ -173,7 +189,10 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
             var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, innerQuery);
+            long rescoreStart = System.nanoTime();
             var topDocs = searcher.search(rescoreQuery, k);
+            rescoreTimeNs = System.nanoTime() - rescoreStart;
+            rescoreDocCount = topDocs.scoreDocs.length;
             vectorOperations = topDocs.totalHits.value();
             return new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
         }
@@ -209,14 +228,17 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
             final TopDocs topDocs;
-            // Retrieve top `rescoreK` documents from the inner query
+            long innerStart = System.nanoTime();
             topDocs = searcher.search(innerQuery, rescoreK);
+            innerQueryTimeNs = System.nanoTime() - innerStart;
             vectorOperations = topDocs.totalHits.value();
 
-            // Retrieve top `k` documents from the top `rescoreK` query
             var topDocsQuery = new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
             var rescoreQuery = new DirectRescoreKnnVectorQuery(fieldName, floatTarget, topDocsQuery);
+            long rescoreStart = System.nanoTime();
             var rescoreTopDocs = searcher.search(rescoreQuery.rewrite(searcher), k);
+            rescoreTimeNs = System.nanoTime() - rescoreStart;
+            rescoreDocCount = rescoreTopDocs.scoreDocs.length;
             return new KnnScoreDocQuery(rescoreTopDocs.scoreDocs, searcher.getIndexReader());
         }
 

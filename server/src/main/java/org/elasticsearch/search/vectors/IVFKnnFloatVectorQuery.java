@@ -137,13 +137,20 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         if (floatVectorValues.size() == 0) {
             return NO_RESULTS;
         }
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, knnCollectorManager.longAccumulator);
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, knnCollectorManager.longAccumulator, profileData);
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
         if (knnCollector == null) {
             return NO_RESULTS;
         }
         strategy.setCollector(knnCollector);
+        if (profileData != null) {
+            profileData.addSegmentSearched();
+        }
+        long leafSearchStart = System.nanoTime();
         reader.searchNearestVectors(field, query, knnCollector, acceptDocs);
+        if (profileData != null) {
+            profileData.addApproximateSearchTimeNs(System.nanoTime() - leafSearchStart);
+        }
         TopDocs results = knnCollector.topDocs();
         return results != null ? results : NO_RESULTS;
     }
