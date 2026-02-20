@@ -34,6 +34,7 @@ import org.elasticsearch.search.profile.query.QueryProfiler;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -121,17 +122,19 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
 
         queryProfiler.addVectorOpsCount(vectorOperations);
 
-        Map<String, Object> existing = queryProfiler.getKnnProfileBreakdown();
-        if (existing == null) {
-            existing = new java.util.LinkedHashMap<>();
-            queryProfiler.setKnnProfileBreakdown(existing);
-        }
-        Map<String, Object> rescore = new java.util.LinkedHashMap<>();
-        rescore.put("type", getClass().getSimpleName().replace("Query", "").toLowerCase(java.util.Locale.ROOT));
+        Map<String, Object> rescore = new LinkedHashMap<>();
+        rescore.put("type", getClass().getSimpleName());
         rescore.put("time_ns", rescoreTimeNs);
         rescore.put("inner_query_time_ns", innerQueryTimeNs);
         rescore.put("doc_count", rescoreDocCount);
-        existing.put("rescore", rescore);
+
+        Map<String, Object> existing = queryProfiler.getKnnProfileBreakdown();
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (existing != null) {
+            merged.putAll(existing);
+        }
+        merged.put("rescore", rescore);
+        queryProfiler.setKnnProfileBreakdown(merged);
     }
 
     @Override

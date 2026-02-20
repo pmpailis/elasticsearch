@@ -1048,6 +1048,7 @@ abstract class AbstractIVFKnnVectorQueryTestCase extends LuceneTestCase {
         ) {
             IndexSearcher searcher = newSearcher(reader);
             AbstractIVFKnnVectorQuery query = getKnnVectorQuery("field", new float[] { 0, 0 }, 3);
+            query.enableProfiling();
             searcher.rewrite(query);
 
             assertNotNull("profileData should be set after rewrite", query.profileData);
@@ -1077,6 +1078,7 @@ abstract class AbstractIVFKnnVectorQueryTestCase extends LuceneTestCase {
             IndexSearcher searcher = newSearcher(reader);
             Query filter = new TermQuery(new Term("id", "id1"));
             AbstractIVFKnnVectorQuery query = getKnnVectorQuery("field", new float[] { 0, 0 }, 3, filter);
+            query.enableProfiling();
             searcher.rewrite(query);
 
             assertNotNull("profileData should be set after rewrite", query.profileData);
@@ -1092,6 +1094,7 @@ abstract class AbstractIVFKnnVectorQueryTestCase extends LuceneTestCase {
         ) {
             IndexSearcher searcher = newSearcher(reader);
             AbstractIVFKnnVectorQuery query = getKnnVectorQuery("field", new float[] { 0, 0 }, 3);
+            query.enableProfiling();
             searcher.rewrite(query);
 
             org.elasticsearch.search.profile.query.QueryProfiler profiler = new org.elasticsearch.search.profile.query.QueryProfiler();

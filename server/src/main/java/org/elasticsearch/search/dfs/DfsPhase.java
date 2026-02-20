@@ -231,6 +231,9 @@ public class DfsPhase {
             QueryProfiler knnProfiler = profilers.getDfsProfiler().addQueryProfiler();
             // Set the current searcher profiler to gather query profiling information for gathering top K docs
             searcher.setProfiler(knnProfiler);
+            if (knnQuery instanceof QueryProfilerProvider queryProfilerProvider) {
+                queryProfilerProvider.enableProfiling();
+            }
             ProfileCollectorManager<TopDocs> ipcm = new ProfileCollectorManager<>(
                 topDocsCollectorManager,
                 CollectorResult.REASON_SEARCH_TOP_HITS

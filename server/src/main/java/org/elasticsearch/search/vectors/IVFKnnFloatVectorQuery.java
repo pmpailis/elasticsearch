@@ -146,7 +146,7 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         if (profileData != null) {
             profileData.addSegmentSearched();
         }
-        long leafSearchStart = System.nanoTime();
+        long leafSearchStart = profileData != null ? System.nanoTime() : 0;
         reader.searchNearestVectors(field, query, knnCollector, acceptDocs);
         if (profileData != null) {
             profileData.addApproximateSearchTimeNs(System.nanoTime() - leafSearchStart);

@@ -48,21 +48,30 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     }
 
     @Override
-    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+    public void enableProfiling() {
         profileData = new KnnSearchProfileData();
         profileData.setAlgorithmType("hnsw");
-        profileData.setHnswQueryParams(kParam, getK(), getFilter() != null);
-        long start = System.nanoTime();
+    }
+
+    @Override
+    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+        if (profileData != null) {
+            profileData.setHnswQueryParams(kParam, getK(), getFilter() != null);
+        }
+        long start = profileData != null ? System.nanoTime() : 0;
         Query result = super.rewrite(indexSearcher);
-        profileData.setTotalSearchTimeNs(System.nanoTime() - start);
+        if (profileData != null) {
+            profileData.setTotalSearchTimeNs(System.nanoTime() - start);
+        }
         return result;
     }
 
     @Override
     protected TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, TimeLimitingKnnCollectorManager cm) throws IOException {
-        long start = System.nanoTime();
+        long start = profileData != null ? System.nanoTime() : 0;
         TopDocs result = super.searchLeaf(ctx, filterWeight, cm);
         if (profileData != null) {
+            // totalHits.value() is KnnCollector.visitedCount() — the number of HNSW graph nodes visited
             profileData.addHnswLeafSearch(
                 System.nanoTime() - start,
                 result.totalHits.value(),
@@ -74,7 +83,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
 
     @Override
     protected TopDocs mergeLeafResults(TopDocs[] perLeafResults) {
-        long start = System.nanoTime();
+        long start = profileData != null ? System.nanoTime() : 0;
         TopDocs topK = TopDocs.merge(kParam, perLeafResults);
         if (profileData != null) {
             profileData.setMergeTimeNs(System.nanoTime() - start);

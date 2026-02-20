@@ -293,7 +293,7 @@ public class RescoreKnnVectorQueryTests extends ESTestCase {
 
                 @SuppressWarnings("unchecked")
                 Map<String, Object> rescore = (Map<String, Object>) profiler.getKnnProfileBreakdown().get("rescore");
-                assertThat(rescore.get("type"), equalTo("inlinerescore"));
+                assertThat(rescore.get("type"), equalTo("InlineRescoreQuery"));
             }
         }
     }
@@ -323,7 +323,7 @@ public class RescoreKnnVectorQueryTests extends ESTestCase {
 
                 @SuppressWarnings("unchecked")
                 Map<String, Object> rescore = (Map<String, Object>) profiler.getKnnProfileBreakdown().get("rescore");
-                assertThat(rescore.get("type"), equalTo("laterescore"));
+                assertThat(rescore.get("type"), equalTo("LateRescoreQuery"));
                 assertThat((long) rescore.get("inner_query_time_ns"), greaterThan(0L));
             }
         }

@@ -77,7 +77,7 @@ public final class QueryProfileShardResult implements Writeable, ToXContentObjec
     /**
      * Read from a stream.
      */
-    private static final TransportVersion KNN_PROFILE_BREAKDOWN_VERSION = TransportVersion.current();
+    private static final TransportVersion KNN_PROFILE_BREAKDOWN_VERSION = TransportVersion.fromName("knn_profile_breakdown");
 
     @SuppressWarnings("unchecked")
     public QueryProfileShardResult(StreamInput in) throws IOException {

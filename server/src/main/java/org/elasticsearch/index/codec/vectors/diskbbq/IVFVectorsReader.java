@@ -309,7 +309,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // we account for soar vectors here. We can potentially visit a vector twice so we multiply by 2 here.
         long maxVectorVisited = (long) (2.0 * visitRatio * numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
-        long centroidIteratorStart = System.nanoTime();
+        long centroidIteratorStart = profileData != null ? System.nanoTime() : 0;
         CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
             fieldInfo,
             entry.numCentroids,
@@ -331,32 +331,47 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         int centroidsEvaluated = 0;
         long postingVisitTimeNs = 0;
         long resetScorerTimeNs = 0;
+        // initially we visit only the "centroids to search"
+        // Note, numCollected is doing the bare minimum here.
+        // TODO do we need to handle nested doc counts similarly to how we handle
+        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
             PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
-            long resetStart = System.nanoTime();
-            expectedDocs += scorer.resetPostingsScorer(postingMetadata);
-            resetScorerTimeNs += System.nanoTime() - resetStart;
-            long visitStart = System.nanoTime();
-            actualDocs += scorer.visit(knnCollector);
-            postingVisitTimeNs += System.nanoTime() - visitStart;
+            if (profileData != null) {
+                long resetStart = System.nanoTime();
+                expectedDocs += scorer.resetPostingsScorer(postingMetadata);
+                resetScorerTimeNs += System.nanoTime() - resetStart;
+                long visitStart = System.nanoTime();
+                actualDocs += scorer.visit(knnCollector);
+                postingVisitTimeNs += System.nanoTime() - visitStart;
+            } else {
+                expectedDocs += scorer.resetPostingsScorer(postingMetadata);
+                actualDocs += scorer.visit(knnCollector);
+            }
             centroidsEvaluated++;
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
             }
         }
         if (acceptDocsBits != null) {
+            // TODO Adjust the value here when using centroid filtering
             float unfilteredRatioVisited = (float) expectedDocs / numVectors;
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
                 PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
-                long resetStart = System.nanoTime();
-                scorer.resetPostingsScorer(postingMetadata);
-                resetScorerTimeNs += System.nanoTime() - resetStart;
-                long visitStart = System.nanoTime();
-                actualDocs += scorer.visit(knnCollector);
-                postingVisitTimeNs += System.nanoTime() - visitStart;
+                if (profileData != null) {
+                    long resetStart = System.nanoTime();
+                    scorer.resetPostingsScorer(postingMetadata);
+                    resetScorerTimeNs += System.nanoTime() - resetStart;
+                    long visitStart = System.nanoTime();
+                    actualDocs += scorer.visit(knnCollector);
+                    postingVisitTimeNs += System.nanoTime() - visitStart;
+                } else {
+                    scorer.resetPostingsScorer(postingMetadata);
+                    actualDocs += scorer.visit(knnCollector);
+                }
                 centroidsEvaluated++;
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();

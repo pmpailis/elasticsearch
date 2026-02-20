@@ -51,6 +51,7 @@ public class ESKnnVectorQueryProfileTests extends ESTestCase {
                     null,
                     null
                 );
+                query.enableProfiling();
                 searcher.rewrite(query);
 
                 QueryProfiler profiler = new QueryProfiler();
@@ -92,6 +93,7 @@ public class ESKnnVectorQueryProfileTests extends ESTestCase {
                     null,
                     null
                 );
+                query.enableProfiling();
                 searcher.rewrite(query);
 
                 QueryProfiler profiler = new QueryProfiler();
@@ -124,6 +126,7 @@ public class ESKnnVectorQueryProfileTests extends ESTestCase {
                     filter,
                     null
                 );
+                query.enableProfiling();
                 searcher.rewrite(query);
 
                 QueryProfiler profiler = new QueryProfiler();
@@ -152,6 +155,7 @@ public class ESKnnVectorQueryProfileTests extends ESTestCase {
                     null,
                     null
                 );
+                query.enableProfiling();
                 searcher.rewrite(query);
 
                 Map<String, Object> map = profiler(query).getKnnProfileBreakdown();

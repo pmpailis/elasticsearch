@@ -101,14 +101,18 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     }
 
     @Override
-    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
-        long rewriteStartNs = System.nanoTime();
-        vectorOpsCount = 0;
+    public void enableProfiling() {
         profileData = new KnnSearchProfileData();
         profileData.setAlgorithmType("ivf");
+    }
+
+    @Override
+    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+        long rewriteStartNs = profileData != null ? System.nanoTime() : 0;
+        vectorOpsCount = 0;
         IndexReader reader = indexSearcher.getIndexReader();
 
-        long filterStartNs = System.nanoTime();
+        long filterStartNs = profileData != null ? System.nanoTime() : 0;
         final Weight filterWeight;
         if (filter != null) {
             BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
@@ -122,7 +126,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         } else {
             filterWeight = null;
         }
-        profileData.setFilterTimeNs(System.nanoTime() - filterStartNs);
+        if (profileData != null) {
+            profileData.setFilterTimeNs(System.nanoTime() - filterStartNs);
+        }
 
         // we request numCands as we are using it as an approximation measure
         // we need to ensure we are getting at least 2*k results to ensure we cover overspill duplicates
@@ -152,7 +158,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         } else {
             visitRatio = providedVisitRatio;
         }
-        profileData.setVisitRatioUsed(visitRatio);
+        if (profileData != null) {
+            profileData.setVisitRatioUsed(visitRatio);
+        }
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
@@ -163,13 +171,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        long mergeStartNs = System.nanoTime();
+        long mergeStartNs = profileData != null ? System.nanoTime() : 0;
         TopDocs topK = TopDocs.merge(k, perLeafResults);
-        profileData.setMergeTimeNs(System.nanoTime() - mergeStartNs);
-
         vectorOpsCount = (int) topK.totalHits.value();
-        profileData.setEarlyTerminated(topK.totalHits.relation() == TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
-        profileData.setTotalSearchTimeNs(System.nanoTime() - rewriteStartNs);
+        if (profileData != null) {
+            profileData.setMergeTimeNs(System.nanoTime() - mergeStartNs);
+            profileData.setEarlyTerminated(topK.totalHits.relation() == TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+            profileData.setTotalSearchTimeNs(System.nanoTime() - rewriteStartNs);
+        }
 
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;

@@ -25,4 +25,11 @@ public interface QueryProfilerProvider {
      * @param queryProfiler an instance of  {@link KnnFloatVectorField}.
      */
     void profile(QueryProfiler queryProfiler);
+
+    /**
+     * Enables detailed profiling data collection for this query.
+     * Must be called before rewrite to collect timing breakdowns.
+     * When not called, only lightweight metrics (e.g. vector ops count) are collected.
+     */
+    default void enableProfiling() {}
 }

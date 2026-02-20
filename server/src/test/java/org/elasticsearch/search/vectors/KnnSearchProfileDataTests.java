@@ -138,7 +138,7 @@ public class KnnSearchProfileDataTests extends ESTestCase {
         KnnSearchProfileData data = new KnnSearchProfileData();
         data.setAlgorithmType("ivf");
         data.setTotalSearchTimeNs(10_000_000);
-        data.setRescoreType("inlinerescore");
+        data.setRescoreType("InlineRescoreQuery");
         data.setRescoreTimeNs(3_000_000);
         data.setRescoreDocCount(50);
 
@@ -146,7 +146,7 @@ public class KnnSearchProfileDataTests extends ESTestCase {
         @SuppressWarnings("unchecked")
         Map<String, Object> rescore = (Map<String, Object>) map.get("rescore");
         assertThat(rescore, notNullValue());
-        assertThat(rescore.get("type"), equalTo("inlinerescore"));
+        assertThat(rescore.get("type"), equalTo("InlineRescoreQuery"));
         assertThat(rescore.get("time_ns"), equalTo(3_000_000L));
         assertThat(rescore.get("doc_count"), equalTo(50));
     }
