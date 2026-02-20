@@ -247,7 +247,7 @@ class DfsQueryPhase extends SearchPhase {
             float maxScore = Float.NEGATIVE_INFINITY;
             for (var entry : combinedScores.entrySet()) {
                 float score = entry.getValue();
-                combinedDocs[idx++] = new ScoreDoc(entry.getKey(), score, shardIndex);
+                combinedDocs[idx++] = new ScoreDoc(entry.getKey(), score);
                 maxScore = Math.max(maxScore, score);
             }
             // Sort by score descending, then by doc ascending for tie-breaking

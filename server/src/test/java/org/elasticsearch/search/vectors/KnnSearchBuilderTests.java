@@ -36,7 +36,6 @@ import java.util.List;
 import java.util.Objects;
 
 import static java.util.Collections.emptyList;
-import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.OVERSAMPLE_LIMIT;
 import static org.elasticsearch.search.SearchService.DEFAULT_SIZE;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
@@ -254,18 +253,24 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         }
 
         int adjustedK = k;
+        int adjustedNumCands = numCands;
+        RescoreVectorBuilder expectedRescore = rescoreVectorBuilder;
         boolean optimizedRescoring = randomBoolean();
         builder.optimizedRescoring(optimizedRescoring);
-        if (optimizedRescoring && rescoreVectorBuilder != null) {
-            adjustedK = Math.min((int) Math.ceil(k * rescoreVectorBuilder.oversample()), OVERSAMPLE_LIMIT);
+        if (optimizedRescoring) {
+            expectedRescore = new RescoreVectorBuilder(0);
+            if (rescoreVectorBuilder != null && rescoreVectorBuilder.oversample() >= 1) {
+                adjustedK = (int) Math.ceil(k * rescoreVectorBuilder.oversample());
+                adjustedNumCands = Math.max(adjustedK, numCands);
+            }
         }
         QueryBuilder expected = new KnnVectorQueryBuilder(
             field,
             VectorData.fromFloats(vector),
             adjustedK,
-            numCands,
+            adjustedNumCands,
             visitPercentage,
-            rescoreVectorBuilder,
+            expectedRescore,
             similarity
         ).addFilterQueries(filterQueries).boost(boost);
         assertEquals(expected, builder.toQueryBuilder(null));
