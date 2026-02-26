@@ -1186,7 +1186,7 @@ setup:
                                         {
                                           constant_score: {
                                             filter: { term: { text: "term3" } },
-                                            boost: 5.0
+                                            boost: 1.0
                                           }
                                         }
                                       ]
