@@ -18,7 +18,6 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.search.dfs.AggregatedDfs;
-import org.elasticsearch.search.dfs.DfsKnnRescoreInfo;
 import org.elasticsearch.search.internal.ShardSearchContextId;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.tasks.Task;
@@ -26,10 +25,7 @@ import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.transport.AbstractTransportRequest;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
-
-import static org.elasticsearch.search.vectors.KnnScoreDocQueryBuilder.KNN_DFS_RESCORING_TOP_K_ON_SHARDS;
 
 public class QuerySearchRequest extends AbstractTransportRequest implements IndicesRequest {
 
@@ -37,7 +33,6 @@ public class QuerySearchRequest extends AbstractTransportRequest implements Indi
     private final AggregatedDfs dfs;
     private final OriginalIndices originalIndices;
     private final ShardSearchRequest shardSearchRequest;
-    private final List<DfsKnnRescoreInfo> knnRescoreInfos;
 
     public QuerySearchRequest(
         OriginalIndices originalIndices,
@@ -45,21 +40,10 @@ public class QuerySearchRequest extends AbstractTransportRequest implements Indi
         ShardSearchRequest shardSearchRequest,
         AggregatedDfs dfs
     ) {
-        this(originalIndices, contextId, shardSearchRequest, dfs, List.of());
-    }
-
-    public QuerySearchRequest(
-        OriginalIndices originalIndices,
-        ShardSearchContextId contextId,
-        ShardSearchRequest shardSearchRequest,
-        AggregatedDfs dfs,
-        List<DfsKnnRescoreInfo> knnRescoreInfos
-    ) {
         this.contextId = contextId;
         this.dfs = dfs;
         this.shardSearchRequest = shardSearchRequest;
         this.originalIndices = originalIndices;
-        this.knnRescoreInfos = knnRescoreInfos;
     }
 
     public QuerySearchRequest(StreamInput in) throws IOException {
@@ -68,11 +52,6 @@ public class QuerySearchRequest extends AbstractTransportRequest implements Indi
         dfs = new AggregatedDfs(in);
         originalIndices = OriginalIndices.readOriginalIndices(in);
         this.shardSearchRequest = in.readOptionalWriteable(ShardSearchRequest::new);
-        if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
-            this.knnRescoreInfos = in.readCollectionAsList(DfsKnnRescoreInfo::new);
-        } else {
-            this.knnRescoreInfos = List.of();
-        }
     }
 
     @Override
@@ -82,13 +61,6 @@ public class QuerySearchRequest extends AbstractTransportRequest implements Indi
         dfs.writeTo(out);
         OriginalIndices.writeOriginalIndices(originalIndices, out);
         out.writeOptionalWriteable(shardSearchRequest);
-        if (out.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
-            out.writeCollection(knnRescoreInfos);
-        }
-    }
-
-    public List<DfsKnnRescoreInfo> knnRescoreInfos() {
-        return knnRescoreInfos;
     }
 
     public ShardSearchContextId contextId() {
