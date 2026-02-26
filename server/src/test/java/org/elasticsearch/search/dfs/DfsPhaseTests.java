@@ -177,7 +177,7 @@ public class DfsPhaseTests extends IndexShardTestCase {
             int numDocs = randomIntBetween(900, 1000);
             for (int i = 0; i < numDocs; i++) {
                 Document d = new Document();
-                d.add(new KnnFloatVectorField("float_vector", new float[]{i, 0, 0}));
+                d.add(new KnnFloatVectorField("float_vector", new float[] { i, 0, 0 }));
                 w.addDocument(d);
             }
             w.flush();
@@ -194,7 +194,7 @@ public class DfsPhaseTests extends IndexShardTestCase {
                 1
             );
 
-            Query query = new KnnFloatVectorQuery("float_vector", new float[]{0, 0, 0}, numDocs, null);
+            Query query = new KnnFloatVectorQuery("float_vector", new float[] { 0, 0, 0 }, numDocs, null);
 
             int k = 10;
             // run without profiling enabled
