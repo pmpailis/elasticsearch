@@ -134,7 +134,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     float boost = DEFAULT_BOOST;
     InnerHitBuilder innerHitBuilder;
     private final RescoreVectorBuilder rescoreVectorBuilder;
-    private boolean optimizedRescoring;
+    private boolean optimizedRescoring = true;
 
     private static final RescoreVectorBuilder NO_RESCORING = new RescoreVectorBuilder(0);
 
@@ -243,7 +243,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             null,
             null,
             DEFAULT_BOOST,
-            false
+            true
         );
     }
 
