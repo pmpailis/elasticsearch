@@ -1169,15 +1169,31 @@ setup:
                               retriever: {
                                 standard: {
                                   query: {
-                                    query_string: {
-                                      query: "term1 OR term2 OR term3",
-                                      default_field: "text"
+                                    bool: {
+                                      should: [
+                                        {
+                                          constant_score: {
+                                            filter: { term: { text: "term1" } },
+                                            boost: 10.0
+                                          }
+                                        },
+                                        {
+                                          constant_score: {
+                                            filter: { term: { text: "term2" } },
+                                            boost: 5.0
+                                          }
+                                        },
+                                        {
+                                          constant_score: {
+                                            filter: { term: { text: "term3" } },
+                                            boost: 5.0
+                                          }
+                                        }
+                                      ]
                                     }
                                   }
                                 }
-                              }
-                            }
-                          ]
+                              ]
                           rank_window_size: 100
                           min_score: 0.5
                           normalizer: "minmax"
