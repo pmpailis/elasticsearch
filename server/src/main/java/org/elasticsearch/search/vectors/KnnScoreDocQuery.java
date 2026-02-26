@@ -124,8 +124,7 @@ public class KnnScoreDocQuery extends Query {
                 Scorer scorer = new Scorer() {
                     final int lower = segmentStarts[context.ord];
                     final int upper = segmentStarts[context.ord + 1];
-                    final int docBase = context.docBase;
-                    int upTo = lower - 1;
+                    int upTo = -1;
 
                     @Override
                     public DocIdSetIterator iterator() {
