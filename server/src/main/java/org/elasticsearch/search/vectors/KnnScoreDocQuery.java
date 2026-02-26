@@ -137,21 +137,17 @@ public class KnnScoreDocQuery extends Query {
 
                             @Override
                             public int nextDoc() {
-                                if (++upTo >= upper) {
-                                    return NO_MORE_DOCS;
+                                if (upTo == -1) {
+                                    upTo = lower;
+                                } else {
+                                    ++upTo;
                                 }
-                                return docs[upTo] - docBase;
+                                return currentDocId();
                             }
 
                             @Override
-                            public int advance(int target) {
-                                int targetGlobal = target + docBase;
-                                int idx = Arrays.binarySearch(docs, Math.max(upTo + 1, lower), upper, targetGlobal);
-                                upTo = idx >= 0 ? idx : -idx - 1;
-                                if (upTo >= upper) {
-                                    return NO_MORE_DOCS;
-                                }
-                                return docs[upTo] - docBase;
+                            public int advance(int target) throws IOException {
+                                return slowAdvance(target);
                             }
 
                             @Override
@@ -163,8 +159,10 @@ public class KnnScoreDocQuery extends Query {
 
                     @Override
                     public float getMaxScore(int docId) {
+                        // NO_MORE_DOCS indicates the maximum score for all docs in this segment
+                        // Anything less than must be accounted for via the docBase.
                         if (docId != NO_MORE_DOCS) {
-                            docId += docBase;
+                            docId += context.docBase;
                         }
                         float maxScore = 0;
                         for (int idx = Math.max(lower, upTo); idx < upper && docs[idx] <= docId; idx++) {
@@ -181,7 +179,7 @@ public class KnnScoreDocQuery extends Query {
                     @Override
                     public int advanceShallow(int docId) {
                         int start = Math.max(upTo, lower);
-                        int docIdIndex = Arrays.binarySearch(docs, start, upper, docId + docBase);
+                        int docIdIndex = Arrays.binarySearch(docs, start, upper, docId + context.docBase);
                         if (docIdIndex < 0) {
                             docIdIndex = -1 - docIdIndex;
                         }
@@ -197,13 +195,13 @@ public class KnnScoreDocQuery extends Query {
                     }
 
                     private int currentDocId() {
-                        if (upTo < lower) {
+                        if (upTo == -1) {
                             return -1;
                         }
                         if (upTo >= upper) {
                             return NO_MORE_DOCS;
                         }
-                        return docs[upTo] - docBase;
+                        return docs[upTo] - context.docBase;
                     }
 
                 };
