@@ -771,11 +771,11 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         // if there's a kNN search, always use DFS_QUERY_THEN_FETCH
         if (searchRequest.hasKnnSearch()) {
             searchRequest.searchType(DFS_QUERY_THEN_FETCH);
-            if (singleShard || false == supportsFeature.test(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
-                for (KnnSearchBuilder knnSearchBuilder : searchRequest.source().knnSearch()) {
-                    knnSearchBuilder.optimizedRescoring(false);
-                }
-            }
+//            if (singleShard || false == supportsFeature.test(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+//                for (KnnSearchBuilder knnSearchBuilder : searchRequest.source().knnSearch()) {
+//                    knnSearchBuilder.optimizedRescoring(false);
+//                }
+//            }
             return;
         }
 
