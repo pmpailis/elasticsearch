@@ -1193,7 +1193,9 @@ setup:
                                     }
                                   }
                                 }
-                              ]
+                              }
+                            }
+                          ]
                           rank_window_size: 100
                           min_score: 0.5
                           normalizer: "minmax"
