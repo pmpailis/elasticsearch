@@ -27,11 +27,16 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreMode;
+import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopScoreDocCollectorManager;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
+import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
+import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
@@ -100,7 +105,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         BitSetProducer parentsFilter,
         AtomicLong totalVectorsVisited
     ) {
-        super(field, visitRatio, k, k, filter, false);
+        super(field, visitRatio, k, k, filter);
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
         }
@@ -119,11 +124,6 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         this.parentsFilter = parentsFilter;
         this.clusterSize = clusterSize;
         this.totalVectorsVisited = totalVectorsVisited;
-    }
-
-    @Override
-    void preconditionQuery(LeafReaderContext context) {
-        // preconditioning is not supported for this query type
     }
 
     @Override
@@ -160,15 +160,17 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         vectorOpsCount = 0;
         IndexReader reader = indexSearcher.getIndexReader();
 
-        // calculate effective visit ratio, i.e. how many vectors we're expected to visit
         float effectiveVisitRatio = calculateEffectiveVisitRatio(totalVectors);
-        //calculate filter cost
+        Weight filterWeight = null;
         float filterSelectivity = 0f;
-        if(filter != null) {
+        if (filter != null) {
+            filterWeight = indexSearcher.createWeight(filter, ScoreMode.COMPLETE_NO_SCORES, 1f);
             int filterCost = 0;
-            var filterWeight = indexSearcher.createWeight(filter, ScoreMode.COMPLETE_NO_SCORES, 1f);
             for (LeafReaderContext ctx : indexSearcher.getIndexReader().leaves()) {
-                filterCost += Math.toIntExact(filterWeight.scorerSupplier(ctx).cost());
+                ScorerSupplier ss = filterWeight.scorerSupplier(ctx);
+                if (ss != null) {
+                    filterCost += Math.toIntExact(ss.cost());
+                }
             }
             filterSelectivity = Math.min(1f, (float) filterCost / totalVectors);
         }
@@ -176,11 +178,14 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         filterSelectivity = filter != null ? (1 + (1 - filterSelectivity)) : 1;
         int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * filterSelectivity) / clusterSize));
+        int expectedDocsPerCentroid = Math.max(1, clusterSize);
+        numCentroids = Math.max(numCentroids, (int) Math.ceil((double) k / expectedDocsPerCentroid));
 
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
+        final Weight finalFilterWeight = filterWeight;
         for (LeafReaderContext context : reader.leaves()) {
-            tasks.add(() -> generateCentroidQueries(context, numCentroids, maxVectorVisited, totalVectorsVisited));
+            tasks.add(() -> generateCentroidQueries(context, numCentroids, totalVectorsVisited, finalFilterWeight));
         }
         List<List<IVFCentroidQuery>> perLeafResults = indexSearcher.getTaskExecutor().invokeAll(tasks).stream().toList();
         for (List<IVFCentroidQuery> centroidQueries : perLeafResults) {
@@ -218,33 +223,27 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     private List<IVFCentroidQuery> generateCentroidQueries(
         LeafReaderContext ctx,
         int numCentroids,
-        long docsToExplore,
-        AtomicLong totalVectorsVisited
+        AtomicLong totalVectorsVisited,
+        Weight filterWeight
     ) throws IOException {
-        List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids);
+        List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, filterWeight);
 
         if (topCentroids == null || topCentroids.isEmpty()) {
             return null;
         }
-        int maxVectorsPerCentroid = (int) Math.max(1, docsToExplore / topCentroids.size());
 
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
         for (IVFCentroidQuery.IVFCentroidMeta centroid : topCentroids) {
-            allCentroidQueries.add(
-                new IVFCentroidQuery(
-                    field,
-                    queryVector,
-                    centroid,
-                    ctx,
-                    maxVectorsPerCentroid,
-                    totalVectorsVisited
-                )
-            );
+            allCentroidQueries.add(new IVFCentroidQuery(field, centroid, ctx, totalVectorsVisited));
         }
         return allCentroidQueries;
     }
 
-    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(LeafReaderContext ctx, int maxCentroids) throws IOException {
+    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
+        LeafReaderContext ctx,
+        int maxCentroids,
+        Weight filterWeight
+    ) throws IOException {
         LeafReader leafReader = ctx.reader();
         FloatVectorValues vectorValues = leafReader.getFloatVectorValues(field);
         if (vectorValues == null || vectorValues.size() == 0) {
@@ -265,7 +264,31 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         }
         IVFVectorsReader ivfReader = (IVFVectorsReader) knnVectorsReader;
         FieldInfo fieldInfo = leafReader.getFieldInfos().fieldInfo(field);
-        return ivfReader.findTopCentroids(fieldInfo, queryVector, maxCentroids, field, providedVisitRatio);
+
+        float[] effectiveQueryVector = queryVector;
+        if (knnVectorsReader instanceof VectorPreconditioner vp) {
+            Preconditioner preconditioner = vp.getPreconditioner(fieldInfo);
+            if (preconditioner != null) {
+                effectiveQueryVector = new float[queryVector.length];
+                preconditioner.applyTransform(queryVector, effectiveQueryVector);
+            }
+        }
+
+        ESAcceptDocs acceptDocs;
+        Bits liveDocs = leafReader.getLiveDocs();
+        if (filterWeight != null) {
+            ScorerSupplier ss = filterWeight.scorerSupplier(ctx);
+            if (ss == null) {
+                return null;
+            }
+            acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(ss, liveDocs, leafReader.maxDoc());
+        } else if (liveDocs != null) {
+            acceptDocs = new ESAcceptDocs.BitsAcceptDocs(liveDocs, leafReader.maxDoc());
+        } else {
+            acceptDocs = ESAcceptDocs.ESAcceptDocsAll.INSTANCE;
+        }
+
+        return ivfReader.findTopCentroids(fieldInfo, effectiveQueryVector, maxCentroids, field, providedVisitRatio, acceptDocs);
     }
 
     @Override

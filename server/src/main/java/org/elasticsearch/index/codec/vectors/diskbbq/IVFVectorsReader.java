@@ -465,10 +465,17 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         float[] queryVector,
         int maxCentroids,
         String field,
-        float visitRatio
+        float visitRatio,
+        AcceptDocs acceptDocs
     ) throws IOException {
         FloatVectorValues values = getReaderForField(field).getFloatVectorValues(field);
         FieldEntry entry = fields.get(fieldInfo.number);
+        float approximateCost;
+        if (acceptDocs instanceof ESAcceptDocs esAcceptDocs) {
+            approximateCost = esAcceptDocs instanceof ESAcceptDocs.ESAcceptDocsAll ? values.size() : esAcceptDocs.approximateCost();
+        } else {
+            approximateCost = acceptDocs.cost();
+        }
         IndexInput postingListSlice = entry.postingListSlice(ivfClusters);
         CentroidIterator centroidIterator = getCentroidIterator(
             fieldInfo,
@@ -476,11 +483,12 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             entry.centroidSlice(ivfCentroids),
             queryVector,
             postingListSlice,
-            ESAcceptDocs.ESAcceptDocsAll.INSTANCE,
-            0,
+            acceptDocs,
+            approximateCost,
             values,
             visitRatio
         );
+        Bits acceptDocsBits = acceptDocs.bits();
         List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
         int centroidsAdded = 0;
         while (centroidIterator.hasNext() && centroidsAdded++ < maxCentroids) {
@@ -490,7 +498,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
                 fieldInfo,
                 postingSlice,
                 queryVector,
-                null,
+                acceptDocsBits,
                 entry.centroidSlice(ivfCentroids)
             );
             centroids.add(new IVFCentroidQuery.IVFCentroidMeta(postingMetadata, postingVisitor));
@@ -512,15 +520,5 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
-
-        int cost();
-
-        int readDocIds(int count, int[] docIds) throws IOException;
-
-        default float scoreBulk(float[] scores) throws IOException {
-            throw new UnsupportedOperationException("scoreBulk not implemented");
-        }
-
-        void skipBytes(int docs) throws IOException;
     }
 }

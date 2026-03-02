@@ -14,6 +14,7 @@ import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.AbstractKnnCollector;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
@@ -22,39 +23,40 @@ import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * A Lucene query representing a single IVF centroid's posting list.
+ * Scoring is done via {@link IVFVectorsReader.PostingVisitor#visit}, which provides
+ * all codec-level optimizations: filtered block skipping, sparse scoring, and
+ * competitive-score block pruning.
+ */
 public class IVFCentroidQuery extends Query {
 
-    /**
-     * Metadata about a centroid and its posting list, paired with a visitor for scoring.
-     */
     public record IVFCentroidMeta(PostingMetadata postingMetadata, IVFVectorsReader.PostingVisitor postingVisitor) {}
 
     private final String field;
-    private final float[] queryVector;
     private final IVFCentroidMeta centroidMeta;
     private final LeafReaderContext context;
-    private final int maxVectorsPerCentroid;
     private final AtomicLong totalVectorsVisited;
 
     public IVFCentroidQuery(
         String field,
-        float[] queryVector,
         IVFCentroidMeta centroid,
         LeafReaderContext ctx,
-        int maxVectorsPerCentroid,
-        AtomicLong totalVectorsVisited) {
+        AtomicLong totalVectorsVisited
+    ) {
         this.field = field;
-        this.queryVector = queryVector;
         this.centroidMeta = centroid;
-        this.maxVectorsPerCentroid = maxVectorsPerCentroid;
         this.context = ctx;
         this.totalVectorsVisited = totalVectorsVisited;
     }
@@ -84,8 +86,7 @@ public class IVFCentroidQuery extends Query {
             return false;
         }
         final IVFCentroidQuery other = (IVFCentroidQuery) obj;
-        return field.equals(other.field)
-            && centroidMeta.equals(other.centroidMeta);
+        return field.equals(other.field) && centroidMeta.equals(other.centroidMeta);
     }
 
     @Override
@@ -116,13 +117,9 @@ public class IVFCentroidQuery extends Query {
 
         @Override
         public ScorerSupplier scorerSupplier(LeafReaderContext context) throws IOException {
-            // Check if this scorer is for the correct context
-            // Each IVFCentroidQuery is tied to a specific leaf context
             if (context.ord != centroidQuery.context.ord || context.docBase != centroidQuery.context.docBase) {
-                // This query is for a different segment
                 return null;
             }
-            // Access IVFVectorsReader through CodecReader
             LeafReader leafReader = context.reader();
             if (false == leafReader instanceof CodecReader) {
                 throw new IllegalStateException("Expected CodecReader but got " + leafReader.getClass());
@@ -134,34 +131,26 @@ public class IVFCentroidQuery extends Query {
                 knnVectorsReader = fieldsReader.getFieldReader(centroidQuery.field);
             }
 
-            CentroidScorer scorer = getCentroidScorer(knnVectorsReader);
-            return new DefaultScorerSupplier(scorer);
-//            return new ScorerSupplier() {
-//                @Override
-//                public Scorer get(long leadCost) throws IOException {
-//                    return scorer;
-//                }
-//
-//                @Override
-//                public long cost() {
-//                    return centroidQuery.maxVectorsPerCentroid;
-//                }
-//            };
-        }
-
-        private CentroidScorer getCentroidScorer(KnnVectorsReader knnVectorsReader) throws IOException {
             if (false == knnVectorsReader instanceof IVFVectorsReader) {
                 throw new IllegalStateException("Expected IVFVectorsReader but got " + knnVectorsReader.getClass());
             }
+
             var visitor = centroidQuery.centroidMeta.postingVisitor();
             visitor.resetPostingsScorer(centroidQuery.centroidMeta.postingMetadata());
 
-            return new CentroidScorer(
-                visitor,
-                boost,
-                centroidQuery.maxVectorsPerCentroid,
-                centroidQuery.totalVectorsVisited
-            );
+            BufferingKnnCollector collector = new BufferingKnnCollector();
+            int scored = visitor.visit(collector);
+
+            if (centroidQuery.totalVectorsVisited != null) {
+                centroidQuery.totalVectorsVisited.addAndGet(scored);
+            }
+
+            if (collector.size == 0) {
+                return null;
+            }
+
+            Scorer scorer = new ArrayScorer(collector.docIds, collector.scores, collector.size, boost);
+            return new DefaultScorerSupplier(scorer);
         }
 
         @Override
@@ -170,162 +159,120 @@ public class IVFCentroidQuery extends Query {
         }
     }
 
-    private static class CentroidScorer extends Scorer {
+    /**
+     * Scorer backed by pre-scored docId/score arrays. Docs are in ascending order
+     * (as produced by {@link IVFVectorsReader.PostingVisitor#visit}).
+     */
+    private static class ArrayScorer extends Scorer {
+        private final int[] docIds;
+        private final float[] scores;
+        private final int count;
         private final float boost;
-        private final ScoringIterator scoringIterator;
+        private int position = -1;
 
-        CentroidScorer(
-            IVFVectorsReader.PostingVisitor postingVisitor,
-            float boost,
-            int maxVectorsToScore,
-            AtomicLong totalVectorsVisited
-        ) throws IOException {
+        ArrayScorer(int[] docIds, float[] scores, int count, float boost) {
+            this.docIds = docIds;
+            this.scores = scores;
+            this.count = count;
             this.boost = boost;
-            this.scoringIterator = new PostingVisitorIterator(
-                postingVisitor,
-                totalVectorsVisited,
-                maxVectorsToScore
-            );
         }
 
         @Override
         public DocIdSetIterator iterator() {
-            return scoringIterator;
+            return new DocIdSetIterator() {
+                @Override
+                public int docID() {
+                    return currentDocID();
+                }
+
+                @Override
+                public int nextDoc() {
+                    position++;
+                    return currentDocID();
+                }
+
+                @Override
+                public int advance(int target) {
+                    int start = Math.max(0, position + 1);
+                    int idx = Arrays.binarySearch(docIds, start, count, target);
+                    position = idx >= 0 ? idx : (-idx - 1);
+                    return currentDocID();
+                }
+
+                @Override
+                public long cost() {
+                    return count;
+                }
+            };
+        }
+
+        private int currentDocID() {
+            return position >= 0 && position < count ? docIds[position] : (position < 0 ? -1 : DocIdSetIterator.NO_MORE_DOCS);
         }
 
         @Override
-        public float getMaxScore(int upTo) throws IOException {
-            return scoringIterator.maxScore(upTo);
+        public float score() {
+            return scores[position] * boost;
         }
 
         @Override
-        public float score() throws IOException {
-            float rawScore = scoringIterator.scoreCurrentDoc();
-            return rawScore * boost;
+        public float getMaxScore(int upTo) {
+            return Float.POSITIVE_INFINITY;
         }
 
         @Override
         public int docID() {
-            return scoringIterator.docID();
+            return currentDocID();
+        }
+    }
+
+    /**
+     * KnnCollector that buffers all (docId, score) pairs into growable arrays.
+     * Used to capture results from {@link IVFVectorsReader.PostingVisitor#visit}.
+     */
+    static class BufferingKnnCollector extends AbstractKnnCollector {
+        int[] docIds;
+        float[] scores;
+        int size;
+
+        BufferingKnnCollector() {
+            super(Integer.MAX_VALUE, Long.MAX_VALUE, null);
+            docIds = new int[64];
+            scores = new float[64];
+            size = 0;
         }
 
-        private abstract static class ScoringIterator extends DocIdSetIterator {
-            abstract float scoreCurrentDoc() throws IOException;
-
-            public abstract float maxScore(int upTo) throws IOException;
+        @Override
+        public boolean collect(int docId, float similarity) {
+            if (size >= docIds.length) {
+                int newLen = docIds.length * 2;
+                docIds = Arrays.copyOf(docIds, newLen);
+                scores = Arrays.copyOf(scores, newLen);
+            }
+            docIds[size] = docId;
+            scores[size] = similarity;
+            size++;
+            return true;
         }
 
-        private static class PostingVisitorIterator extends ScoringIterator {
-            private static final int BATCH_SIZE = 32;
+        @Override
+        public int numCollected() {
+            return size;
+        }
 
-            private final IVFVectorsReader.PostingVisitor postingVisitor;
-            private final AtomicLong totalVectorsVisited;
-            private final int maxDocsToRead;
+        @Override
+        public float minCompetitiveSimilarity() {
+            return Float.NEGATIVE_INFINITY;
+        }
 
-            private final int[] docIdsCache = new int[BATCH_SIZE];
-            private final float[] scoresCache = new float[BATCH_SIZE];
-            private int cacheSize = 0;
-            private int position = -1;
-            private int currentDoc = -1;
-            private boolean currentBatchScored = false;
-            private int localDocsRead = 0;
-            private boolean flushed = false;
+        @Override
+        public TopDocs topDocs() {
+            return new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), new org.apache.lucene.search.ScoreDoc[0]);
+        }
 
-            PostingVisitorIterator(
-                IVFVectorsReader.PostingVisitor postingVisitor,
-                AtomicLong totalVectorsVisited,
-                int maxDocsToRead
-            ) {
-                this.postingVisitor = postingVisitor;
-                this.totalVectorsVisited = totalVectorsVisited;
-                this.maxDocsToRead = maxDocsToRead;
-            }
-
-            @Override
-            public int docID() {
-                return currentDoc;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-                position++;
-
-                if (position >= cacheSize) {
-                    if (localDocsRead >= maxDocsToRead) {
-                        return exhaust();
-                    }
-                    int toRead = Math.min(BATCH_SIZE, maxDocsToRead - localDocsRead);
-                    cacheSize = postingVisitor.readDocIds(toRead, docIdsCache);
-                    if (cacheSize == 0) {
-                        return exhaust();
-                    }
-                    position = 0;
-                    currentBatchScored = false;
-                    localDocsRead += cacheSize;
-                }
-                currentDoc = docIdsCache[position];
-                return currentDoc;
-            }
-
-            private int exhaust() {
-                flushVisitedCount();
-                currentDoc = NO_MORE_DOCS;
-                return NO_MORE_DOCS;
-            }
-
-            private void flushVisitedCount() {
-                if (flushed == false && totalVectorsVisited != null && localDocsRead > 0) {
-                    totalVectorsVisited.addAndGet(localDocsRead);
-                    flushed = true;
-                }
-            }
-
-            @Override
-            public int advance(int target) throws IOException {
-                int doc = docID();
-                while (doc < target) {
-                    if (cacheSize > 0 && target > docIdsCache[cacheSize - 1]) {
-                        position = cacheSize;
-                        if (false == currentBatchScored) {
-                            postingVisitor.skipBytes(cacheSize);
-                        }
-                    }
-                    doc = nextDoc();
-                }
-                return doc;
-            }
-
-            @Override
-            public long cost() {
-                return Math.min(postingVisitor.cost(), maxDocsToRead);
-            }
-
-            @Override
-            float scoreCurrentDoc() throws IOException {
-                if (position >= cacheSize) {
-                    throw new IOException("scoreCurrentDoc called outside valid range");
-                }
-                if (false == currentBatchScored) {
-                    postingVisitor.scoreBulk(scoresCache);
-                    currentBatchScored = true;
-                }
-                return scoresCache[position];
-            }
-
-            @Override
-            public float maxScore(int upTo) {
-                if (upTo == -1 || upTo == NO_MORE_DOCS) {
-                    return Float.POSITIVE_INFINITY;
-                }
-                assert docIdsCache[position] == upTo;
-                float maxScore = Float.NEGATIVE_INFINITY;
-                for (int i = 0; i <= position; i++) {
-                    if (scoresCache[i] > maxScore) {
-                        maxScore = scoresCache[i];
-                    }
-                }
-                return maxScore;
-            }
+        @Override
+        public String toString() {
+            return "BufferingKnnCollector[size=" + size + "]";
         }
     }
 }
