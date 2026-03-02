@@ -10,8 +10,6 @@
 package org.elasticsearch.index.codec.vectors.diskbbq;
 
 import org.apache.lucene.store.IndexInput;
-import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader.CentroidIterator;
-import org.elasticsearch.search.vectors.IVFCentroidQuery;
 
 import java.io.IOException;
 
@@ -29,7 +27,7 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
     private final int prefetchAhead;
 
     // Ring buffer for prefetched offsets and lengths
-    private final IVFCentroidQuery.IVFCentroidMeta[] prefetchBuffer;
+    private final PostingMetadata[] prefetchBuffer;
     private int readIndex = 0;  // Where we read from buffer
     private int writeIndex = 0; // Where we write to buffer
     private int bufferCount = 0; // Number of elements in buffer
@@ -61,7 +59,7 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
         this.delegate = delegate;
         this.postingListSlice = postingListSlice;
         this.prefetchAhead = prefetchAhead;
-        this.prefetchBuffer = new IVFCentroidQuery.IVFCentroidMeta[prefetchAhead];
+        this.prefetchBuffer = new PostingMetadata[prefetchAhead];
         // Initialize buffer by prefetching up to prefetchAhead elements
         fillBuffer();
     }
@@ -71,7 +69,7 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
      */
     private void fillBuffer() throws IOException {
         while (bufferCount < prefetchAhead && delegate.hasNext()) {
-            IVFCentroidQuery.IVFCentroidMeta offsetAndLength = delegate.nextCentroidMeta();
+            PostingMetadata offsetAndLength = delegate.nextPosting();
             prefetchBuffer[writeIndex] = offsetAndLength;
             writeIndex = (writeIndex + 1) % prefetchAhead;
             bufferCount++;
@@ -87,34 +85,27 @@ public final class PrefetchingCentroidIterator implements CentroidIterator {
     }
 
     @Override
-    public IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException {
+    public PostingMetadata nextPosting() throws IOException {
         if (bufferCount == 0) {
             throw new IllegalStateException("No more elements available");
         }
 
         // Get the next element from buffer
-        IVFCentroidQuery.IVFCentroidMeta result = prefetchBuffer[readIndex];
+        PostingMetadata result = prefetchBuffer[readIndex];
         readIndex = (readIndex + 1) % prefetchAhead;
         bufferCount--;
 
         // Try to fill buffer with one more element
         if (delegate.hasNext()) {
-            IVFCentroidQuery.IVFCentroidMeta offsetAndLength = delegate.nextCentroidMeta();
+            PostingMetadata offsetAndLength = delegate.nextPosting();
             prefetchBuffer[writeIndex] = offsetAndLength;
             writeIndex = (writeIndex + 1) % prefetchAhead;
             bufferCount++;
 
             // Trigger prefetch for the newly added element
-//            postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
+            postingListSlice.prefetch(offsetAndLength.offset(), offsetAndLength.length());
         }
 
         return result;
-    }
-
-    @Override
-    public void skip(int toSkip) throws IOException {
-        while(delegate.hasNext() && toSkip-- > 0) {
-            delegate.nextCentroidMeta();
-        }
     }
 }

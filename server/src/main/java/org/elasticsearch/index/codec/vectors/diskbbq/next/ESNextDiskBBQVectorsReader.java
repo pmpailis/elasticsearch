@@ -728,8 +728,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
         int docBase = 0;
 
         int vectors;
-        int docsRead;
-        int lastReadCount;
         float centroidToParentSqDist;
         float centroidDistance;
         long slicePos;
@@ -774,8 +772,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             vectors = indexInput.readVInt();
             docEncoding = indexInput.readByte();
             docBase = 0;
-            docsRead = 0;
-            lastReadCount = 0;
             slicePos = indexInput.getFilePointer();
             // The score is the transformed score used when searching the centroids.
             // we need to convert it back to the raw similarity to be used as part of
@@ -937,64 +933,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             return scoredDocs;
         }
 
-        @Override
-        public int cost() {
-            return vectors;
-        }
-
-        @Override
-        public int readDocIds(int count, int[] docIds) throws IOException {
-            int toRead = Math.min(count, vectors - docsRead);
-            if (toRead <= 0) return 0;
-            idsWriter.readInts(indexInput, toRead, docEncoding, docIds);
-            for (int j = 0; j < toRead; j++) {
-                docBase += docIds[j];
-                docIds[j] = docBase;
-            }
-            docsRead += toRead;
-            lastReadCount = toRead;
-            return toRead;
-        }
-
-        @Override
-        public float scoreBulk(float[] outScores) throws IOException {
-            if (lastReadCount == 0) {
-                return Float.NEGATIVE_INFINITY;
-            }
-            queryQuantizer.quantizeQueryIfNecessary();
-            float maxScore;
-            if (lastReadCount == BULK_SIZE) {
-                maxScore = osqVectorsScorer.scoreBulk(
-                    queryQuantizer.getQuantizedTarget(),
-                    queryQuantizer.getQueryCorrections().lowerInterval(),
-                    queryQuantizer.getQueryCorrections().upperInterval(),
-                    queryQuantizer.getQueryCorrections().quantizedComponentSum(),
-                    centroidDistance,
-                    fieldInfo.getVectorSimilarityFunction(),
-                    0f,
-                    scores
-                );
-            } else {
-                maxScore = osqVectorsScorer.scoreBulk(
-                    queryQuantizer.getQuantizedTarget(),
-                    queryQuantizer.getQueryCorrections().lowerInterval(),
-                    queryQuantizer.getQueryCorrections().upperInterval(),
-                    queryQuantizer.getQueryCorrections().quantizedComponentSum(),
-                    centroidDistance,
-                    fieldInfo.getVectorSimilarityFunction(),
-                    0f,
-                    scores,
-                    lastReadCount
-                );
-            }
-            System.arraycopy(scores, 0, outScores, 0, lastReadCount);
-            return maxScore;
-        }
-
-        @Override
-        public void skipBytes(int docs) throws IOException {
-            indexInput.skipBytes(quantizedByteLength * docs);
-        }
     }
 
 }
