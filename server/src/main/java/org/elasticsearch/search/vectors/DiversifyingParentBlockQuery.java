@@ -11,16 +11,21 @@ package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
+import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
+import org.apache.lucene.util.BitSet;
+import org.apache.lucene.util.Bits;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -181,6 +186,15 @@ public class DiversifyingParentBlockQuery extends Query {
                 }
 
                 @Override
+                public BulkScorer bulkScorer() throws IOException {
+                    BulkScorer innerBulkScorer = innerSupplier.bulkScorer();
+                    if (innerBulkScorer == null) {
+                        return null;
+                    }
+                    return new DiversifyingBulkScorer(innerBulkScorer, parentBits);
+                }
+
+                @Override
                 public long cost() {
                     return innerSupplier.cost();
                 }
@@ -190,6 +204,108 @@ public class DiversifyingParentBlockQuery extends Query {
         @Override
         public boolean isCacheable(LeafReaderContext ctx) {
             return false;
+        }
+    }
+
+    /**
+     * BulkScorer that wraps an inner BulkScorer and applies parent-block diversification.
+     * This preserves the inner query's bulk scoring path (e.g. DisjunctionMaxBulkScorer),
+     * which processes each sub-scorer's posting list sequentially — better I/O access patterns
+     * for memory-mapped IVF posting lists than the per-doc Scorer/priority-queue merge path.
+     * <p>
+     * Since BulkScorer guarantees docs are collected in ascending order, we use a streaming
+     * approach: a wrapping collector tracks the current parent block and emits the best-scoring
+     * child when the parent boundary changes.
+     */
+    private static class DiversifyingBulkScorer extends BulkScorer {
+        private final BulkScorer innerBulkScorer;
+        private final BitSet parentBits;
+
+        DiversifyingBulkScorer(BulkScorer innerBulkScorer, BitSet parentBits) {
+            this.innerBulkScorer = innerBulkScorer;
+            this.parentBits = parentBits;
+        }
+
+        @Override
+        public int score(LeafCollector collector, Bits acceptDocs, int min, int max) throws IOException {
+            DiversifyingLeafCollector diversifying = new DiversifyingLeafCollector(collector, parentBits);
+            int next = innerBulkScorer.score(diversifying, acceptDocs, min, max);
+            diversifying.flushPending();
+            return next;
+        }
+
+        @Override
+        public long cost() {
+            return innerBulkScorer.cost();
+        }
+    }
+
+    /**
+     * A LeafCollector that sits between the inner BulkScorer and the outer collector,
+     * performing parent-block diversification on the fly. For each parent block, only
+     * the highest-scoring child document is passed to the delegate collector.
+     */
+    private static class DiversifyingLeafCollector implements LeafCollector {
+        private final LeafCollector delegate;
+        private final BitSet parentBits;
+        private final ScoreHolder outerScore = new ScoreHolder();
+        private Scorable innerScorable;
+
+        private int currentParent = -1;
+        private int bestChild = -1;
+        private float bestScore = Float.NEGATIVE_INFINITY;
+
+        DiversifyingLeafCollector(LeafCollector delegate, BitSet parentBits) throws IOException {
+            this.delegate = delegate;
+            this.parentBits = parentBits;
+            delegate.setScorer(outerScore);
+        }
+
+        @Override
+        public void setScorer(Scorable scorer) {
+            this.innerScorable = scorer;
+        }
+
+        @Override
+        public void collect(int doc) throws IOException {
+            int parent = parentBits.nextSetBit(doc);
+            if (parent != currentParent && bestChild != -1) {
+                emitBest();
+            }
+            currentParent = parent;
+            float score = innerScorable.score();
+            if (score > bestScore) {
+                bestChild = doc;
+                bestScore = score;
+            }
+        }
+
+        void flushPending() throws IOException {
+            if (bestChild != -1) {
+                emitBest();
+            }
+        }
+
+        private void emitBest() throws IOException {
+            outerScore.score = bestScore;
+            delegate.collect(bestChild);
+            bestChild = -1;
+            bestScore = Float.NEGATIVE_INFINITY;
+        }
+
+        @Override
+        public void finish() throws IOException {
+            flushPending();
+            delegate.finish();
+        }
+    }
+
+    private static class ScoreHolder extends Scorable {
+        float score;
+
+        @Override
+        public float score() {
+            return score;
         }
     }
 }

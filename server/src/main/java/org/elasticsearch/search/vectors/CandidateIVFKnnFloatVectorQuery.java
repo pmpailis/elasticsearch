@@ -10,7 +10,6 @@
 package org.elasticsearch.search.vectors;
 
 
-import org.apache.logging.log4j.LogManager;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
@@ -19,55 +18,28 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.Term;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.BulkScorer;
-import org.apache.lucene.search.CollectorManager;
-import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DisjunctionMaxQuery;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
-import org.apache.lucene.search.Scorable;
-import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
-import org.apache.lucene.search.Scorer;
-import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.search.TopScoreDocCollector;
 import org.apache.lucene.search.TopScoreDocCollectorManager;
-import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
-import org.apache.lucene.search.knn.KnnCollectorManager;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.lucene.search.Queries;
-import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
-import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
-import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
-import java.security.Timestamp;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAccumulator;
-
-import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
-import static org.elasticsearch.common.lucene.Lucene.EMPTY_TOP_DOCS;
 
 /**
  * This query finds the nearest centroids and creates a CentroidQuery for each, then
@@ -83,6 +55,10 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     private final int clusterSize;
     private final BitSetProducer parentsFilter; // null for non-diversifying
     private final AtomicLong totalVectorsVisited;
+
+    public float[] getQueryVector() {
+        return queryVector;
+    }
 
     public long getTotalVectorsVisited() {
         return totalVectorsVisited.get();
@@ -124,7 +100,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         BitSetProducer parentsFilter,
         AtomicLong totalVectorsVisited
     ) {
-        super(field, visitRatio, k, k, filter);
+        super(field, visitRatio, k, k, filter, false);
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
         }
@@ -146,7 +122,12 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     }
 
     @Override
-    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
+    void preconditionQuery(LeafReaderContext context) {
+        // preconditioning is not supported for this query type
+    }
+
+    @Override
+    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) {
         return null;
     }
 
@@ -193,21 +174,13 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         }
         long maxVectorVisited = Math.max(100, Math.round(2.0 * effectiveVisitRatio * totalVectors));
 
-        // cross-leaf competitive scores; replacing the collector
-        // might need to revisit this to check if we can still use the collector
-        AtomicLong globalMinCompetitiveScore = reader.leaves().size() > 1
-            ? new AtomicLong(NeighborQueue.encodeRaw(Integer.MAX_VALUE, Float.NEGATIVE_INFINITY))
-            : null;
-
-        // calculate number of centroids to initially explore
         filterSelectivity = filter != null ? (1 + (1 - filterSelectivity)) : 1;
         int numCentroids = Math.max(1, (int) Math.ceil((double) (maxVectorVisited * filterSelectivity) / clusterSize));
-//        LogManager.getLogger("foo").error("centroids to explore: " + numCentroids);
-        // or each leaf, find top centroids and create CentroidQueries
+
         List<Callable<List<IVFCentroidQuery>>> tasks = new ArrayList<>(reader.leaves().size());
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
         for (LeafReaderContext context : reader.leaves()) {
-            tasks.add(() -> generateCentroidQueries(context, numCentroids, maxVectorVisited, globalMinCompetitiveScore, totalVectorsVisited));
+            tasks.add(() -> generateCentroidQueries(context, numCentroids, maxVectorVisited, totalVectorsVisited));
         }
         List<List<IVFCentroidQuery>> perLeafResults = indexSearcher.getTaskExecutor().invokeAll(tasks).stream().toList();
         for (List<IVFCentroidQuery> centroidQueries : perLeafResults) {
@@ -222,6 +195,10 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
 
         Query ivfQuery = new DisjunctionMaxQuery(allCentroidQueries, 0.0f);
 
+        if (parentsFilter != null) {
+            ivfQuery = new DiversifyingParentBlockQuery(parentsFilter, ivfQuery);
+        }
+
         if (filter != null) {
             BooleanQuery.Builder boolBuilder = new BooleanQuery.Builder();
             boolBuilder.add(ivfQuery, BooleanClause.Occur.MUST);
@@ -232,164 +209,26 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         TopScoreDocCollectorManager manager = new TopScoreDocCollectorManager(k, (int) maxVectorVisited);
         TopDocs topDocs = indexSearcher.search(ivfQuery, manager);
         vectorOpsCount = (int) totalVectorsVisited.get();
-//        LogManager.getLogger("foo").error("vector ops count: " + vectorOpsCount);
         if (topDocs.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
         return new KnnScoreDocQuery(topDocs.scoreDocs, reader);
-        /**
-        int[] docs = new int[scoreDocs.length];
-        for(int i = 0; i < scoreDocs.length; i++){
-            docs[i] = scoreDocs[i].doc;
-        }
-        Arrays.sort(docs);
-        int[] segmentStarts = findSegmentStarts(reader, docs);
-        return new Weight(ivfQuery) {
-            @Override
-            public Explanation explain(LeafReaderContext context, int doc) throws IOException {
-                return null;
-            }
-
-            public int count(LeafReaderContext context) {
-                return segmentStarts[context.ord + 1] - segmentStarts[context.ord];
-            }
-
-            @Override
-            public ScorerSupplier scorerSupplier(LeafReaderContext context) throws IOException {
-                Scorer scorer = new Scorer() {
-                    final int lower = segmentStarts[context.ord];
-                    final int upper = segmentStarts[context.ord + 1];
-                    int upTo = -1;
-
-                    @Override
-                    public float score() throws IOException {
-                        return scoreDocs[upTo].score;
-                    }
-
-                    @Override
-                    public int advanceShallow(int docId) {
-                        int start = Math.max(upTo, lower);
-                        int docIdIndex = Arrays.binarySearch(docs, start, upper, docId + context.docBase);
-                        if (docIdIndex < 0) {
-                            docIdIndex = -1 - docIdIndex;
-                        }
-                        if (docIdIndex >= upper) {
-                            return NO_MORE_DOCS;
-                        }
-                        return scoreDocs[docIdIndex].doc;
-                    }
-
-                    @Override
-                    public int docID() {
-                        return currentDocId();
-                    }
-
-                    private int currentDocId() {
-                        if (upTo == -1) {
-                            return -1;
-                        }
-                        if (upTo >= upper) {
-                            return NO_MORE_DOCS;
-                        }
-                        return docs[upTo] - context.docBase;
-                    }
-
-                    @Override
-                    public DocIdSetIterator iterator() {
-                        return new DocIdSetIterator() {
-                            @Override
-                            public int docID() {
-                                return currentDocId();
-                            }
-
-                            @Override
-                            public int nextDoc() {
-                                if (upTo == -1) {
-                                    upTo = lower;
-                                } else {
-                                    ++upTo;
-                                }
-                                return currentDocId();
-                            }
-
-                            @Override
-                            public int advance(int target) throws IOException {
-                                return slowAdvance(target);
-                            }
-
-                            @Override
-                            public long cost() {
-                                return upper - lower;
-                            }
-                        };
-                    }
-
-                    @Override
-                    public float getMaxScore(int doc) throws IOException {
-                        // NO_MORE_DOCS indicates the maximum score for all docs in this segment
-                        // Anything less than must be accounted for via the docBase.
-                        if (doc != NO_MORE_DOCS) {
-                            doc += context.docBase;
-                        }
-                        float maxScore = 0;
-                        for (int idx = Math.max(lower, upTo); idx < upper && scoreDocs[idx].doc <= doc; idx++) {
-                            maxScore = Math.max(maxScore, scoreDocs[idx].score);
-                        }
-                        return maxScore;
-                    }
-                };
-                return new DefaultScorerSupplier(scorer);
-            }
-
-            @Override
-            public boolean isCacheable(LeafReaderContext ctx) {
-                return false;
-            }
-        };
-         */
-    }
-
-    private static int[] findSegmentStarts(IndexReader reader, int[] docs){
-        int[] starts = new int[reader.leaves().size() + 1];
-        starts[starts.length - 1] = docs.length;
-        if (starts.length == 2) {
-            return starts;
-        }
-        int resultIndex = 0;
-        for (int i = 1; i < starts.length - 1; i++) {
-            int upper = reader.leaves().get(i).docBase;
-            resultIndex = Arrays.binarySearch(docs, resultIndex, docs.length, upper);
-            if (resultIndex < 0) {
-                resultIndex = -1 - resultIndex;
-            }
-            starts[i] = resultIndex;
-        }
-        return starts;
     }
 
     private List<IVFCentroidQuery> generateCentroidQueries(
         LeafReaderContext ctx,
         int numCentroids,
         long docsToExplore,
-        AtomicLong globalMinCompetitiveScore,
-        AtomicLong totalVectorsVisited) throws IOException {
-//        var startTime = System.nanoTime();
-        List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids, docsToExplore);
-//        LogManager.getLogger("foo").error("topCentroids took: {} nanoseconds", System.nanoTime() - startTime);
+        AtomicLong totalVectorsVisited
+    ) throws IOException {
+        List<IVFCentroidQuery.IVFCentroidMeta> topCentroids = findTopCentroids(ctx, numCentroids);
 
-        // Calculate max vectors per centroid
-       if(topCentroids == null || topCentroids.isEmpty()) {
-           return null;
-       }
+        if (topCentroids == null || topCentroids.isEmpty()) {
+            return null;
+        }
         int maxVectorsPerCentroid = (int) Math.max(1, docsToExplore / topCentroids.size());
 
-        // Get parent bitset if diversifying
-        Bits parentBitSet = null;
-        if (parentsFilter != null) {
-            parentBitSet = parentsFilter.getBitSet(ctx);
-        }
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
-        // Create CentroidQuery for each selected centroid
         for (IVFCentroidQuery.IVFCentroidMeta centroid : topCentroids) {
             allCentroidQueries.add(
                 new IVFCentroidQuery(
@@ -398,7 +237,6 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
                     centroid,
                     ctx,
                     maxVectorsPerCentroid,
-                    parentBitSet,
                     totalVectorsVisited
                 )
             );
@@ -406,14 +244,13 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         return allCentroidQueries;
     }
 
-    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(LeafReaderContext ctx, int maxCentroids, long docsToExplore) throws IOException {
+    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(LeafReaderContext ctx, int maxCentroids) throws IOException {
         LeafReader leafReader = ctx.reader();
         FloatVectorValues vectorValues = leafReader.getFloatVectorValues(field);
         if (vectorValues == null || vectorValues.size() == 0) {
             return null;
         }
 
-        // Access IVFVectorsReader through CodecReader
         if (false == leafReader instanceof CodecReader) {
             return null;
         }
@@ -428,14 +265,7 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         }
         IVFVectorsReader ivfReader = (IVFVectorsReader) knnVectorsReader;
         FieldInfo fieldInfo = leafReader.getFieldInfos().fieldInfo(field);
-        return ivfReader.findTopCentroids(
-            fieldInfo,
-            queryVector,
-            maxCentroids,
-            field,
-            providedVisitRatio,
-            docsToExplore
-        );
+        return ivfReader.findTopCentroids(fieldInfo, queryVector, maxCentroids, field, providedVisitRatio);
     }
 
     @Override

@@ -23,32 +23,25 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Weight;
-import org.apache.lucene.util.Bits;
-import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Objects;
-import java.util.Random;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class IVFCentroidQuery extends Query {
 
     /**
-     * metadata about a centroid and its posting list.
-     * Used by the new query architecture to identify which centroids to explore.
+     * Metadata about a centroid and its posting list, paired with a visitor for scoring.
      */
-    public record IVFCentroidMeta(long offset, long length, int ordinal, float score, IVFVectorsReader.PostingVisitor postingVisitor){ }
+    public record IVFCentroidMeta(PostingMetadata postingMetadata, IVFVectorsReader.PostingVisitor postingVisitor) {}
 
     private final String field;
     private final float[] queryVector;
     private final IVFCentroidMeta centroidMeta;
     private final LeafReaderContext context;
     private final int maxVectorsPerCentroid;
-    private final Bits parentBitSet;
     private final AtomicLong totalVectorsVisited;
 
     public IVFCentroidQuery(
@@ -57,19 +50,17 @@ public class IVFCentroidQuery extends Query {
         IVFCentroidMeta centroid,
         LeafReaderContext ctx,
         int maxVectorsPerCentroid,
-        Bits parentBitSet,
         AtomicLong totalVectorsVisited) {
         this.field = field;
         this.queryVector = queryVector;
         this.centroidMeta = centroid;
         this.maxVectorsPerCentroid = maxVectorsPerCentroid;
         this.context = ctx;
-        this.parentBitSet = parentBitSet;
         this.totalVectorsVisited = totalVectorsVisited;
     }
 
-    public int centroidOrdinal(){
-        return centroidMeta.ordinal();
+    public int centroidOrdinal() {
+        return centroidMeta.postingMetadata().queryCentroidOrdinal();
     }
 
     @Override
@@ -99,7 +90,7 @@ public class IVFCentroidQuery extends Query {
 
     @Override
     public int hashCode() {
-        return Objects.hash(field, centroidMeta.ordinal);
+        return Objects.hash(field, centroidMeta.postingMetadata().queryCentroidOrdinal());
     }
 
     @Override
@@ -163,15 +154,12 @@ public class IVFCentroidQuery extends Query {
                 throw new IllegalStateException("Expected IVFVectorsReader but got " + knnVectorsReader.getClass());
             }
             var visitor = centroidQuery.centroidMeta.postingVisitor();
-            visitor.resetPostingsScorer(0); //centroidQuery.centroidMeta.offset);
+            visitor.resetPostingsScorer(centroidQuery.centroidMeta.postingMetadata());
 
-            // Create scorer
             return new CentroidScorer(
                 visitor,
-                centroidQuery.centroidMeta,
                 boost,
                 centroidQuery.maxVectorsPerCentroid,
-                centroidQuery.parentBitSet,
                 centroidQuery.totalVectorsVisited
             );
         }
@@ -188,15 +176,16 @@ public class IVFCentroidQuery extends Query {
 
         CentroidScorer(
             IVFVectorsReader.PostingVisitor postingVisitor,
-            IVFCentroidMeta centroidMeta,
             float boost,
             int maxVectorsToScore,
-            Bits parentBitSet,
             AtomicLong totalVectorsVisited
         ) throws IOException {
             this.boost = boost;
-
-            this.scoringIterator = new PostingVisitorIterator(centroidMeta.ordinal, postingVisitor, totalVectorsVisited, maxVectorsToScore, centroidMeta.score);
+            this.scoringIterator = new PostingVisitorIterator(
+                postingVisitor,
+                totalVectorsVisited,
+                maxVectorsToScore
+            );
         }
 
         @Override
@@ -227,29 +216,29 @@ public class IVFCentroidQuery extends Query {
         }
 
         private static class PostingVisitorIterator extends ScoringIterator {
-            private static final int BATCH_SIZE = 32; // Must match ESNextOSQVectorsScorer.BULK_SIZE
+            private static final int BATCH_SIZE = 32;
 
             private final IVFVectorsReader.PostingVisitor postingVisitor;
             private final AtomicLong totalVectorsVisited;
-            private final long estimatedCost;
+            private final int maxDocsToRead;
 
             private final int[] docIdsCache = new int[BATCH_SIZE];
             private final float[] scoresCache = new float[BATCH_SIZE];
-//            private int cacheStart = 0;
             private int cacheSize = 0;
             private int position = -1;
-            private final float centroidScore;
             private int currentDoc = -1;
-            private final int ordinal;
             private boolean currentBatchScored = false;
+            private int localDocsRead = 0;
+            private boolean flushed = false;
 
-            PostingVisitorIterator(int ordinal, IVFVectorsReader.PostingVisitor postingVisitor, AtomicLong totalVectorsVisited, long estimatedCost, float centroidScore) throws IOException {
-                this.ordinal = ordinal;
+            PostingVisitorIterator(
+                IVFVectorsReader.PostingVisitor postingVisitor,
+                AtomicLong totalVectorsVisited,
+                int maxDocsToRead
+            ) {
                 this.postingVisitor = postingVisitor;
                 this.totalVectorsVisited = totalVectorsVisited;
-                this.centroidScore = centroidScore;
-                this.estimatedCost = postingVisitor.cost();
-//                nextDoc();
+                this.maxDocsToRead = maxDocsToRead;
             }
 
             @Override
@@ -261,31 +250,41 @@ public class IVFCentroidQuery extends Query {
             public int nextDoc() throws IOException {
                 position++;
 
-                // Check if we need to load next batch
                 if (position >= cacheSize) {
-                    // Load next batch
-                    cacheSize = postingVisitor.readDocIds(BATCH_SIZE, docIdsCache);
+                    if (localDocsRead >= maxDocsToRead) {
+                        return exhaust();
+                    }
+                    int toRead = Math.min(BATCH_SIZE, maxDocsToRead - localDocsRead);
+                    cacheSize = postingVisitor.readDocIds(toRead, docIdsCache);
                     if (cacheSize == 0) {
-                        currentDoc = NO_MORE_DOCS;
-                        return NO_MORE_DOCS;
+                        return exhaust();
                     }
                     position = 0;
                     currentBatchScored = false;
-                    // Track vectors scored for this batch
-                    if (totalVectorsVisited != null) {
-                        totalVectorsVisited.addAndGet(cacheSize);
-                    }
+                    localDocsRead += cacheSize;
                 }
                 currentDoc = docIdsCache[position];
                 return currentDoc;
+            }
+
+            private int exhaust() {
+                flushVisitedCount();
+                currentDoc = NO_MORE_DOCS;
+                return NO_MORE_DOCS;
+            }
+
+            private void flushVisitedCount() {
+                if (flushed == false && totalVectorsVisited != null && localDocsRead > 0) {
+                    totalVectorsVisited.addAndGet(localDocsRead);
+                    flushed = true;
+                }
             }
 
             @Override
             public int advance(int target) throws IOException {
                 int doc = docID();
                 while (doc < target) {
-                    if (target > docIdsCache[cacheSize - 1]) {
-                        //skip entire batch
+                    if (cacheSize > 0 && target > docIdsCache[cacheSize - 1]) {
                         position = cacheSize;
                         if (false == currentBatchScored) {
                             postingVisitor.skipBytes(cacheSize);
@@ -298,7 +297,7 @@ public class IVFCentroidQuery extends Query {
 
             @Override
             public long cost() {
-                return postingVisitor.cost();
+                return Math.min(postingVisitor.cost(), maxDocsToRead);
             }
 
             @Override
@@ -306,7 +305,7 @@ public class IVFCentroidQuery extends Query {
                 if (position >= cacheSize) {
                     throw new IOException("scoreCurrentDoc called outside valid range");
                 }
-                if(false == currentBatchScored){
+                if (false == currentBatchScored) {
                     postingVisitor.scoreBulk(scoresCache);
                     currentBatchScored = true;
                 }

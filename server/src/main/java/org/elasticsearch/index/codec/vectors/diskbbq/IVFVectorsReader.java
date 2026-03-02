@@ -31,12 +31,9 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
-import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
-import org.elasticsearch.index.codec.vectors.diskbbq.next.ESNextDiskBBQVectorsFormat;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFCentroidQuery;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
-import org.elasticsearch.simdvec.ESVectorUtil;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -46,10 +43,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader.SIMILARITY_FUNCTIONS;
-import static org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer.DEFAULT_LAMBDA;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.CENTROID_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.CLUSTER_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.DYNAMIC_VISIT_RATIO;
+import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.IVF_META_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.VERSION_DIRECT_IO;
 
 /**
@@ -69,11 +66,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         this.fieldInfos = state.fieldInfos;
         this.fields = new IntObjectHashMap<>();
         this.genericReaders = new GenericFlatVectorReaders();
-        String meta = IndexFileNames.segmentFileName(
-            state.segmentInfo.name,
-            state.segmentSuffix,
-            ES920DiskBBQVectorsFormat.IVF_META_EXTENSION
-        );
+        String meta = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, IVF_META_EXTENSION);
 
         int versionMeta = -1;
         try (ChecksumIndexInput ivfMeta = state.directory.openChecksumInput(meta)) {
@@ -110,11 +103,10 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio,
-        int centroidsToLoad
+        float visitRatio
     ) throws IOException;
 
-    private static IndexInput openDataInput(
+    protected static IndexInput openDataInput(
         SegmentReadState state,
         int versionMeta,
         String fileExtension,
@@ -319,11 +311,10 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             acceptDocs,
             approximateCost,
             values,
-            visitRatio,
-            1
+            visitRatio
         );
         Bits acceptDocsBits = acceptDocs.bits();
-        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
+        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits, entry.centroidSlice(ivfCentroids));
         long expectedDocs = 0;
         long actualDocs = 0;
         // initially we visit only the "centroids to search"
@@ -332,11 +323,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-            // todo do we actually need to know the score???
-            IVFCentroidQuery.IVFCentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
-            // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
-            // is enough?
-            expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
+            PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            expectedDocs += scorer.resetPostingsScorer(postingMetadata);
             actualDocs += scorer.visit(knnCollector);
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -348,8 +336,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                IVFCentroidQuery.IVFCentroidMeta centroidMeta = centroidPrefetchingIterator.nextCentroidMeta();
-                scorer.resetPostingsScorer(centroidMeta.offset());
+                PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+                scorer.resetPostingsScorer(postingMetadata);
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -357,14 +345,6 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             }
         }
     }
-
-    public abstract List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
-        FieldInfo fieldInfo,
-        float[] queryVector,
-        int maxCentroids,
-        String field,
-        float visitRatio,
-        long docsToExplore) throws IOException;
 
     @Override
     public final void search(String field, byte[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) throws IOException {
@@ -479,46 +459,64 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             return bulkSize;
         }
     }
-    public abstract PostingVisitor getPostingVisitor(FieldInfo fieldInfo, IndexInput postingsLists, float[] target, Bits needsScoring)
-        throws IOException;
 
-    public record CentroidOffsetAndLength(long offset, long length) {}
-
-    public interface CentroidIterator {
-        boolean hasNext();
-
-        IVFCentroidQuery.IVFCentroidMeta nextCentroidMeta() throws IOException;
-
-        default void skip(int skip) throws IOException {}
+    public List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
+        FieldInfo fieldInfo,
+        float[] queryVector,
+        int maxCentroids,
+        String field,
+        float visitRatio
+    ) throws IOException {
+        FloatVectorValues values = getReaderForField(field).getFloatVectorValues(field);
+        FieldEntry entry = fields.get(fieldInfo.number);
+        IndexInput postingListSlice = entry.postingListSlice(ivfClusters);
+        CentroidIterator centroidIterator = getCentroidIterator(
+            fieldInfo,
+            entry.numCentroids,
+            entry.centroidSlice(ivfCentroids),
+            queryVector,
+            postingListSlice,
+            ESAcceptDocs.ESAcceptDocsAll.INSTANCE,
+            0,
+            values,
+            visitRatio
+        );
+        List<IVFCentroidQuery.IVFCentroidMeta> centroids = new ArrayList<>();
+        int centroidsAdded = 0;
+        while (centroidIterator.hasNext() && centroidsAdded++ < maxCentroids) {
+            PostingMetadata postingMetadata = centroidIterator.nextPosting();
+            IndexInput postingSlice = postingListSlice.clone();
+            PostingVisitor postingVisitor = getPostingVisitor(
+                fieldInfo,
+                postingSlice,
+                queryVector,
+                null,
+                entry.centroidSlice(ivfCentroids)
+            );
+            centroids.add(new IVFCentroidQuery.IVFCentroidMeta(postingMetadata, postingVisitor));
+        }
+        return centroids;
     }
+
+    public abstract PostingVisitor getPostingVisitor(
+        FieldInfo fieldInfo,
+        IndexInput postingsLists,
+        float[] target,
+        Bits needsScoring,
+        IndexInput centroidSlice
+    ) throws IOException;
 
     public interface PostingVisitor {
         /** returns the number of documents in the posting list */
-        int resetPostingsScorer(long offset) throws IOException;
+        int resetPostingsScorer(PostingMetadata metadata) throws IOException;
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
 
         int cost();
-        /**
-         * Reads the next batch of document IDs from the posting list.
-         * Document IDs are returned as absolute values (not deltas).
-         *
-         * @param count maximum number of doc IDs to read
-         * @param docIds output array for doc IDs (must be at least count in size)
-         * @return number of doc IDs actually read (may be less than count if end reached)
-         * @throws IOException if an I/O error occurs
-         */
+
         int readDocIds(int count, int[] docIds) throws IOException;
 
-        /**
-         * Scores the vectors corresponding to the last batch of doc IDs read via readDocIds().
-         * Must be called after readDocIds() and before the next readDocIds() call.
-         *
-         * @param scores output array for scores (must match size of last readDocIds call)
-         * @return maximum score in the batch
-         * @throws IOException if an I/O error occurs
-         */
         default float scoreBulk(float[] scores) throws IOException {
             throw new UnsupportedOperationException("scoreBulk not implemented");
         }
