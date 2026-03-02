@@ -29,7 +29,7 @@ import org.elasticsearch.index.mapper.vectors.SparseVectorFieldMapper;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.inference.TaskType;
 import org.elasticsearch.search.vectors.DenseVectorQuery;
-import org.elasticsearch.search.vectors.IVFKnnFloatVectorQuery;
+import org.elasticsearch.search.vectors.CandidateIVFKnnFloatVectorQuery;
 import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.search.vectors.SparseVectorQueryWrapper;
 import org.elasticsearch.search.vectors.VectorData;
@@ -170,8 +170,8 @@ public class SemanticTextChunkUtils {
                     queries.add(Queries.ALL_DOCS_INSTANCE);
                 } else if (query instanceof DenseVectorQuery.Floats floatsQuery) {
                     queries.add(fieldType.createExactKnnQuery(VectorData.fromFloats(floatsQuery.getQuery()), similarity));
-                } else if (query instanceof IVFKnnFloatVectorQuery ivfQuery) {
-                    queries.add(fieldType.createExactKnnQuery(VectorData.fromFloats(ivfQuery.getQuery()), similarity));
+                } else if (query instanceof CandidateIVFKnnFloatVectorQuery ivfQuery) {
+                    queries.add(fieldType.createExactKnnQuery(VectorData.fromFloats(ivfQuery.getQueryVector()), similarity));
                 } else if (query instanceof RescoreKnnVectorQuery rescoreQuery) {
                     visitLeaf(rescoreQuery.innerQuery(), similarity);
                 } else if (query instanceof VectorSimilarityQuery similarityQuery) {

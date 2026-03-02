@@ -65,14 +65,14 @@ public class CandidateIVFKnnFloatVectorQueryTests extends AbstractIVFKnnVectorQu
             IndexReader reader = DirectoryReader.open(indexStore)
         ) {
             AbstractIVFKnnVectorQuery query = getKnnVectorQuery("field", new float[] { 0.0f, 1.0f }, 10);
-            assertEquals("IVFKnnFloatVectorQuery:field[0.0,...][10]", query.toString("ignored"));
+            assertEquals("CandidateIVFKnnFloatVectorQuery:field[0.0,...][k=10, numCands=10]", query.toString("ignored"));
 
             assertDocScoreQueryToString(query.rewrite(newSearcher(reader)));
 
             // test with filter
             Query filter = new TermQuery(new Term("id", "text"));
             query = getKnnVectorQuery("field", new float[] { 0.0f, 1.0f }, 10, filter);
-            assertEquals("IVFKnnFloatVectorQuery:field[0.0,...][10][id:text]", query.toString("ignored"));
+            assertEquals("CandidateIVFKnnFloatVectorQuery:field[0.0,...][k=10, numCands=10][id:text]", query.toString("ignored"));
         }
     }
 }
