@@ -61,6 +61,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
         super(state, getFormatReader);
     }
 
+    @Override
+    protected boolean supportsParallelPostingLists() {
+        return true;
+    }
+
     CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
         // TODO we may want to prefetch more than one postings list, however, we will likely want to place a limit
         // so we don't bother prefetching many lists we won't end up scoring
@@ -996,27 +1001,40 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
                 return scoredDocs;
             }
             float maxScore;
-            if (currentBatchSize == BULK_SIZE && scoredDocs >= BULK_SIZE / 2) {
-                maxScore = osqVectorsScorer.scoreBulk(
-                    queryQuantizer.getQuantizedTarget(),
-                    queryQuantizer.getQueryCorrections().lowerInterval(),
-                    queryQuantizer.getQueryCorrections().upperInterval(),
-                    queryQuantizer.getQueryCorrections().quantizedComponentSum(),
-                    centroidDistance,
-                    fieldInfo.getVectorSimilarityFunction(),
-                    0f,
-                    scores
-                );
-                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                    collectBulk(knnCollector, scores, BULK_SIZE);
+            if (currentBatchSize == BULK_SIZE) {
+                if (scoredDocs >= BULK_SIZE / 2) {
+                    maxScore = osqVectorsScorer.scoreBulk(
+                        queryQuantizer.getQuantizedTarget(),
+                        queryQuantizer.getQueryCorrections().lowerInterval(),
+                        queryQuantizer.getQueryCorrections().upperInterval(),
+                        queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                        centroidDistance,
+                        fieldInfo.getVectorSimilarityFunction(),
+                        0f,
+                        scores
+                    );
+                } else {
+                    maxScore = scoreIndividually(BULK_SIZE);
                 }
-            } else if (currentBatchSize == BULK_SIZE) {
-                maxScore = scoreIndividually(currentBatchSize);
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     collectBulk(knnCollector, scores, BULK_SIZE);
                 }
             } else {
-                maxScore = scoreIndividually(currentBatchSize);
+                if (scoredDocs >= currentBatchSize / 2) {
+                    maxScore = osqVectorsScorer.scoreBulk(
+                        queryQuantizer.getQuantizedTarget(),
+                        queryQuantizer.getQueryCorrections().lowerInterval(),
+                        queryQuantizer.getQueryCorrections().upperInterval(),
+                        queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                        centroidDistance,
+                        fieldInfo.getVectorSimilarityFunction(),
+                        0f,
+                        scores,
+                        currentBatchSize
+                    );
+                } else {
+                    maxScore = scoreIndividually(currentBatchSize);
+                }
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
                     collectBulk(knnCollector, scores, currentBatchSize);
                 }

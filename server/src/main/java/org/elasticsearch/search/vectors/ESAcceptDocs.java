@@ -252,7 +252,8 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
         private final LeafReaderContext ctx;
         private final Weight filterWeight;
 
-        public DynamicFilterEsAcceptDocs(LeafReaderContext ctx, Weight filterWeight, ScorerSupplier supplier, Bits liveDocs) throws IOException {
+        public DynamicFilterEsAcceptDocs(LeafReaderContext ctx, Weight filterWeight, ScorerSupplier supplier, Bits liveDocs)
+            throws IOException {
             this.ctx = ctx;
             this.filterWeight = filterWeight;
             this.liveDocs = liveDocs;
@@ -266,19 +267,19 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
 
         @Override
         public Optional<BitSet> getBitSet() throws IOException {
-            return null;
+            return Optional.empty();
         }
 
         @Override
         public Bits bits() throws IOException {
-            return null;
+            return liveDocs;
         }
 
         private void refreshIteratorIfNeeded() throws IOException {
-        if(iterator == null){
-            iterator = reloadIterator();
+            if (iterator == null) {
+                iterator = filterWeight.scorer(ctx).iterator();
+            }
         }
-    }
 
         @Override
         public DocIdSetIterator iterator() throws IOException {
@@ -293,12 +294,7 @@ public abstract sealed class ESAcceptDocs extends AcceptDocs {
 
         @Override
         public int cost() throws IOException {
-            return 0;
-        }
-
-        public DocIdSetIterator reloadIterator() throws IOException {
-            iterator = filterWeight.scorer(ctx).iterator();
-            return iterator();
+            return approximateCost;
         }
     }
 }

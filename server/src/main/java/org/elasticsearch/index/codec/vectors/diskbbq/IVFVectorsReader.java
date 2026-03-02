@@ -29,12 +29,14 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.BitSet;
+import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
-import org.elasticsearch.index.codec.vectors.diskbbq.next.ESNextDiskBBQVectorsReader;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
+import org.elasticsearch.search.vectors.IncrementalDeduplicationFilter;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -317,9 +319,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             visitRatio
         );
 
-        boolean useParallelEvaluation = this instanceof ESNextDiskBBQVectorsReader;
-
-        if (useParallelEvaluation) {
+        if (supportsParallelPostingLists()) {
             try {
                 searchWithParallelPostingLists(
                     fieldInfo,
@@ -388,23 +388,30 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         int centroidsProcessed = 0;
         final int BATCH_SIZE = 100;
 
+        // Issue 4: Create filter iterator once before the loop and reuse across batches
+        DocIdSetIterator filterIterator = null;
+        if (acceptDocs instanceof ESAcceptDocs.DynamicFilterEsAcceptDocs) {
+            filterIterator = acceptDocs.iterator();
+        } else if (acceptDocs instanceof ESAcceptDocs.BitsAcceptDocs bitsAcceptDocs) {
+            // Issue 2: Handle live docs by extracting BitSet as filter
+            var optBitSet = bitsAcceptDocs.getBitSet();
+            if (optBitSet != null && optBitSet.isPresent()) {
+                BitSet bitSet = optBitSet.get();
+                filterIterator = new BitSetIterator(bitSet, bitSet.approximateCardinality());
+            }
+        } else if (acceptDocs instanceof ESAcceptDocs.ScorerSupplierAcceptDocs scorerAcceptDocs) {
+            filterIterator = scorerAcceptDocs.iterator();
+        }
+
+        IncrementalDeduplicationFilter dedup = new IncrementalDeduplicationFilter(1024);
+
         long expectedDocs = 0;
         long actualDocs = 0;
-        float unfilteredRatioVisited = (float) expectedDocs / numVectors;
-        int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-        float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
-        while (centroidIterator.hasNext()
-            && (numCentroids > centroidsProcessed
-                || maxVectorVisited > expectedDocs
-                || actualDocs < expectedScored
-                || actualDocs < knnCollector.k()
-                || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-
+        while (centroidIterator.hasNext() && shouldContinueParallel(
+            expectedDocs, actualDocs, numVectors, percentFiltered, numCentroids,
+            centroidsProcessed, maxVectorVisited, knnCollector, filterIterator != null
+        )) {
             int batchCount = 0;
-            DocIdSetIterator filterIterator = null;
-            if (acceptDocs instanceof ESAcceptDocs.DynamicFilterEsAcceptDocs) {
-                filterIterator = acceptDocs.iterator();
-            }
             PostingVisitor[] postingVisitors = new PostingVisitor[BATCH_SIZE];
             int[][] docIDs = new int[BATCH_SIZE][];
 
@@ -431,10 +438,36 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             if (batchCount == 0) {
                 break;
             }
-            MultiPostingListManager manager = new MultiPostingListManager(docIDs, postingVisitors, filterIterator, knnCollector);
+            MultiPostingListManager manager = new MultiPostingListManager(
+                docIDs, postingVisitors, filterIterator, knnCollector, dedup
+            );
             manager.consumeAll();
             actualDocs += manager.scoredDocs();
         }
+    }
+
+    // Issue 6: Extracted continuation logic with dynamic recalculation
+    private static boolean shouldContinueParallel(
+        long expectedDocs,
+        long actualDocs,
+        int numVectors,
+        float percentFiltered,
+        int numCentroids,
+        int centroidsProcessed,
+        long maxVectorVisited,
+        KnnCollector knnCollector,
+        boolean hasFilter
+    ) {
+        if (numCentroids > centroidsProcessed) return true;
+        if (maxVectorVisited > expectedDocs) return true;
+        if (knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY) return true;
+        if (hasFilter) {
+            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
+            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
+            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+            if (actualDocs < expectedScored || actualDocs < knnCollector.k()) return true;
+        }
+        return false;
     }
 
     @Override
@@ -549,6 +582,10 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         public int getBulkSize() {
             return bulkSize;
         }
+    }
+
+    protected boolean supportsParallelPostingLists() {
+        return false;
     }
 
     public abstract PostingVisitor getPostingVisitor(

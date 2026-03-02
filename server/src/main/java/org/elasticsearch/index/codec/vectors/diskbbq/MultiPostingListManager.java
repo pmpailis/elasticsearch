@@ -13,6 +13,7 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BitSetIterator;
+import org.elasticsearch.search.vectors.IncrementalDeduplicationFilter;
 
 import java.io.IOException;
 import java.util.NoSuchElementException;
@@ -23,8 +24,9 @@ public class MultiPostingListManager {
 
     private final IVFVectorsReader.PostingVisitor[] postingVisitors;
     private final DocIdSetIterator filterIterator;
-    private final BitSet filterBitSet;  // O(1) lookups if filter is BitSet-backed
+    private final BitSet filterBitSet;
     private final KnnCollector knnCollector;
+    private final IncrementalDeduplicationFilter dedup;
     private int scoredDocs = 0;
 
     // Primitive heap to avoid object allocation
@@ -57,7 +59,8 @@ public class MultiPostingListManager {
         int[][] docIDs,
         IVFVectorsReader.PostingVisitor[] postingVisitors,
         DocIdSetIterator filterIterator,
-        KnnCollector knnCollector
+        KnnCollector knnCollector,
+        IncrementalDeduplicationFilter dedup
     ) throws IOException {
         if (docIDs.length != postingVisitors.length) {
             throw new IllegalArgumentException("Must provide exactly one listener per array row.");
@@ -66,13 +69,13 @@ public class MultiPostingListManager {
         this.docIDs = docIDs;
         this.postingVisitors = postingVisitors;
         this.filterIterator = filterIterator;
-        // Extract BitSet for O(1) lookups if available
         if (filterIterator instanceof BitSetIterator bsi) {
             this.filterBitSet = bsi.getBitSet();
         } else {
             this.filterBitSet = null;
         }
         this.knnCollector = knnCollector;
+        this.dedup = dedup;
         this.heap = new long[docIDs.length];
         this.heapSize = 0;
 
@@ -94,14 +97,16 @@ public class MultiPostingListManager {
     }
 
     public int accepts(int doc) throws IOException {
+        if (dedup != null && dedup.add(doc) == false) {
+            return -1;
+        }
+
         if (filterIterator == null) return doc;
 
-        // Fast path: O(1) BitSet lookup
         if (filterBitSet != null) {
             return filterBitSet.get(doc) ? doc : -1;
         }
 
-        // Slow path: Iterator-based lookup with O(log n) advance
         if (filterIterator.docID() == DocIdSetIterator.NO_MORE_DOCS || filterIterator.docID() > doc) {
             return -1;
         }
@@ -129,21 +134,26 @@ public class MultiPostingListManager {
     }
 
     private void consumeFlat() throws IOException {
-        // No filter - process each posting list independently without heap overhead
         for (int centroidIdx = 0; centroidIdx < docIDs.length; centroidIdx++) {
             if (docIDs[centroidIdx] == null || postingVisitors[centroidIdx] == null) {
                 continue;
             }
 
-            // Score current batch and continue reading until exhausted
             do {
+                if (dedup != null) {
+                    for (int i = 0; i < docIDs[centroidIdx].length; i++) {
+                        int doc = docIDs[centroidIdx][i];
+                        if (doc != -1 && dedup.add(doc) == false) {
+                            docIDs[centroidIdx][i] = -1;
+                        }
+                    }
+                }
                 scoredDocs += postingVisitors[centroidIdx].scoreCurrentBatch(docIDs[centroidIdx], knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }
             } while (postingVisitors[centroidIdx].readNextBatch(docIDs[centroidIdx]) > 0);
 
-            // Clean up
             docIDs[centroidIdx] = null;
             postingVisitors[centroidIdx] = null;
         }
