@@ -35,8 +35,6 @@ import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.index.codec.vectors.diskbbq.next.ESNextDiskBBQVectorsReader;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
-import org.elasticsearch.search.vectors.IncrementalDeduplicationFilter;
-import org.elasticsearch.search.vectors.IncrementalFilterIterator;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -49,6 +47,7 @@ import static org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader.SIMILA
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.CENTROID_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.CLUSTER_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.DYNAMIC_VISIT_RATIO;
+import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.IVF_META_EXTENSION;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.VERSION_DIRECT_IO;
 import static org.elasticsearch.simdvec.ESNextOSQVectorsScorer.BULK_SIZE;
 
@@ -57,7 +56,7 @@ import static org.elasticsearch.simdvec.ESNextOSQVectorsScorer.BULK_SIZE;
  */
 public abstract class IVFVectorsReader extends KnnVectorsReader {
 
-    private final IndexInput ivfCentroids, ivfClusters;
+    protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
     private final FieldInfos fieldInfos;
     protected final IntObjectHashMap<FieldEntry> fields;
@@ -69,11 +68,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         this.fieldInfos = state.fieldInfos;
         this.fields = new IntObjectHashMap<>();
         this.genericReaders = new GenericFlatVectorReaders();
-        String meta = IndexFileNames.segmentFileName(
-            state.segmentInfo.name,
-            state.segmentSuffix,
-            ES920DiskBBQVectorsFormat.IVF_META_EXTENSION
-        );
+        String meta = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, IVF_META_EXTENSION);
 
         int versionMeta = -1;
         try (ChecksumIndexInput ivfMeta = state.directory.openChecksumInput(meta)) {
@@ -110,11 +105,10 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio,
-        int prefetchBatch
+        float visitRatio
     ) throws IOException;
 
-    private static IndexInput openDataInput(
+    protected static IndexInput openDataInput(
         SegmentReadState state,
         int versionMeta,
         String fileExtension,
@@ -249,7 +243,7 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         CodecUtil.checksumEntireFile(ivfClusters);
     }
 
-    private FlatVectorsReader getReaderForField(String field) {
+    protected FlatVectorsReader getReaderForField(String field) {
         FieldInfo info = fieldInfos.fieldInfo(field);
         if (info == null) throw new IllegalArgumentException("Could not find field [" + field + "]");
         return genericReaders.getReaderForField(info.number);
@@ -320,26 +314,18 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             acceptDocs,
             approximateCost,
             values,
-            visitRatio,
-            numCentroids
+            visitRatio
         );
 
-        // TODO: Enable parallel posting list evaluation conditionally
-        // For now, disabled by default - requires all readers to support batch operations
-        // The issue is that if we try parallel and it fails, the centroidIterator is already
-        // partially consumed and we can't rewind it for sequential processing
         boolean useParallelEvaluation = this instanceof ESNextDiskBBQVectorsReader;
 
         if (useParallelEvaluation) {
             try {
-                // Try to use parallel evaluation
-                // If the PostingVisitor doesn't support batch operations, this will throw
-                // UnsupportedOperationException and we'll fall back to sequential
                 searchWithParallelPostingLists(
                     fieldInfo,
                     postListSlice,
                     target,
-                    acceptDocs, // Pass full AcceptDocs for iterator access
+                    acceptDocs,
                     centroidPrefetchingIterator,
                     knnCollector,
                     maxVectorVisited,
@@ -348,14 +334,13 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
                     percentFiltered,
                     numCentroids
                 );
-                return; // Success - exit early
+                return;
             } catch (UnsupportedOperationException e) {
                 // Batch operations not supported by this visitor, fall back to sequential
-                // Continue with sequential implementation below
             }
         }
         Bits acceptDocsBits = acceptDocs.bits();
-        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits);
+        PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits, entry.centroidSlice(ivfCentroids));
         long expectedDocs = 0;
         long actualDocs = 0;
         // initially we visit only the "centroids to search"
@@ -364,11 +349,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-            // todo do we actually need to know the score???
-            CentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
-            // todo do we need direct access to the raw centroid???, this is used for quantizing, maybe hydrating and quantizing
-            // is enough?
-            expectedDocs += scorer.resetPostingsScorer(offsetAndLength.offset());
+            PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            expectedDocs += scorer.resetPostingsScorer(postingMetadata);
             actualDocs += scorer.visit(knnCollector);
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -380,8 +362,8 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                CentroidMeta offsetAndLength = centroidPrefetchingIterator.nextCentroidMeta();
-                scorer.resetPostingsScorer(offsetAndLength.offset());
+                PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+                scorer.resetPostingsScorer(postingMetadata);
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -390,20 +372,6 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         }
     }
 
-    /**
-     * Searches using parallel posting list evaluation with multi-way merge.
-     * This approach processes multiple posting lists simultaneously, merging
-     * documents in doc ID order to enable efficient deduplication and early termination.
-     *
-     * @param fieldInfo the field info for the vector field
-     * @param postingListInput the input for reading posting lists
-     * @param target the query vector
-     * @param centroidIterator iterator providing posting list offsets
-     * @param knnCollector the collector for results
-     * @param maxVectorVisited maximum number of vectors to visit
-     * @param maxDoc maximum document ID in the segment
-     * @throws IOException if an I/O error occurs
-     */
     private void searchWithParallelPostingLists(
         FieldInfo fieldInfo,
         IndexInput postingListInput,
@@ -417,44 +385,39 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         float percentFiltered,
         int numCentroids
     ) throws IOException {
-        // Strategy: Load doc IDs from multiple posting lists, filter them, then batch score
-        // This separates cheap operations (doc ID loading + filtering) from expensive operations (vector scoring)
         int centroidsProcessed = 0;
-        final int BATCH_SIZE = 100; // Number of posting lists to process in parallel
-        // Initialize incremental filter iterator from acceptDocs
-        // Try to get an iterator for efficient filtering, but fall back to bits() if iterator is not available
+        final int BATCH_SIZE = 100;
 
-        long expectedDocs = 0;   // Total vectors in posting lists we've loaded
-        long actualDocs = 0;     // Docs actually scored (after filtering)
+        long expectedDocs = 0;
+        long actualDocs = 0;
         float unfilteredRatioVisited = (float) expectedDocs / numVectors;
         int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
         float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
         while (centroidIterator.hasNext()
             && (numCentroids > centroidsProcessed
-            || maxVectorVisited > expectedDocs
-            || actualDocs < expectedScored
-            || actualDocs < knnCollector.k()
-            || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+                || maxVectorVisited > expectedDocs
+                || actualDocs < expectedScored
+                || actualDocs < knnCollector.k()
+                || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
 
-            // load BATCH_SIZE postings lists
             int batchCount = 0;
             DocIdSetIterator filterIterator = null;
-            if(acceptDocs instanceof ESAcceptDocs.DynamicFilterEsAcceptDocs) {
+            if (acceptDocs instanceof ESAcceptDocs.DynamicFilterEsAcceptDocs) {
                 filterIterator = acceptDocs.iterator();
             }
             PostingVisitor[] postingVisitors = new PostingVisitor[BATCH_SIZE];
             int[][] docIDs = new int[BATCH_SIZE][];
 
-            // while there are more centroids to explore and we haven't reached our batch_size
-            // let's load another set of centroids
             while (centroidIterator.hasNext() && batchCount < BATCH_SIZE) {
-                CentroidMeta centroid = centroidIterator.nextCentroidMeta();
-                // Don't pass acceptDocs to visitor - we handle filtering via IncrementalFilterIterator
-                // Reset visitor to this posting list and get its size
-                var postingSlice = postingListInput.slice("centroidOrdinal:" + centroid.centroidOrdinal, centroid.offset, centroid.length);
-                postingSlice.prefetch(0, centroid.length);
-                var postVisitor = getPostingVisitor(fieldInfo, postingSlice, target, null);
-                long size = postVisitor.resetPostingsScorer(0);
+                PostingMetadata centroid = centroidIterator.nextPosting();
+                var postingSlice = postingListInput.slice(
+                    "centroidOrdinal:" + centroid.queryCentroidOrdinal(),
+                    centroid.offset(),
+                    centroid.length()
+                );
+                postingSlice.prefetch(0, centroid.length());
+                var postVisitor = getPostingVisitor(fieldInfo, postingSlice, target, null, null);
+                long size = postVisitor.resetPostingsScorer(centroid);
                 if (size > 0) {
                     centroidsProcessed++;
                     expectedDocs += size;
@@ -588,20 +551,17 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         }
     }
 
-    public abstract PostingVisitor getPostingVisitor(FieldInfo fieldInfo, IndexInput postingsLists, float[] target, Bits needsScoring)
-        throws IOException;
-
-    public record CentroidMeta(long offset, long length, int centroidOrdinal) {}
-
-    public interface CentroidIterator {
-        boolean hasNext();
-
-        CentroidMeta nextCentroidMeta() throws IOException;
-    }
+    public abstract PostingVisitor getPostingVisitor(
+        FieldInfo fieldInfo,
+        IndexInput postingsLists,
+        float[] target,
+        Bits needsScoring,
+        IndexInput centroidSlice
+    ) throws IOException;
 
     public interface PostingVisitor {
         /** returns the number of documents in the posting list */
-        int resetPostingsScorer(long offset) throws IOException;
+        int resetPostingsScorer(PostingMetadata metadata) throws IOException;
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;

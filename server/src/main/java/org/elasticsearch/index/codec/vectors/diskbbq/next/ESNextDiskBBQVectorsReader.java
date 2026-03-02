@@ -23,16 +23,20 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.LongValues;
-import org.apache.lucene.util.VectorUtil;
 import org.apache.lucene.util.packed.DirectReader;
 import org.apache.lucene.util.packed.DirectWriter;
+import org.elasticsearch.common.cache.Cache;
+import org.elasticsearch.common.cache.CacheBuilder;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
+import org.elasticsearch.index.codec.vectors.diskbbq.CentroidIterator;
 import org.elasticsearch.index.codec.vectors.diskbbq.DocIdsWriter;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
+import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
 import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
-import org.elasticsearch.search.vectors.IncrementalFilterIterator;
+import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 import org.elasticsearch.simdvec.ES92Int7VectorsScorer;
 import org.elasticsearch.simdvec.ESNextOSQVectorsScorer;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -40,26 +44,27 @@ import org.elasticsearch.simdvec.ESVectorUtil;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
-import static org.apache.lucene.index.VectorSimilarityFunction.COSINE;
 import static org.elasticsearch.index.codec.vectors.OptimizedScalarQuantizer.DEFAULT_LAMBDA;
+import static org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata.NO_ORDINAL;
 import static org.elasticsearch.simdvec.ESNextOSQVectorsScorer.BULK_SIZE;
 
 /**
  * Default implementation of {@link IVFVectorsReader}. It scores the posting lists centroids using
  * brute force and then scores the top ones using the posting list.
  */
-public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
+public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements VectorPreconditioner {
 
     public ESNextDiskBBQVectorsReader(SegmentReadState state, GenericFlatVectorReaders.LoadFlatVectorsReader getFormatReader)
         throws IOException {
         super(state, getFormatReader);
     }
 
-    CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice, int prefetchBatch) throws IOException {
+    CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
         // TODO we may want to prefetch more than one postings list, however, we will likely want to place a limit
         // so we don't bother prefetching many lists we won't end up scoring
-        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice, prefetchBatch);
+        return new PrefetchingCentroidIterator(centroidIterator, postingListSlice);
     }
 
     static long directWriterSizeOnDisk(long numValues, int bitsPerValue) {
@@ -89,8 +94,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         AcceptDocs acceptDocs,
         float approximateCost,
         FloatVectorValues values,
-        float visitRatio,
-        int prefetchBatch
+        float visitRatio
     ) throws IOException {
         final FieldEntry fieldEntry = fields.get(fieldInfo.number);
         int bulkSize = fieldEntry.getBulkSize();
@@ -164,7 +168,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 bulkSize
             );
         }
-        return getPostingListPrefetchIterator(centroidIterator, postingListSlice, 1);
+        return getPostingListPrefetchIterator(centroidIterator, postingListSlice);
     }
 
     @Override
@@ -184,6 +188,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
     ) throws IOException {
         int bulkSize = input.readInt();
         ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding = ESNextDiskBBQVectorsFormat.QuantEncoding.fromId(input.readInt());
+        long preconditionerLength = input.readLong();
+        long preconditionerOffset = -1;
+        if (preconditionerLength > 0) {
+            preconditionerOffset = input.readLong();
+        }
         return new NextFieldEntry(
             rawVectorFormat,
             useDirectIOReads,
@@ -197,12 +206,35 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             globalCentroid,
             globalCentroidDp,
             quantEncoding,
-            bulkSize
+            bulkSize,
+            preconditionerOffset,
+            preconditionerLength
         );
+    }
+
+    @Override
+    public Preconditioner getPreconditioner(FieldInfo fieldInfo) throws IOException {
+        final FieldEntry fieldEntry = fields.get(fieldInfo.number);
+        // only seems possible in tests
+        if (fieldEntry == null) {
+            return null;
+        }
+        long preconditionerOffset = ((NextFieldEntry) fieldEntry).preconditionerOffset();
+        long preconditionerLength = ((NextFieldEntry) fieldEntry).preconditionerLength();
+        if (preconditionerLength > 0) {
+            IndexInput ivfPreconditionerSlice = ivfCentroids.slice("preconditioner", preconditionerOffset, preconditionerLength);
+            if (ivfPreconditionerSlice != null) {
+                ivfPreconditionerSlice.seek(0);
+                return Preconditioner.read(ivfPreconditionerSlice);
+            }
+        }
+        return null;
     }
 
     static class NextFieldEntry extends FieldEntry {
         private final ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding;
+        protected final long preconditionerOffset;
+        protected final long preconditionerLength;
 
         NextFieldEntry(
             String rawVectorFormat,
@@ -217,7 +249,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             float[] globalCentroid,
             float globalCentroidDp,
             ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding,
-            int bulkSize
+            int bulkSize,
+            long preconditionerOffset,
+            long preconditionerLength
         ) {
             super(
                 rawVectorFormat,
@@ -234,10 +268,20 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 bulkSize
             );
             this.quantEncoding = quantEncoding;
+            this.preconditionerOffset = preconditionerOffset;
+            this.preconditionerLength = preconditionerLength;
         }
 
         public ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding() {
             return quantEncoding;
+        }
+
+        public long preconditionerOffset() {
+            return preconditionerOffset;
+        }
+
+        public long preconditionerLength() {
+            return preconditionerLength;
         }
     }
 
@@ -277,12 +321,15 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidMeta nextCentroidMeta() throws IOException {
-                int centroidOrdinal = neighborQueue.pop();
-                centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrdinal);
+            public PostingMetadata nextPosting() throws IOException {
+                long centroidOrdinalAndScore = neighborQueue.popRaw();
+                int centroidOrd = neighborQueue.decodeNodeId(centroidOrdinalAndScore);
+                float score = neighborQueue.decodeScore(centroidOrdinalAndScore);
+                centroids.seek(offset + (long) Long.BYTES * 2 * centroidOrd);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidMeta(postingListOffset, postingListLength, centroidOrdinal);
+                // NO_ORDINAL indicates that the global centroid should be used for query quantization
+                return new PostingMetadata(postingListOffset, postingListLength, NO_ORDINAL, score);
             }
         };
     }
@@ -301,6 +348,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         int bulkSize
     ) throws IOException {
         // build the three queues we are going to use
+        final long rawParentSize = (long) fieldInfo.getVectorDimension() * Float.BYTES;
         final long centroidQuantizeSize = fieldInfo.getVectorDimension() + 3 * Float.BYTES + Integer.BYTES;
         final NeighborQueue parentsQueue = new NeighborQueue(numParents, true);
         final int maxChildrenSize = centroids.readVInt();
@@ -316,7 +364,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 }
 
                 @Override
-                public CentroidMeta nextCentroidMeta() {
+                public PostingMetadata nextPosting() {
                     return null;
                 }
             };
@@ -330,10 +378,11 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             for (int i = 0; i < numParents; i++) {
                 parentsQueue.add(i, 0.5f);
             }
-            centroids.skipBytes(centroidQuantizeSize * numParents);
+            centroids.skipBytes((centroidQuantizeSize + rawParentSize) * numParents);
         } else {
             neighborQueue = new NeighborQueue(bufferSize, true);
             // score the parents
+            centroids.skipBytes(rawParentSize * numParents);
             score(
                 parentsQueue,
                 numParents,
@@ -386,18 +435,21 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             }
 
             @Override
-            public CentroidMeta nextCentroidMeta() throws IOException {
-                int centroidOrdinal = nextCentroid();
-                centroids.seek(childrenFileOffsets + (long) Long.BYTES * 2 * centroidOrdinal);
+            public PostingMetadata nextPosting() throws IOException {
+                long centroidOrdinalAndScore = nextCentroid();
+                int centroidOrdinal = neighborQueue.decodeNodeId(centroidOrdinalAndScore);
+                float score = neighborQueue.decodeScore(centroidOrdinalAndScore);
+                centroids.seek(childrenFileOffsets + (long) (Long.BYTES * 2 + Integer.BYTES) * centroidOrdinal);
                 long postingListOffset = centroids.readLong();
                 long postingListLength = centroids.readLong();
-                return new CentroidMeta(postingListOffset, postingListLength, centroidOrdinal);
+                int parentOrd = centroids.readInt();
+                return new PostingMetadata(postingListOffset, postingListLength, parentOrd, score);
             }
 
-            private int nextCentroid() throws IOException {
+            private long nextCentroid() throws IOException {
                 if (currentParentQueue.size() > 0) {
                     // return next centroid and maybe add a children from the current parent queue
-                    return neighborQueue.popAndAddRaw(currentParentQueue.popRaw());
+                    return neighborQueue.popRawAndAddRaw(currentParentQueue.popRaw());
                 } else if (parentsQueue.size() > 0) {
                     // current parent queue is empty, populate it again with the next parent
                     int pop = parentsQueue.pop();
@@ -418,7 +470,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                     );
                     return nextCentroid();
                 } else {
-                    return neighborQueue.pop();
+                    return neighborQueue.popRaw();
                 }
             }
         };
@@ -529,11 +581,128 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
     }
 
     @Override
-    public PostingVisitor getPostingVisitor(FieldInfo fieldInfo, IndexInput indexInput, float[] target, Bits acceptDocs)
-        throws IOException {
+    public PostingVisitor getPostingVisitor(
+        FieldInfo fieldInfo,
+        IndexInput indexInput,
+        float[] target,
+        Bits acceptDocs,
+        IndexInput centroidSlice
+    ) throws IOException {
         FieldEntry entry = fields.get(fieldInfo.number);
+        final int bitsRequired = DirectWriter.bitsRequired(entry.numCentroids());
+        final long sizeLookup = directWriterSizeOnDisk(
+            getReaderForField(fieldInfo.name).getFloatVectorValues(fieldInfo.name).size(),
+            bitsRequired
+        );
+        centroidSlice.skipBytes(sizeLookup);
         ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding = ((NextFieldEntry) entry).quantEncoding();
-        return new MemorySegmentPostingsVisitor(target, quantEncoding, indexInput, entry, fieldInfo, acceptDocs);
+        int numParents = centroidSlice.readVInt();
+        final QueryQuantizer queryQuantizer;
+        if (numParents > 0) {
+            // unused
+            int longestPostingList = centroidSlice.readVInt();
+            IndexInput parentsSlice = centroidSlice.slice(
+                "parents-slice",
+                centroidSlice.getFilePointer(),
+                (long) numParents * fieldInfo.getVectorDimension() * Float.BYTES
+            );
+            queryQuantizer = new QueryQuantizer(quantEncoding, fieldInfo, target, parentsSlice, entry.globalCentroid());
+        } else {
+            queryQuantizer = new QueryQuantizer(quantEncoding, fieldInfo, target, null, entry.globalCentroid());
+        }
+
+        return new MemorySegmentPostingsVisitor(queryQuantizer, quantEncoding, indexInput, entry, fieldInfo, acceptDocs);
+    }
+
+    private record QueryQuantizerResult(OptimizedScalarQuantizer.QuantizationResult queryCorrections, byte[] quantizedTarget) {}
+
+    private static class QueryQuantizer {
+        private final Cache<Integer, QueryQuantizerResult> cache;
+        private final ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding;
+        private final float[] target;
+        private final float[] scratch;
+        private final int[] quantizationScratch;
+        private final OptimizedScalarQuantizer quantizer;
+        private final IndexInput parentsSlice;
+        private final float[] globalCentroid;
+        private final float[] centroidScratch;
+        private int currentCentroidOrdinal = -2;
+        private int nextCentroidOrdinal = -1;
+        private byte[] evictedQuantizedQuery = null;
+        private QueryQuantizerResult result = null;
+
+        QueryQuantizer(
+            ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding,
+            FieldInfo fieldInfo,
+            float[] target,
+            IndexInput parentsSlice,
+            float[] globalCentroid
+        ) {
+            this.quantEncoding = quantEncoding;
+            this.target = target;
+            this.scratch = new float[fieldInfo.getVectorDimension()];
+            this.centroidScratch = new float[fieldInfo.getVectorDimension()];
+            this.quantizationScratch = new int[quantEncoding.discretizedDimensions(fieldInfo.getVectorDimension())];
+            this.quantizer = new OptimizedScalarQuantizer(fieldInfo.getVectorSimilarityFunction(), DEFAULT_LAMBDA, 1);
+            this.parentsSlice = parentsSlice;
+            this.globalCentroid = globalCentroid;
+            this.cache = CacheBuilder.<Integer, QueryQuantizerResult>builder()
+                .weigher((k, v) -> 1L)
+                .setMaximumWeight(16)
+                .removalListener(n -> {
+                    evictedQuantizedQuery = n.getValue().quantizedTarget();
+                })
+                .build();
+        }
+
+        void reset(int centroidOrdinal) {
+            this.nextCentroidOrdinal = centroidOrdinal;
+        }
+
+        void quantizeQueryIfNecessary() throws IOException {
+            if (nextCentroidOrdinal != currentCentroidOrdinal) {
+                var quantized = cache.get(nextCentroidOrdinal);
+                if (quantized != null) {
+                    result = quantized;
+                    currentCentroidOrdinal = nextCentroidOrdinal;
+                    return;
+                }
+                // reuse the evicted byte array to reduce allocations
+                final byte[] quantizedQuery = Objects.requireNonNullElseGet(
+                    evictedQuantizedQuery,
+                    () -> new byte[quantEncoding.getQueryPackedLength(target.length)]
+                );
+                final float[] queryCentroid;
+                if (parentsSlice != null) {
+                    assert nextCentroidOrdinal >= 0;
+                    parentsSlice.seek((long) nextCentroidOrdinal * centroidScratch.length * Float.BYTES);
+                    parentsSlice.readFloats(centroidScratch, 0, centroidScratch.length);
+                    queryCentroid = centroidScratch;
+                } else {
+                    assert nextCentroidOrdinal == NO_ORDINAL;
+                    queryCentroid = globalCentroid;
+                }
+                OptimizedScalarQuantizer.QuantizationResult queryCorrections = quantizer.scalarQuantize(
+                    target,
+                    scratch,
+                    quantizationScratch,
+                    quantEncoding.queryBits(),
+                    queryCentroid
+                );
+                quantEncoding.packQuery(quantizationScratch, quantizedQuery);
+                currentCentroidOrdinal = nextCentroidOrdinal;
+                result = new QueryQuantizerResult(queryCorrections, quantizedQuery);
+                cache.put(nextCentroidOrdinal, result);
+            }
+        }
+
+        OptimizedScalarQuantizer.QuantizationResult getQueryCorrections() {
+            return result.queryCorrections();
+        }
+
+        byte[] getQuantizedTarget() {
+            return result.quantizedTarget();
+        }
     }
 
     @Override
@@ -545,7 +714,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
     private static class MemorySegmentPostingsVisitor implements PostingVisitor {
         final long quantizedByteLength;
         final IndexInput indexInput;
-        final float[] target;
         final FieldEntry entry;
         final FieldInfo fieldInfo;
         final Bits acceptDocs;
@@ -560,49 +728,37 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         int docBase = 0;
 
         int vectors;
-        boolean quantized = false;
-        float centroidDp;
-        final float[] centroid;
+        float centroidToParentSqDist;
+        float centroidDistance;
         long slicePos;
-        OptimizedScalarQuantizer.QuantizationResult queryCorrections;
 
-        final ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding;
-        final float[] scratch;
-        final int[] quantizationScratch;
-        final byte[] quantizedQueryScratch;
-        final OptimizedScalarQuantizer quantizer;
+        private final QueryQuantizer queryQuantizer;
         final DocIdsWriter idsWriter = new DocIdsWriter();
+        final VectorSimilarityFunction similarityFunction;
         final float[] correctiveValues = new float[3];
         final long quantizedVectorByteSize;
 
-        // State for batch-level operations
         int vectorsRead;
         int currentBatchSize;
         int minDocInBatch;
-        long currentBatchDataPos; // File position of quantized data for current batch
+        long currentBatchDataPos;
 
         MemorySegmentPostingsVisitor(
-            float[] target,
+            QueryQuantizer queryQuantizer,
             ESNextDiskBBQVectorsFormat.QuantEncoding quantEncoding,
             IndexInput indexInput,
             FieldEntry entry,
             FieldInfo fieldInfo,
             Bits acceptDocs
         ) throws IOException {
-            this.target = target;
-            this.quantEncoding = quantEncoding;
+            this.queryQuantizer = queryQuantizer;
             this.indexInput = indexInput;
+            this.similarityFunction = fieldInfo.getVectorSimilarityFunction();
             this.entry = entry;
             this.fieldInfo = fieldInfo;
             this.acceptDocs = acceptDocs;
-            centroid = new float[fieldInfo.getVectorDimension()];
-            scratch = new float[target.length];
-            final int discretizedDimensions = quantEncoding.discretizedDimensions(fieldInfo.getVectorDimension());
-            quantizationScratch = new int[discretizedDimensions];
-            quantizedQueryScratch = new byte[quantEncoding.getQueryPackedLength(fieldInfo.getVectorDimension())];
             quantizedVectorByteSize = quantEncoding.getDocPackedLength(fieldInfo.getVectorDimension());
-            quantizedByteLength = quantizedVectorByteSize + (Float.BYTES * 3) + Short.BYTES;
-            quantizer = new OptimizedScalarQuantizer(fieldInfo.getVectorSimilarityFunction(), DEFAULT_LAMBDA, 1);
+            quantizedByteLength = quantizedVectorByteSize + (Float.BYTES * 3) + Integer.BYTES;
             osqVectorsScorer = ESVectorUtil.getESNextOSQVectorsScorer(
                 indexInput,
                 quantEncoding.queryBits(),
@@ -614,15 +770,23 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
         }
 
         @Override
-        public int resetPostingsScorer(long offset) throws IOException {
-            quantized = false;
-            indexInput.seek(offset);
-            indexInput.readFloats(centroid, 0, centroid.length);
-            centroidDp = Float.intBitsToFloat(indexInput.readInt());
+        public int resetPostingsScorer(PostingMetadata metadata) throws IOException {
+            float score = metadata.documentCentroidScore();
+            indexInput.seek(metadata.offset());
+            centroidToParentSqDist = Float.intBitsToFloat(indexInput.readInt());
             vectors = indexInput.readVInt();
             docEncoding = indexInput.readByte();
             docBase = 0;
             slicePos = indexInput.getFilePointer();
+            // The score is the transformed score used when searching the centroids.
+            // we need to convert it back to the raw similarity to be used as part of
+            // final corrections
+            centroidDistance = switch (similarityFunction) {
+                case EUCLIDEAN -> ((1 / score) - 1) - centroidToParentSqDist;
+                case COSINE, DOT_PRODUCT -> 2 * score - 1;
+                case MAXIMUM_INNER_PRODUCT -> score - 1;
+            };
+            queryQuantizer.reset(metadata.queryCentroidOrdinal());
             vectorsRead = 0;
             currentBatchSize = 0;
             minDocInBatch = Integer.MAX_VALUE;
@@ -630,40 +794,36 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return vectors;
         }
 
-        private float scoreIndividually() throws IOException {
-            return scoreIndividually(BULK_SIZE);
-        }
-
-        private float scoreIndividually(int count) throws IOException {
+        private float scoreIndividually(int bulkSize) throws IOException {
             float maxScore = Float.NEGATIVE_INFINITY;
             // score individually, first the quantized byte chunk
-            for (int j = 0; j < count; j++) {
+            for (int j = 0; j < bulkSize; j++) {
                 int doc = docIdsScratch[j];
                 if (doc != -1) {
-                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                    float qcDist = osqVectorsScorer.quantizeScore(queryQuantizer.getQuantizedTarget());
                     scores[j] = qcDist;
                 } else {
                     indexInput.skipBytes(quantizedVectorByteSize);
                 }
             }
             // read in all corrections
-            indexInput.readFloats(correctionsLower, 0, count);
-            indexInput.readFloats(correctionsUpper, 0, count);
-            for (int j = 0; j < count; j++) {
-                correctionsSum[j] = Short.toUnsignedInt(indexInput.readShort());
+            indexInput.readFloats(correctionsLower, 0, bulkSize);
+            indexInput.readFloats(correctionsUpper, 0, bulkSize);
+            for (int j = 0; j < bulkSize; j++) {
+                correctionsSum[j] = indexInput.readInt();
             }
-            indexInput.readFloats(correctionsAdd, 0, count);
+            indexInput.readFloats(correctionsAdd, 0, bulkSize);
             // Now apply corrections
-            for (int j = 0; j < count; j++) {
+            for (int j = 0; j < bulkSize; j++) {
                 int doc = docIdsScratch[j];
                 if (doc != -1) {
                     scores[j] = osqVectorsScorer.score(
-                        queryCorrections.lowerInterval(),
-                        queryCorrections.upperInterval(),
-                        queryCorrections.quantizedComponentSum(),
-                        queryCorrections.additionalCorrection(),
+                        queryQuantizer.getQueryCorrections().lowerInterval(),
+                        queryQuantizer.getQueryCorrections().upperInterval(),
+                        queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                        centroidDistance,
                         fieldInfo.getVectorSimilarityFunction(),
-                        centroidDp,
+                        0,
                         correctionsLower[j],
                         correctionsUpper[j],
                         correctionsSum[j],
@@ -678,10 +838,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return maxScore;
         }
 
-        private static int docToBulkScore(int[] docIds, Bits acceptDocs) {
+        private static int docToBulkScore(int[] docIds, Bits acceptDocs, int bulkSize) {
             assert acceptDocs != null : "acceptDocs must not be null";
-            int docToScore = BULK_SIZE;
-            for (int i = 0; i < BULK_SIZE; i++) {
+            int docToScore = bulkSize;
+            for (int i = 0; i < bulkSize; i++) {
                 if (acceptDocs.get(docIds[i]) == false) {
                     docIds[i] = -1;
                     docToScore--;
@@ -690,8 +850,8 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return docToScore;
         }
 
-        private void collectBulk(KnnCollector knnCollector, float[] scores) {
-            for (int i = 0; i < BULK_SIZE; i++) {
+        private void collectBulk(KnnCollector knnCollector, float[] scores, int bulkSize) {
+            for (int i = 0; i < bulkSize; i++) {
                 final int doc = docIdsScratch[i];
                 if (doc != -1) {
                     knnCollector.collect(doc, scores[i]);
@@ -719,77 +879,67 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             for (; i < limit; i += BULK_SIZE) {
                 // read the doc ids
                 readDocIds(BULK_SIZE);
-                final int docsToBulkScore = acceptDocs == null ? BULK_SIZE : docToBulkScore(docIdsScratch, acceptDocs);
+                final int docsToBulkScore = acceptDocs == null ? BULK_SIZE : docToBulkScore(docIdsScratch, acceptDocs, BULK_SIZE);
                 if (docsToBulkScore == 0) {
                     indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
                     continue;
                 }
-                quantizeQueryIfNecessary();
+                queryQuantizer.quantizeQueryIfNecessary();
                 final float maxScore;
                 if (docsToBulkScore < BULK_SIZE / 2) {
-                    maxScore = scoreIndividually();
+                    maxScore = scoreIndividually(BULK_SIZE);
                 } else {
                     maxScore = osqVectorsScorer.scoreBulk(
-                        quantizedQueryScratch,
-                        queryCorrections.lowerInterval(),
-                        queryCorrections.upperInterval(),
-                        queryCorrections.quantizedComponentSum(),
-                        queryCorrections.additionalCorrection(),
+                        queryQuantizer.getQuantizedTarget(),
+                        queryQuantizer.getQueryCorrections().lowerInterval(),
+                        queryQuantizer.getQueryCorrections().upperInterval(),
+                        queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                        centroidDistance,
                         fieldInfo.getVectorSimilarityFunction(),
-                        centroidDp,
+                        0f,
                         scores
                     );
                 }
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                    collectBulk(knnCollector, scores);
+                    collectBulk(knnCollector, scores, BULK_SIZE);
                 }
                 scoredDocs += docsToBulkScore;
             }
-            // process tail
-            // read the doc ids
+            // bulk process tail
             if (i < vectors) {
-                readDocIds(vectors - i);
-            }
-            int count = 0;
-            for (; i < vectors; i++) {
-                int doc = docIdsScratch[count++];
-                if (acceptDocs == null || acceptDocs.get(doc)) {
-                    quantizeQueryIfNecessary();
-                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
-                    indexInput.readFloats(correctiveValues, 0, 3);
-                    final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
-                    float score = osqVectorsScorer.score(
-                        queryCorrections.lowerInterval(),
-                        queryCorrections.upperInterval(),
-                        queryCorrections.quantizedComponentSum(),
-                        queryCorrections.additionalCorrection(),
-                        fieldInfo.getVectorSimilarityFunction(),
-                        centroidDp,
-                        correctiveValues[0],
-                        correctiveValues[1],
-                        quantizedComponentSum,
-                        correctiveValues[2],
-                        qcDist
-                    );
-                    scoredDocs++;
-                    knnCollector.collect(doc, score);
+                int tailSize = vectors - i;
+                readDocIds(tailSize);
+                final int docsToBulkScore = acceptDocs == null ? tailSize : docToBulkScore(docIdsScratch, acceptDocs, tailSize);
+                if (docsToBulkScore == 0) {
+                    indexInput.skipBytes(quantizedByteLength * tailSize);
                 } else {
-                    indexInput.skipBytes(quantizedByteLength);
+                    queryQuantizer.quantizeQueryIfNecessary();
+                    final float maxScore;
+                    if (docsToBulkScore < tailSize / 2) {
+                        maxScore = scoreIndividually(tailSize);
+                    } else {
+                        maxScore = osqVectorsScorer.scoreBulk(
+                            queryQuantizer.getQuantizedTarget(),
+                            queryQuantizer.getQueryCorrections().lowerInterval(),
+                            queryQuantizer.getQueryCorrections().upperInterval(),
+                            queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                            centroidDistance,
+                            fieldInfo.getVectorSimilarityFunction(),
+                            0f,
+                            scores,
+                            tailSize
+                        );
+                    }
+                    if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                        collectBulk(knnCollector, scores, tailSize);
+                    }
+                    scoredDocs += docsToBulkScore;
                 }
             }
             if (scoredDocs > 0) {
                 knnCollector.incVisitedCount(scoredDocs);
             }
             return scoredDocs;
-        }
-
-        private void quantizeQueryIfNecessary() {
-            if (quantized == false) {
-                assert fieldInfo.getVectorSimilarityFunction() != COSINE || VectorUtil.isUnitVector(target);
-                queryCorrections = quantizer.scalarQuantize(target, scratch, quantizationScratch, quantEncoding.queryBits(), centroid);
-                quantEncoding.packQuery(quantizationScratch, quantizedQueryScratch);
-                quantized = true;
-            }
         }
 
         @Override
@@ -800,10 +950,8 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 return 0;
             }
 
-            // Position at the start of the next batch
             indexInput.seek(slicePos);
 
-            // Calculate how many docs to read in this batch
             int toRead = Math.min(BULK_SIZE, vectors - vectorsRead);
             if (docIds == null) {
                 docIds = new int[toRead];
@@ -815,22 +963,13 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
                 docIdsScratch[j] = docBase;
                 docIds[j] = docBase;
             }
-            // Store batch size and update counters
             currentBatchSize = toRead;
             vectorsRead += toRead;
 
-            // the quantized vectors and corrections are still in the file
-            // Save the position where quantized data starts for this batch
             currentBatchDataPos = indexInput.getFilePointer();
 
-            // Calculate the size of the quantized data for this batch
-            long quantizedDataSize = (long) toRead * quantizedVectorByteSize + // quantized vectors
-                (long) Float.BYTES * toRead + // correctionsLower
-                (long) Float.BYTES * toRead + // correctionsUpper
-                (long) Short.BYTES * toRead + // correctionsSum
-                (long) Float.BYTES * toRead; // correctionsAdd
+            long quantizedDataSize = quantizedByteLength * toRead;
 
-            // Position for next batch will be after current quantized data
             slicePos = currentBatchDataPos + quantizedDataSize;
 
             return toRead;
@@ -841,11 +980,10 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             if (currentBatchSize == 0) {
                 return 0;
             }
-            // Seek to the start of the quantized data for this batch
             indexInput.seek(currentBatchDataPos);
-            
+
             int scoredDocs = 0;
-            quantizeQueryIfNecessary();
+            queryQuantizer.quantizeQueryIfNecessary();
             for (int i = 0; i < currentBatchSize; i++) {
                 int docId = docIDs[i];
                 docIdsScratch[i] = docId;
@@ -860,49 +998,27 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             float maxScore;
             if (currentBatchSize == BULK_SIZE && scoredDocs >= BULK_SIZE / 2) {
                 maxScore = osqVectorsScorer.scoreBulk(
-                    quantizedQueryScratch,
-                    queryCorrections.lowerInterval(),
-                    queryCorrections.upperInterval(),
-                    queryCorrections.quantizedComponentSum(),
-                    queryCorrections.additionalCorrection(),
+                    queryQuantizer.getQuantizedTarget(),
+                    queryQuantizer.getQueryCorrections().lowerInterval(),
+                    queryQuantizer.getQueryCorrections().upperInterval(),
+                    queryQuantizer.getQueryCorrections().quantizedComponentSum(),
+                    centroidDistance,
                     fieldInfo.getVectorSimilarityFunction(),
-                    centroidDp,
+                    0f,
                     scores
                 );
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                    collectBulk(knnCollector, scores);
+                    collectBulk(knnCollector, scores, BULK_SIZE);
                 }
             } else if (currentBatchSize == BULK_SIZE) {
-                // Full batch but low scoredDocs - data is in bulk format, use scoreIndividually
                 maxScore = scoreIndividually(currentBatchSize);
                 if (knnCollector.minCompetitiveSimilarity() < maxScore) {
-                    collectBulk(knnCollector, scores);
+                    collectBulk(knnCollector, scores, BULK_SIZE);
                 }
             } else {
-                // Tail batch - data is in interleaved format
-                for (int j = 0; j < currentBatchSize; j++) {
-                    int doc = docIdsScratch[j];
-                    if (doc == -1) {
-                        indexInput.skipBytes(quantizedByteLength);
-                    } else {
-                        float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
-                        indexInput.readFloats(correctiveValues, 0, 3);
-                        final int quantizedComponentSum = Short.toUnsignedInt(indexInput.readShort());
-                        float score = osqVectorsScorer.score(
-                            queryCorrections.lowerInterval(),
-                            queryCorrections.upperInterval(),
-                            queryCorrections.quantizedComponentSum(),
-                            queryCorrections.additionalCorrection(),
-                            fieldInfo.getVectorSimilarityFunction(),
-                            centroidDp,
-                            correctiveValues[0],
-                            correctiveValues[1],
-                            quantizedComponentSum,
-                            correctiveValues[2],
-                            qcDist
-                        );
-                        knnCollector.collect(doc, score);
-                    }
+                maxScore = scoreIndividually(currentBatchSize);
+                if (knnCollector.minCompetitiveSimilarity() < maxScore) {
+                    collectBulk(knnCollector, scores, currentBatchSize);
                 }
             }
             if (scoredDocs > 0) {
@@ -911,4 +1027,5 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader {
             return scoredDocs;
         }
     }
+
 }

@@ -9,27 +9,20 @@
 
 package org.elasticsearch.telemetry.apm.internal;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.core.Assertions;
-import org.elasticsearch.core.TimeValue;
-import org.elasticsearch.core.Tuple;
 import org.elasticsearch.telemetry.apm.metrics.MetricAttributes;
 
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static java.util.Collections.emptySet;
-import static org.elasticsearch.core.Tuple.tuple;
 
 public class MetricValidator {
     static final int MAX_LENGTH = 255;
@@ -112,7 +105,6 @@ public class MetricValidator {
 
         static final Set<String> REPO_ATTRIBUTES = Set.of("operation", "purpose", "repo_name", "repo_type");
         static final Set<String> REPO_SNAPSHOT_ATTRIBUTES = Set.of("repo_name", "repo_type", "state", "stage");
-        static final Set<String> REPO_S3_ATTRIBUTES = Sets.addToCopy(REPO_ATTRIBUTES, "action");
 
         static final Set<String> REINDEX_ATTRIBUTES = Set.of("reindex_source");
 
@@ -185,6 +177,8 @@ public class MetricValidator {
             Map.entry("es.esql.commands.usages.total", ESQL_ATTRIBUTES),
             Map.entry("es.esql.functions.queries.total", ESQL_ATTRIBUTES),
             Map.entry("es.esql.functions.usages.total", ESQL_ATTRIBUTES),
+            Map.entry("es.esql.settings.queries.total", ESQL_ATTRIBUTES),
+            Map.entry("es.esql.settings.usages.total", ESQL_ATTRIBUTES),
             Map.entry("es.inference.requests.count.total", INFERENCE_ATTRIBUTES),
             Map.entry("es.inference.requests.time", INFERENCE_ATTRIBUTES),
             Map.entry("es.inference.trained_model.deployment.time", INFERENCE_ATTRIBUTES),
@@ -211,9 +205,9 @@ public class MetricValidator {
             Map.entry("es.repositories.operations.unsuccessful.total", REPO_ATTRIBUTES),
             Map.entry("es.repositories.requests.http_request_time.histogram", REPO_ATTRIBUTES),
             Map.entry("es.repositories.requests.total", REPO_ATTRIBUTES),
-            Map.entry("es.repositories.s3.input_stream.retry.attempts.histogram", REPO_S3_ATTRIBUTES),
-            Map.entry("es.repositories.s3.input_stream.retry.event.total", REPO_S3_ATTRIBUTES),
-            Map.entry("es.repositories.s3.input_stream.retry.success.total", REPO_S3_ATTRIBUTES),
+            Map.entry("es.repositories.input_stream.retry.attempts.histogram", REPO_ATTRIBUTES),
+            Map.entry("es.repositories.input_stream.retry.event.total", REPO_ATTRIBUTES),
+            Map.entry("es.repositories.input_stream.retry.success.total", REPO_ATTRIBUTES),
             Map.entry("es.repositories.snapshots.blobs.uploaded.total", REPO_SNAPSHOT_ATTRIBUTES),
             Map.entry("es.repositories.snapshots.by_state.current", REPO_SNAPSHOT_ATTRIBUTES),
             Map.entry("es.repositories.snapshots.completed.total", REPO_SNAPSHOT_ATTRIBUTES),
@@ -301,7 +295,6 @@ public class MetricValidator {
      *
      * Validation will be skipped instantly if assertions are disabled.
      * If enabled, a validation failure will fail an assertion except for attributes in the skip list.
-     * If skipped, a warning will be logged at most every 1 minute instead.
      */
     public static void assertValidAttributeNames(String metricName, Map<String, Object> attributes) {
         if (Assertions.ENABLED == false) {
@@ -315,52 +308,22 @@ public class MetricValidator {
         for (String attribute : attributes.keySet()) {
             validateMaxLength(attribute);
 
-            boolean isValid = Attributes.OTEL_ATTRIBUTES.contains(attribute) || Attributes.ATTRIBUTE_PATTERN.matcher(attribute).matches();
-            boolean isDenied = Attributes.ATTRIBUTE_DENY_PATTERNS.test(attribute);
-            if (isValid && (isDenied == false)) {
-                continue;
-            }
+            assert Attributes.ATTRIBUTE_DENY_PATTERNS.test(attribute) == false
+                : Strings.format(
+                    "Attribute [%s] of [%s] is forbidden due to potential mapping conflicts or assumed high cardinality.",
+                    attribute,
+                    metricName
+                );
 
-            assert isDenied == false : Strings.format(LoggingThrottle.FORBIDDEN_MSG, attribute, metricName);
-            assert Attributes.SKIP_VALIDATION.getOrDefault(metricName, emptySet()).contains(attribute)
-                : Strings.format(LoggingThrottle.VALIDATION_FAILURE_MSG, attribute, metricName, Attributes.ATTRIBUTE_PATTERN);
-
-            // otherwise log a throttled warning. we cannot log a deprecation here, that would fail too many tests
-            LoggingThrottle.logValidationFailure(metricName, attribute);
-        }
-    }
-
-    // throttles logging of validation failures for attributes when assertions are enabled
-    private static class LoggingThrottle {
-        private static final Logger logger = LogManager.getLogger(MetricValidator.class);
-
-        private static final String VALIDATION_FAILURE_MSG =
-            "Attribute [%s] of [%s] does not match the required naming pattern [%s], see the naming guidelines.";
-
-        private static final String FORBIDDEN_MSG =
-            "Attribute [%s] of [%s] is forbidden due to potential mapping conflicts or assumed high cardinality.";
-
-        private static final long LOG_THROTTLE_NANOS = TimeValue.timeValueMinutes(1).getNanos();
-
-        private static final Map<Tuple<String, String>, LoggingThrottle> THROTTLES = new ConcurrentHashMap<>();
-
-        private static final BiFunction<Tuple<String, String>, LoggingThrottle, LoggingThrottle> THROTTLED_LOG = (metricAttr, throttle) -> {
-            if (throttle == null) {
-                throttle = new LoggingThrottle();
-            }
-            final long now = System.nanoTime();
-            if (now - throttle.lastLogNanoTime > LOG_THROTTLE_NANOS) {
-                throttle.lastLogNanoTime = now;
-                logger.warn(Strings.format(VALIDATION_FAILURE_MSG, metricAttr.v1(), metricAttr.v2(), Attributes.ATTRIBUTE_PATTERN));
-                return throttle;
-            }
-            return throttle;
-        };
-
-        private long lastLogNanoTime = 0;
-
-        static void logValidationFailure(String metricName, String attribute) {
-            THROTTLES.compute(tuple(metricName, attribute), THROTTLED_LOG);
+            assert Attributes.OTEL_ATTRIBUTES.contains(attribute)
+                || Attributes.SKIP_VALIDATION.getOrDefault(metricName, emptySet()).contains(attribute)
+                || Attributes.ATTRIBUTE_PATTERN.matcher(attribute).matches()
+                : Strings.format(
+                    "Attribute [%s] of [%s] does not match the required naming pattern [%s], see the naming guidelines.",
+                    attribute,
+                    metricName,
+                    Attributes.ATTRIBUTE_PATTERN
+                );
         }
     }
 
