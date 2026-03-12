@@ -142,10 +142,18 @@ public class QueryPhase {
         // request, preProcess is called on the DFS phase, this is why we pre-process them
         // here to make sure it happens during the QUERY phase
         AggregationPhase.preProcess(searchContext);
-        addCollectorsAndSearch(searchContext, searchContext.getSearchExecutionContext().getTimeRangeFilterFromMillis());
-        RescorePhase.execute(searchContext);
-        executeSeparatedKnnQueries(searchContext);
-        SuggestPhase.execute(searchContext);
+        boolean hasOnlyKnnScoreDocs = searchContext.request() != null
+            && searchContext.request().source() != null
+            && (searchContext.request().source().subSearches().isEmpty()
+                && false == searchContext.request().source().knnScoreDocContainers().isEmpty());
+        if (hasOnlyKnnScoreDocs) {
+            executeSeparatedKnnQueries(searchContext);
+        } else {
+            addCollectorsAndSearch(searchContext, searchContext.getSearchExecutionContext().getTimeRangeFilterFromMillis());
+            RescorePhase.execute(searchContext);
+            executeSeparatedKnnQueries(searchContext);
+            SuggestPhase.execute(searchContext);
+        }
         if (searchContext.getProfilers() != null) {
             searchContext.queryResult().profileResults(searchContext.getProfilers().buildQueryPhaseResults());
         }

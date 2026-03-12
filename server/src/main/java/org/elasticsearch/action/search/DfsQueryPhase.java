@@ -160,6 +160,7 @@ class DfsQueryPhase extends SearchPhase {
         if (source == null || source.knnSearch().isEmpty()) {
             return request;
         }
+        boolean hasAggs = source.aggregations() != null;
 
         List<SubSearchSourceBuilder> subSearchSourceBuilders = new ArrayList<>(source.subSearches());
         List<KnnScoreDocContainer> knnScoreDocContainers = new ArrayList<>();
@@ -187,6 +188,8 @@ class DfsQueryPhase extends SearchPhase {
             ).boost(boost).queryName(queryName);
             if (nestedPath != null) {
                 query = new NestedQueryBuilder(nestedPath, query, ScoreMode.Max).innerHit(source.knnSearch().get(i).innerHit());
+                subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
+            } else if (hasAggs) {
                 subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
             } else {
                 knnScoreDocContainers.add(new KnnScoreDocContainer((KnnScoreDocQueryBuilder) query, queryName, k, boost));
