@@ -42,6 +42,11 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
  * Defines a kNN search to run in the search request.
  */
 public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewriteable<KnnSearchBuilder> {
+
+    public static final TransportVersion KNN_DFS_SEARCHES_SEPARATE_RESULT_CONTAINER = TransportVersion.fromName(
+        "knn_dfs_searches_separate_result_container"
+    );
+
     public static final int NUM_CANDS_LIMIT = 10_000;
     public static final float NUM_CANDS_MULTIPLICATIVE_FACTOR = 1.5f;
 

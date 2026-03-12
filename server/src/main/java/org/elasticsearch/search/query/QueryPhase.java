@@ -42,6 +42,8 @@ import org.elasticsearch.search.rank.context.QueryPhaseRankShardContext;
 import org.elasticsearch.search.rescore.RescorePhase;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.suggest.SuggestPhase;
+import org.elasticsearch.search.vectors.KnnScoreDocContainer;
+import org.elasticsearch.search.vectors.KnnSearchShardTopDocs;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
@@ -140,13 +142,55 @@ public class QueryPhase {
         // request, preProcess is called on the DFS phase, this is why we pre-process them
         // here to make sure it happens during the QUERY phase
         AggregationPhase.preProcess(searchContext);
-
         addCollectorsAndSearch(searchContext, searchContext.getSearchExecutionContext().getTimeRangeFilterFromMillis());
-
         RescorePhase.execute(searchContext);
+        executeSeparatedKnnQueries(searchContext);
         SuggestPhase.execute(searchContext);
         if (searchContext.getProfilers() != null) {
             searchContext.queryResult().profileResults(searchContext.getProfilers().buildQueryPhaseResults());
+        }
+    }
+
+    /**
+     * Executes separated kNN queries independently of the main query. Each kNN query is executed
+     * as a KnnScoreDocQuery, and the results are stored on QuerySearchResult for the coordinator
+     * to merge with global k-limiting.
+     *
+     * When a custom sort or collapse is active, results are collected with the appropriate Sort / grouping
+     * collector so that kNN TopDocs carry sort field values (TopFieldDocs) or group values (TopFieldGroups),
+     * enabling the coordinator's mergeTopDocs to handle them natively.
+     */
+    private static void executeSeparatedKnnQueries(SearchContext searchContext) {
+        if (searchContext.request().source() == null) {
+            return;
+        }
+        List<KnnScoreDocContainer> knnScoreDocContainers = searchContext.request().source().knnScoreDocContainers();
+        if (knnScoreDocContainers == null || knnScoreDocContainers.isEmpty()) {
+            return;
+        }
+
+        try {
+            Sort sort = searchContext.sort() != null ? searchContext.sort().sort : null;
+            List<KnnSearchShardTopDocs> results = new ArrayList<>(knnScoreDocContainers.size());
+            for (KnnScoreDocContainer container : knnScoreDocContainers) {
+                var query = container.knnScoreDocQueryBuilder().toQuery(searchContext.getSearchExecutionContext());
+                TopDocs topDocs;
+                if (searchContext.collapse() != null) {
+                    Sort collapseSort = sort != null ? sort : Sort.RELEVANCE;
+                    var collector = searchContext.collapse().createTopDocs(collapseSort, container.k(), null);
+                    searchContext.searcher().search(query, collector);
+                    topDocs = collector.getTopGroups(0);
+                } else if (sort != null && false == sort.equals(Sort.RELEVANCE)) {
+                    topDocs = searchContext.searcher().search(query, container.k(), sort, true);
+                } else {
+                    topDocs = container.toTopDocs();
+                }
+                float maxScore = topDocs.scoreDocs.length > 0 ? topDocs.scoreDocs[0].score : Float.NaN;
+                results.add(new KnnSearchShardTopDocs(new TopDocsAndMaxScore(topDocs, maxScore), container.k(), container.boost()));
+            }
+            searchContext.queryResult().knnSearchShardTopDocs(results);
+        } catch (Exception e) {
+            throw new QueryPhaseExecutionException(searchContext.shardTarget(), "Failed to execute separated kNN queries", e);
         }
     }
 

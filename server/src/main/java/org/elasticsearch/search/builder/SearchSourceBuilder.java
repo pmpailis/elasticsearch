@@ -52,6 +52,7 @@ import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
 import org.elasticsearch.search.suggest.SuggestBuilder;
+import org.elasticsearch.search.vectors.KnnScoreDocContainer;
 import org.elasticsearch.search.vectors.KnnSearchBuilder;
 import org.elasticsearch.usage.SearchUsage;
 import org.elasticsearch.usage.SearchUsageHolder;
@@ -153,6 +154,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     private QueryBuilder postQueryBuilder;
 
     private List<KnnSearchBuilder> knnSearch = new ArrayList<>();
+
+    private List<KnnScoreDocContainer> knnScoreDocContainers = List.of();
 
     private RankBuilder rankBuilder = null;
 
@@ -273,6 +276,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         knnSearch = in.readCollectionAsList(KnnSearchBuilder::new);
         rankBuilder = in.readOptionalNamedWriteable(RankBuilder.class);
         skipInnerHits = in.readBoolean();
+        if (in.getTransportVersion().supports(KnnSearchBuilder.KNN_DFS_SEARCHES_SEPARATE_RESULT_CONTAINER)) {
+            knnScoreDocContainers = in.readOptionalCollectionAsList(KnnScoreDocContainer::new);
+        }
     }
 
     @Override
@@ -336,6 +342,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         out.writeCollection(knnSearch);
         out.writeOptionalNamedWriteable(rankBuilder);
         out.writeBoolean(skipInnerHits);
+        if (out.getTransportVersion().supports(KnnSearchBuilder.KNN_DFS_SEARCHES_SEPARATE_RESULT_CONTAINER)) {
+            out.writeOptionalCollection(knnScoreDocContainers);
+        }
     }
 
     /**
@@ -431,6 +440,15 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      */
     public List<KnnSearchBuilder> knnSearch() {
         return Collections.unmodifiableList(knnSearch);
+    }
+
+    public SearchSourceBuilder knnScoreDocContainers(List<KnnScoreDocContainer> knnScoreDocContainers) {
+        this.knnScoreDocContainers = Objects.requireNonNull(knnScoreDocContainers);
+        return this;
+    }
+
+    public List<KnnScoreDocContainer> knnScoreDocContainers() {
+        return knnScoreDocContainers;
     }
 
     public SearchSourceBuilder rankBuilder(RankBuilder rankBuilder) {
@@ -1274,6 +1292,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         rewrittenBuilder.pointInTimeBuilder = pointInTimeBuilder;
         rewrittenBuilder.runtimeMappings = runtimeMappings;
         rewrittenBuilder.skipInnerHits = skipInnerHits;
+        rewrittenBuilder.knnScoreDocContainers = knnScoreDocContainers;
         return rewrittenBuilder;
     }
 
@@ -2160,7 +2179,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             trackTotalHitsUpTo,
             pointInTimeBuilder,
             runtimeMappings,
-            skipInnerHits
+            skipInnerHits,
+            knnScoreDocContainers
         );
     }
 
@@ -2206,7 +2226,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             && Objects.equals(trackTotalHitsUpTo, other.trackTotalHitsUpTo)
             && Objects.equals(pointInTimeBuilder, other.pointInTimeBuilder)
             && Objects.equals(runtimeMappings, other.runtimeMappings)
-            && Objects.equals(skipInnerHits, other.skipInnerHits);
+            && Objects.equals(skipInnerHits, other.skipInnerHits)
+            && Objects.equals(knnScoreDocContainers, other.knnScoreDocContainers);
     }
 
     @Override

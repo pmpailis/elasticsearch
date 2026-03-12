@@ -30,6 +30,7 @@ import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.vectors.KnnScoreDocContainer;
 import org.elasticsearch.search.vectors.KnnScoreDocQueryBuilder;
 import org.elasticsearch.transport.Transport;
 
@@ -161,6 +162,7 @@ class DfsQueryPhase extends SearchPhase {
         }
 
         List<SubSearchSourceBuilder> subSearchSourceBuilders = new ArrayList<>(source.subSearches());
+        List<KnnScoreDocContainer> knnScoreDocContainers = new ArrayList<>();
 
         int i = 0;
         for (DfsKnnResults dfsKnnResults : knnResults) {
@@ -172,21 +174,30 @@ class DfsQueryPhase extends SearchPhase {
             }
             scoreDocs.sort(Comparator.comparingInt(scoreDoc -> scoreDoc.doc));
             String nestedPath = dfsKnnResults.getNestedPath();
+            int k = source.knnSearch().get(i).k();
+            float boost = source.knnSearch().get(i).boost();
+            String queryName = source.knnSearch().get(i).queryName();
+
             QueryBuilder query = new KnnScoreDocQueryBuilder(
                 scoreDocs.toArray(Lucene.EMPTY_SCORE_DOCS),
                 source.knnSearch().get(i).getField(),
                 source.knnSearch().get(i).getQueryVector(),
                 source.knnSearch().get(i).getSimilarity(),
                 source.knnSearch().get(i).getFilterQueries()
-            ).boost(source.knnSearch().get(i).boost()).queryName(source.knnSearch().get(i).queryName());
+            ).boost(boost).queryName(queryName);
             if (nestedPath != null) {
                 query = new NestedQueryBuilder(nestedPath, query, ScoreMode.Max).innerHit(source.knnSearch().get(i).innerHit());
+                subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
+            } else {
+                knnScoreDocContainers.add(new KnnScoreDocContainer((KnnScoreDocQueryBuilder) query, queryName, k, boost));
             }
-            subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
             i++;
         }
 
-        source = source.shallowCopy().subSearches(subSearchSourceBuilders).knnSearch(List.of());
+        source = source.shallowCopy()
+            .subSearches(subSearchSourceBuilders)
+            .knnScoreDocContainers(knnScoreDocContainers)
+            .knnSearch(List.of());
         request.source(source);
 
         return request;

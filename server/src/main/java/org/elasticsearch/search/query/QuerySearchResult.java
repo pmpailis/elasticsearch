@@ -35,9 +35,12 @@ import org.elasticsearch.search.profile.SearchProfileDfsPhaseResult;
 import org.elasticsearch.search.profile.SearchProfileQueryPhaseResult;
 import org.elasticsearch.search.rank.RankShardResult;
 import org.elasticsearch.search.suggest.Suggest;
+import org.elasticsearch.search.vectors.KnnSearchBuilder;
+import org.elasticsearch.search.vectors.KnnSearchShardTopDocs;
 import org.elasticsearch.transport.LeakTracker;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.elasticsearch.common.lucene.Lucene.readTopDocs;
 import static org.elasticsearch.common.lucene.Lucene.writeTopDocs;
@@ -81,6 +84,9 @@ public final class QuerySearchResult extends SearchPhaseResult {
 
     @Nullable
     private Long timeRangeFilterFromMillis;
+
+    @Nullable
+    private List<KnnSearchShardTopDocs> knnSearchShardTopDocs;
 
     public QuerySearchResult() {
         this(false);
@@ -404,7 +410,19 @@ public final class QuerySearchResult extends SearchPhaseResult {
     }
 
     public boolean hasSearchContext() {
-        return hasScoreDocs || hasSuggestHits() || rankShardResult != null;
+        return hasScoreDocs
+            || hasSuggestHits()
+            || rankShardResult != null
+            || (knnSearchShardTopDocs != null && knnSearchShardTopDocs.isEmpty() == false);
+    }
+
+    public void knnSearchShardTopDocs(List<KnnSearchShardTopDocs> knnShardQueryTopDocs) {
+        this.knnSearchShardTopDocs = knnShardQueryTopDocs;
+    }
+
+    @Nullable
+    public List<KnnSearchShardTopDocs> knnSearchShardTopDocs() {
+        return knnSearchShardTopDocs;
     }
 
     public void readFromWithId(ShardSearchContextId id, StreamInput in) throws IOException {
@@ -458,6 +476,9 @@ public final class QuerySearchResult extends SearchPhaseResult {
             }
             if (in.getTransportVersion().supports(TIMESTAMP_RANGE_TELEMETRY)) {
                 timeRangeFilterFromMillis = in.readOptionalLong();
+            }
+            if (in.getTransportVersion().supports(KnnSearchBuilder.KNN_DFS_SEARCHES_SEPARATE_RESULT_CONTAINER)) {
+                knnSearchShardTopDocs = in.readOptionalCollectionAsList(KnnSearchShardTopDocs::new);
             }
             success = true;
         } finally {
@@ -526,6 +547,9 @@ public final class QuerySearchResult extends SearchPhaseResult {
         }
         if (out.getTransportVersion().supports(TIMESTAMP_RANGE_TELEMETRY)) {
             out.writeOptionalLong(timeRangeFilterFromMillis);
+        }
+        if (out.getTransportVersion().supports(KnnSearchBuilder.KNN_DFS_SEARCHES_SEPARATE_RESULT_CONTAINER)) {
+            out.writeOptionalCollection(knnSearchShardTopDocs);
         }
     }
 

@@ -52,9 +52,11 @@ import org.elasticsearch.search.sort.SortFieldValidation;
 import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.search.suggest.Suggest.Suggestion;
 import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
+import org.elasticsearch.search.vectors.KnnSearchShardTopDocs;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -66,6 +68,7 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import static org.elasticsearch.index.query.AbstractQueryBuilder.DEFAULT_BOOST;
 import static org.elasticsearch.search.SearchService.DEFAULT_SIZE;
 
 public final class SearchPhaseController {
@@ -454,8 +457,12 @@ public final class SearchPhaseController {
             }
         }
         final Suggest reducedSuggest = groupedSuggestions.isEmpty() ? null : new Suggest(Suggest.reduce(groupedSuggestions));
-        final SortedTopDocs sortedTopDocs;
+        final boolean hasSeparatedKnn = hasSeparatedKnnResults(nonNullResults);
+        SortedTopDocs sortedTopDocs;
         if (queryPhaseRankCoordinatorContext == null) {
+            if (hasSeparatedKnn) {
+                mergeKnnResultsIntoBufferedTopDocs(nonNullResults, bufferedTopDocs);
+            }
             sortedTopDocs = sortDocs(
                 isScrollRequest,
                 bufferedTopDocs,
@@ -765,6 +772,338 @@ public final class SearchPhaseController {
             res.terminatedEarly = in.readOptionalBoolean();
             return res;
         }
+    }
+
+    private static boolean hasSeparatedKnnResults(List<QuerySearchResult> results) {
+        for (QuerySearchResult result : results) {
+            if (result.knnSearchShardTopDocs() != null && result.knnSearchShardTopDocs().isEmpty() == false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Holds the aggregated kNN scores, ScoreDocs, and (optional) group values collected across all kNN sub-searches.
+     * The maps are keyed by an encoded (shardIndex, doc) long — see {@link #encodeShardDoc}.
+     */
+    private record AggregatedKnnScores(
+        Map<Long, Float> scores,
+        Map<Long, ScoreDoc> scoreDocs,
+        @Nullable Map<Long, Object> groupValues,
+        boolean hasGroups
+    ) {}
+
+    /**
+     * Merges separated kNN results across shards, then enriches {@code bufferedTopDocs}
+     * so that {@link #sortDocs} / {@link #mergeTopDocs} handles sorting, pagination, and collapse natively.
+     * <p>
+     * For each kNN search, per-shard TopDocs are merged with a global k limit. The resulting docs are then
+     * folded into {@code bufferedTopDocs}: overlapping docs get their kNN score added, kNN-only docs are
+     * injected into the appropriate shard entry. Finally, each modified shard entry is re-sorted to maintain
+     * the pre-sorted invariant that {@link TopDocs#merge} requires.
+     */
+    static void mergeKnnResultsIntoBufferedTopDocs(List<QuerySearchResult> nonNullResults, List<TopDocs> bufferedTopDocs) {
+        AggregatedKnnScores aggregated = aggregateKnnScoresAcrossSearches(nonNullResults);
+        if (aggregated.scores.isEmpty()) {
+            return;
+        }
+        Map<Integer, Integer> shardToBufferPos = enrichOverlappingDocsWithKnnScores(aggregated, bufferedTopDocs);
+        injectKnnOnlyDocs(aggregated, shardToBufferPos, bufferedTopDocs);
+        resortAllBufferedTopDocs(bufferedTopDocs);
+    }
+
+    private static int computeMaxKnnSearches(List<QuerySearchResult> nonNullResults) {
+        int max = 0;
+        for (QuerySearchResult result : nonNullResults) {
+            if (result.knnSearchShardTopDocs() != null) {
+                max = Math.max(max, result.knnSearchShardTopDocs().size());
+            }
+        }
+        return max;
+    }
+
+    /**
+     * Aggregates kNN scores across all kNN sub-searches and shards. For each sub-search, per-shard TopDocs are
+     * merged with the global k limit, then each doc's boosted score is accumulated into a shared map. Documents
+     * appearing in multiple kNN sub-searches have their scores summed.
+     */
+    private static AggregatedKnnScores aggregateKnnScoresAcrossSearches(List<QuerySearchResult> nonNullResults) {
+        Map<Long, Float> knnScores = new HashMap<>();
+        Map<Long, ScoreDoc> knnScoreDocs = new HashMap<>();
+        Map<Long, Object> knnGroupValues = null;
+        boolean hasGroups = false;
+
+        int totalKnnSearches = computeMaxKnnSearches(nonNullResults);
+        for (int knnSearch = 0; knnSearch < totalKnnSearches; knnSearch++) {
+            MergedKnnSubSearch merged = mergeKnnSubSearch(nonNullResults, knnSearch);
+            if (merged == null) {
+                continue;
+            }
+            Object[] groupValues = merged.topDocs instanceof TopFieldGroups groups ? groups.groupValues : null;
+            if (groupValues != null) {
+                hasGroups = true;
+                if (knnGroupValues == null) {
+                    knnGroupValues = new HashMap<>();
+                }
+            }
+            accumulateScores(merged, knnScores, knnScoreDocs, knnGroupValues, groupValues);
+        }
+        return new AggregatedKnnScores(knnScores, knnScoreDocs, knnGroupValues, hasGroups);
+    }
+
+    /**
+     * Intermediate result of merging one kNN sub-search across all shards.
+     */
+    private record MergedKnnSubSearch(TopDocs topDocs, float boost) {}
+
+    /**
+     * Collects per-shard TopDocs for a single kNN sub-search and merges them with the global k limit.
+     * Returns {@code null} if no shards contributed results for this sub-search index.
+     */
+    @Nullable
+    private static MergedKnnSubSearch mergeKnnSubSearch(List<QuerySearchResult> nonNullResults, int knnSearchIndex) {
+        List<TopDocs> perShardTopDocs = new ArrayList<>(nonNullResults.size());
+        int k = DEFAULT_SIZE;
+        float boost = DEFAULT_BOOST;
+        for (QuerySearchResult result : nonNullResults) {
+            List<KnnSearchShardTopDocs> knnResults = result.knnSearchShardTopDocs();
+            if (knnResults == null || knnSearchIndex >= knnResults.size()) {
+                continue;
+            }
+            KnnSearchShardTopDocs knnSearchShardResults = knnResults.get(knnSearchIndex);
+            TopDocs topDocs = knnSearchShardResults.topDocs().topDocs;
+            setShardIndex(topDocs, result.getShardIndex());
+            perShardTopDocs.add(topDocs);
+            k = knnSearchShardResults.k();
+            boost = knnSearchShardResults.boost();
+        }
+        if (perShardTopDocs.isEmpty()) {
+            return null;
+        }
+        TopDocs merged = mergeTopDocs(perShardTopDocs, k, 0);
+        if (merged == null) {
+            return null;
+        }
+        return new MergedKnnSubSearch(merged, boost);
+    }
+
+    /**
+     * Accumulates boosted scores from a merged kNN sub-search into the running totals.
+     * Documents appearing in multiple sub-searches have their scores summed via {@link Map#merge}.
+     */
+    private static void accumulateScores(
+        MergedKnnSubSearch merged,
+        Map<Long, Float> knnScores,
+        Map<Long, ScoreDoc> knnScoreDocs,
+        @Nullable Map<Long, Object> knnGroupValues,
+        @Nullable Object[] groupValues
+    ) {
+        for (int i = 0; i < merged.topDocs.scoreDocs.length; i++) {
+            ScoreDoc sd = merged.topDocs.scoreDocs[i];
+            long key = encodeShardDoc(sd.shardIndex, sd.doc);
+            knnScores.merge(key, sd.score * merged.boost, Float::sum);
+            knnScoreDocs.putIfAbsent(key, sd);
+            if (groupValues != null) {
+                knnGroupValues.putIfAbsent(key, groupValues[i]);
+            }
+        }
+    }
+
+    /**
+     * Adds aggregated kNN scores to docs that already exist in {@code bufferedTopDocs} (i.e. docs that matched
+     * both the main query and a kNN sub-search). Matched entries are removed from the aggregated maps so that
+     * only kNN-only docs remain afterwards. Returns a mapping from shard index to buffer position for subsequent
+     * injection of kNN-only docs.
+     */
+    private static Map<Integer, Integer> enrichOverlappingDocsWithKnnScores(AggregatedKnnScores aggregated, List<TopDocs> bufferedTopDocs) {
+        Map<Integer, Integer> shardToBufferPos = new HashMap<>();
+        for (int i = 0; i < bufferedTopDocs.size(); i++) {
+            TopDocs td = bufferedTopDocs.get(i);
+            if (td == null || td.scoreDocs.length == 0) {
+                continue;
+            }
+            shardToBufferPos.put(td.scoreDocs[0].shardIndex, i);
+            for (ScoreDoc sd : td.scoreDocs) {
+                long key = encodeShardDoc(sd.shardIndex, sd.doc);
+                Float knnScore = aggregated.scores.remove(key);
+                if (knnScore != null) {
+                    sd.score += knnScore;
+                    aggregated.scoreDocs.remove(key);
+                }
+            }
+        }
+        return shardToBufferPos;
+    }
+
+    /**
+     * Injects docs that only appear in kNN results (not in the main query) into {@code bufferedTopDocs}.
+     * If a shard already has an entry in the buffer, the extra docs are appended; otherwise a new entry
+     * is created with the appropriate concrete TopDocs type.
+     */
+    private static void injectKnnOnlyDocs(
+        AggregatedKnnScores aggregated,
+        Map<Integer, Integer> shardToBufferPos,
+        List<TopDocs> bufferedTopDocs
+    ) {
+        if (aggregated.scores.isEmpty()) {
+            return;
+        }
+        Map<Integer, List<ScoreDoc>> extrasByShard = new HashMap<>();
+        Map<Integer, List<Object>> extraGroupsByShard = aggregated.hasGroups ? new HashMap<>() : null;
+        for (long key : aggregated.scores.keySet()) {
+            ScoreDoc sd = aggregated.scoreDocs.get(key);
+            sd.score = aggregated.scores.get(key);
+            extrasByShard.computeIfAbsent(sd.shardIndex, ignored -> new ArrayList<>()).add(sd);
+            if (aggregated.hasGroups) {
+                extraGroupsByShard.computeIfAbsent(sd.shardIndex, ignored -> new ArrayList<>()).add(aggregated.groupValues.get(key));
+            }
+        }
+        for (var entry : extrasByShard.entrySet()) {
+            int shard = entry.getKey();
+            List<ScoreDoc> extras = entry.getValue();
+            Integer bufPos = shardToBufferPos.get(shard);
+            if (bufPos != null) {
+                List<Object> groups = aggregated.hasGroups ? extraGroupsByShard.get(shard) : null;
+                bufferedTopDocs.set(bufPos, appendDocs(bufferedTopDocs.get(bufPos), extras, groups));
+            } else {
+                List<Object> groups = aggregated.hasGroups ? extraGroupsByShard.get(shard) : null;
+                bufferedTopDocs.add(newTopDocs(extras, groups, bufferedTopDocs));
+            }
+        }
+    }
+
+    /**
+     * Re-sorts every entry in {@code bufferedTopDocs} to restore the per-shard ordering invariant
+     * required by {@link TopDocs#merge}.
+     */
+    private static void resortAllBufferedTopDocs(List<TopDocs> bufferedTopDocs) {
+        for (int i = 0; i < bufferedTopDocs.size(); i++) {
+            TopDocs td = bufferedTopDocs.get(i);
+            if (td != null && td.scoreDocs.length > 1) {
+                bufferedTopDocs.set(i, resortTopDocs(td));
+            }
+        }
+    }
+
+    /** Appends extra docs to an existing TopDocs, preserving its concrete type. */
+    private static TopDocs appendDocs(TopDocs existing, List<ScoreDoc> extras, @Nullable List<Object> extraGroupValues) {
+        ScoreDoc[] combined = Arrays.copyOf(existing.scoreDocs, existing.scoreDocs.length + extras.size());
+        for (int i = 0; i < extras.size(); i++) {
+            combined[existing.scoreDocs.length + i] = extras.get(i);
+        }
+        TotalHits totalHits = new TotalHits(existing.totalHits.value() + extras.size(), existing.totalHits.relation());
+        if (existing instanceof TopFieldGroups groups && extraGroupValues != null) {
+            Object[] gv = Arrays.copyOf(groups.groupValues, combined.length);
+            for (int i = 0; i < extraGroupValues.size(); i++) {
+                gv[groups.groupValues.length + i] = extraGroupValues.get(i);
+            }
+            return new TopFieldGroups(groups.field, totalHits, combined, groups.fields, gv);
+        } else if (existing instanceof TopFieldDocs fieldDocs) {
+            return new TopFieldDocs(totalHits, combined, fieldDocs.fields);
+        }
+        return new TopDocs(totalHits, combined);
+    }
+
+    /** Creates a new TopDocs for kNN-only docs, inferring the concrete type from existing buffered entries. */
+    private static TopDocs newTopDocs(List<ScoreDoc> docs, @Nullable List<Object> groupValues, List<TopDocs> bufferedTopDocs) {
+        ScoreDoc[] scoreDocs = docs.toArray(new ScoreDoc[0]);
+        TotalHits totalHits = new TotalHits(scoreDocs.length, TotalHits.Relation.EQUAL_TO);
+        for (TopDocs td : bufferedTopDocs) {
+            if (td instanceof TopFieldGroups groups && groupValues != null) {
+                return new TopFieldGroups(groups.field, totalHits, scoreDocs, groups.fields, groupValues.toArray(new Object[0]));
+            } else if (td instanceof TopFieldDocs fieldDocs) {
+                return new TopFieldDocs(totalHits, scoreDocs, fieldDocs.fields);
+            }
+        }
+        return new TopDocs(totalHits, scoreDocs);
+    }
+
+    /**
+     * Re-sorts a TopDocs to maintain the pre-sorted invariant required by {@link TopDocs#merge}.
+     * For TopFieldDocs/TopFieldGroups, sorts by field values. For plain TopDocs, sorts by score desc.
+     * TopFieldGroups' groupValues array is re-ordered in lockstep with scoreDocs.
+     */
+    private static TopDocs resortTopDocs(TopDocs topDocs) {
+        if (topDocs instanceof TopFieldDocs fieldDocs) {
+            int[] perm = sortPermutationForFieldDocs(fieldDocs.scoreDocs, fieldDocs.fields);
+            ScoreDoc[] sorted = applyPermutation(fieldDocs.scoreDocs, perm);
+            if (fieldDocs instanceof TopFieldGroups groups) {
+                Object[] sortedGV = new Object[groups.groupValues.length];
+                for (int i = 0; i < perm.length; i++) {
+                    sortedGV[i] = groups.groupValues[perm[i]];
+                }
+                return new TopFieldGroups(groups.field, groups.totalHits, sorted, groups.fields, sortedGV);
+            }
+            return new TopFieldDocs(fieldDocs.totalHits, sorted, fieldDocs.fields);
+        }
+        // Plain TopDocs: sort by score desc, then shard, then doc
+        ScoreDoc[] sorted = Arrays.copyOf(topDocs.scoreDocs, topDocs.scoreDocs.length);
+        Arrays.sort(sorted, (a, b) -> {
+            int cmp = Float.compare(b.score, a.score);
+            if (cmp != 0) return cmp;
+            cmp = Integer.compare(a.shardIndex, b.shardIndex);
+            if (cmp != 0) return cmp;
+            return Integer.compare(a.doc, b.doc);
+        });
+        return new TopDocs(topDocs.totalHits, sorted);
+    }
+
+    /** Returns a permutation array that sorts FieldDocs by their sort field values. */
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static int[] sortPermutationForFieldDocs(ScoreDoc[] docs, SortField[] sortFields) {
+        Integer[] indices = new Integer[docs.length];
+        for (int i = 0; i < indices.length; i++) {
+            indices[i] = i;
+        }
+        Arrays.sort(indices, (a, b) -> {
+            FieldDoc fa = (FieldDoc) docs[a];
+            FieldDoc fb = (FieldDoc) docs[b];
+            for (int i = 0; i < sortFields.length; i++) {
+                int cmp;
+                if (sortFields[i].getType() == SortField.Type.SCORE) {
+                    float sa = fa.fields[i] == null ? Float.NaN : ((Number) fa.fields[i]).floatValue();
+                    float sb = fb.fields[i] == null ? Float.NaN : ((Number) fb.fields[i]).floatValue();
+                    cmp = -Float.compare(sa, sb); // SCORE is descending
+                } else {
+                    Object valA = fa.fields[i];
+                    Object valB = fb.fields[i];
+                    if (valA == null && valB == null) {
+                        cmp = 0;
+                    } else if (valA == null) {
+                        cmp = 1;
+                    } else if (valB == null) {
+                        cmp = -1;
+                    } else {
+                        cmp = ((Comparable) valA).compareTo(valB);
+                    }
+                    if (sortFields[i].getReverse()) {
+                        cmp = -cmp;
+                    }
+                }
+                if (cmp != 0) return cmp;
+            }
+            int cmp = Integer.compare(docs[a].shardIndex, docs[b].shardIndex);
+            if (cmp != 0) return cmp;
+            return Integer.compare(docs[a].doc, docs[b].doc);
+        });
+        int[] result = new int[indices.length];
+        for (int i = 0; i < indices.length; i++) {
+            result[i] = indices[i];
+        }
+        return result;
+    }
+
+    private static ScoreDoc[] applyPermutation(ScoreDoc[] docs, int[] perm) {
+        ScoreDoc[] result = new ScoreDoc[docs.length];
+        for (int i = 0; i < perm.length; i++) {
+            result[i] = docs[perm[i]];
+        }
+        return result;
+    }
+
+    private static long encodeShardDoc(int shardIndex, int doc) {
+        return ((long) shardIndex << 32) | (doc & 0xFFFFFFFFL);
     }
 
     public record SortedTopDocs(
