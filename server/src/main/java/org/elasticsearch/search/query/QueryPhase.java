@@ -23,6 +23,8 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldDocs;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
@@ -147,6 +149,23 @@ public class QueryPhase {
             && (searchContext.request().source().subSearches().isEmpty()
                 && false == searchContext.request().source().knnScoreDocContainers().isEmpty());
         if (hasOnlyKnnScoreDocs) {
+            searchContext.queryResult().from(searchContext.from());
+            searchContext.queryResult().size(searchContext.size());
+            SortAndFormats sortAndFormats = searchContext.sort();
+            TopDocs emptyTopDocs;
+            DocValueFormat[] sortFormats;
+            if (sortAndFormats != null) {
+                emptyTopDocs = new TopFieldDocs(
+                    new TotalHits(0, TotalHits.Relation.EQUAL_TO),
+                    new FieldDoc[0],
+                    sortAndFormats.sort.getSort()
+                );
+                sortFormats = sortAndFormats.formats;
+            } else {
+                emptyTopDocs = Lucene.EMPTY_TOP_DOCS;
+                sortFormats = null;
+            }
+            searchContext.queryResult().topDocs(new TopDocsAndMaxScore(emptyTopDocs, Float.MIN_VALUE), sortFormats);
             executeSeparatedKnnQueries(searchContext);
         } else {
             addCollectorsAndSearch(searchContext, searchContext.getSearchExecutionContext().getTimeRangeFilterFromMillis());

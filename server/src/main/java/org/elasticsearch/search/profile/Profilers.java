@@ -14,10 +14,12 @@ import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.profile.aggregation.AggregationProfileShardResult;
 import org.elasticsearch.search.profile.aggregation.AggregationProfiler;
 import org.elasticsearch.search.profile.dfs.DfsProfiler;
+import org.elasticsearch.search.profile.query.CollectorResult;
 import org.elasticsearch.search.profile.query.QueryProfileShardResult;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.util.Collections;
+import java.util.List;
 
 /** Wrapper around all the profilers that makes management easier. */
 public final class Profilers {
@@ -63,10 +65,15 @@ public final class Profilers {
      * Build the results for the query phase.
      */
     public SearchProfileQueryPhaseResult buildQueryPhaseResults() {
+        CollectorResult collectorResult = queryProfiler.getCollectorResult();
+        if (collectorResult == null) {
+            // No collector was used (e.g. knn-only short-circuit path), provide an empty result
+            collectorResult = new CollectorResult("", CollectorResult.REASON_SEARCH_TOP_HITS, 0, List.of());
+        }
         QueryProfileShardResult result = new QueryProfileShardResult(
             queryProfiler.getTree(),
             queryProfiler.getRewriteTime(),
-            queryProfiler.getCollectorResult(),
+            collectorResult,
             null
         );
         AggregationProfileShardResult aggResults = new AggregationProfileShardResult(aggProfiler.getTree());

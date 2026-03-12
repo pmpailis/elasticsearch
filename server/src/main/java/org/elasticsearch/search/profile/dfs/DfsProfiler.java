@@ -13,6 +13,7 @@ import org.elasticsearch.search.profile.AbstractProfileBreakdown;
 import org.elasticsearch.search.profile.ProfileResult;
 import org.elasticsearch.search.profile.SearchProfileDfsPhaseResult;
 import org.elasticsearch.search.profile.Timer;
+import org.elasticsearch.search.profile.query.CollectorResult;
 import org.elasticsearch.search.profile.query.QueryProfileShardResult;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
@@ -68,11 +69,15 @@ public class DfsProfiler extends AbstractProfileBreakdown<DfsTimingType> {
         if (knnQueryProfilers.size() > 0) {
             final List<QueryProfileShardResult> queryProfileShardResult = new ArrayList<>(knnQueryProfilers.size());
             for (QueryProfiler queryProfiler : knnQueryProfilers) {
+                CollectorResult collectorResult = queryProfiler.getCollectorResult();
+                if (collectorResult == null) {
+                    collectorResult = new CollectorResult("", CollectorResult.REASON_SEARCH_TOP_HITS, 0, List.of());
+                }
                 queryProfileShardResult.add(
                     new QueryProfileShardResult(
                         queryProfiler.getTree(),
                         queryProfiler.getRewriteTime(),
-                        queryProfiler.getCollectorResult(),
+                        collectorResult,
                         queryProfiler.getVectorOpsCount()
                     )
                 );

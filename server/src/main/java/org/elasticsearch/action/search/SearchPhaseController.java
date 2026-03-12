@@ -462,6 +462,16 @@ public final class SearchPhaseController {
         if (queryPhaseRankCoordinatorContext == null) {
             if (hasSeparatedKnn) {
                 mergeKnnResultsIntoBufferedTopDocs(nonNullResults, bufferedTopDocs);
+                // Recount fetchHits from the updated bufferedTopDocs since the short-circuit path
+                // sets main topDocs to empty, leaving topDocsStats with 0 fetchHits/totalHits.
+                long updatedFetchHits = 0;
+                for (TopDocs td : bufferedTopDocs) {
+                    if (td != null) {
+                        updatedFetchHits += td.scoreDocs.length;
+                    }
+                }
+                topDocsStats.fetchHits = updatedFetchHits;
+                topDocsStats.totalHits = Math.max(topDocsStats.totalHits, updatedFetchHits);
             }
             sortedTopDocs = sortDocs(
                 isScrollRequest,

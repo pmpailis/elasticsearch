@@ -189,7 +189,9 @@ class DfsQueryPhase extends SearchPhase {
             if (nestedPath != null) {
                 query = new NestedQueryBuilder(nestedPath, query, ScoreMode.Max).innerHit(source.knnSearch().get(i).innerHit());
                 subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
-            } else if (hasAggs) {
+            } else if (hasAggs || queryName != null) {
+                // Keep as subSearch when there are aggs (need agg collection) or a queryName
+                // (_name tracking requires the normal collector pipeline)
                 subSearchSourceBuilders.add(new SubSearchSourceBuilder(query));
             } else {
                 knnScoreDocContainers.add(new KnnScoreDocContainer((KnnScoreDocQueryBuilder) query, queryName, k, boost));
