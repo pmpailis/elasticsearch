@@ -23,8 +23,8 @@ import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.DenseVectorFieldType;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.VectorSimilarity;
 import org.elasticsearch.search.DocValueFormat;
-import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.CandidateIVFKnnFloatVectorQuery;
+import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.DiversifyingParentBlockQuery;
 import org.elasticsearch.search.vectors.ESKnnByteVectorQuery;
 import org.elasticsearch.search.vectors.ESKnnFloatVectorQuery;
@@ -343,9 +343,7 @@ public class DenseVectorFieldTypeTests extends FieldTypeTestCase {
             if (field.getIndexOptions().isFlat()) {
                 assertThat(query, instanceOf(DiversifyingParentBlockQuery.class));
             } else {
-                assertTrue(
-                    query instanceof DiversifyingChildrenFloatKnnVectorQuery || query instanceof CandidateIVFKnnFloatVectorQuery
-                );
+                assertTrue(query instanceof DiversifyingChildrenFloatKnnVectorQuery || query instanceof CandidateIVFKnnFloatVectorQuery);
             }
         }
         {

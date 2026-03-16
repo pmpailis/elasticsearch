@@ -49,12 +49,7 @@ public class IVFCentroidQuery extends Query {
     private final LeafReaderContext context;
     private final AtomicLong totalVectorsVisited;
 
-    public IVFCentroidQuery(
-        String field,
-        IVFCentroidMeta centroid,
-        LeafReaderContext ctx,
-        AtomicLong totalVectorsVisited
-    ) {
+    public IVFCentroidQuery(String field, IVFCentroidMeta centroid, LeafReaderContext ctx, AtomicLong totalVectorsVisited) {
         this.field = field;
         this.centroidMeta = centroid;
         this.context = ctx;

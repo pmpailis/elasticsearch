@@ -271,7 +271,7 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
                 return Queries.NO_DOCS_INSTANCE;
             }
             assert innerRewritten.getClass() != MatchAllDocsQuery.class;
-            if(false == innerQuery.equals(innerRewritten)) {
+            if (false == innerQuery.equals(innerRewritten)) {
                 return new DirectRescoreKnnVectorQuery(fieldName, floatTarget, innerRewritten);
             }
 

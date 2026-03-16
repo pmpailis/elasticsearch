@@ -51,13 +51,10 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.io.Channels;
-import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
@@ -369,7 +366,7 @@ class KnnSearcher {
             // checking low-precision recall
             int[][] nn;
             if (vectorEncoding.equals(VectorEncoding.BYTE)) {
-                nn = computeExactNNByte(queryPath, filterQuery, vectorFileOffsetBytes);
+                nn = computeExactNNByte(queryPath, filterQuery, searchParameters.topK(), vectorFileOffsetBytes);
             } else {
                 nn = computeExactNN(queryPath, filterQuery, searchParameters.topK(), vectorFileOffsetBytes);
             }

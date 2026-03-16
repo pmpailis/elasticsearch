@@ -26,17 +26,8 @@ import static com.carrotsearch.randomizedtesting.RandomizedTest.randomFloat;
 public class CandidateIVFKnnFloatVectorQueryTests extends AbstractIVFKnnVectorQueryTestCase {
 
     @Override
-    public CandidateIVFKnnFloatVectorQuery getKnnVectorQuery(String field, float[] query, int k, Query queryFilter, float visitRatio){
-        return new CandidateIVFKnnFloatVectorQuery(
-            field,
-            query,
-            k,
-            k,
-            queryFilter,
-            visitRatio,
-            1000,
-            null
-        );
+    public CandidateIVFKnnFloatVectorQuery getKnnVectorQuery(String field, float[] query, int k, Query queryFilter, float visitRatio) {
+        return new CandidateIVFKnnFloatVectorQuery(field, query, k, k, queryFilter, visitRatio, 1000, null);
     }
 
     @Override

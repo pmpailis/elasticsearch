@@ -84,9 +84,8 @@ import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.support.CoreValuesSourceType;
 import org.elasticsearch.search.lookup.Source;
-import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.CandidateIVFKnnFloatVectorQuery;
-import org.elasticsearch.search.vectors.DiversifyingChildrenIVFKnnFloatVectorQuery;
+import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.DiversifyingParentBlockQuery;
 import org.elasticsearch.search.vectors.ESDiversifyingChildrenByteKnnVectorQuery;
 import org.elasticsearch.search.vectors.ESDiversifyingChildrenFloatKnnVectorQuery;
@@ -144,7 +143,6 @@ public class DenseVectorFieldMapper extends FieldMapper {
             + "is deprecated and will be removed in a future version";
 
     private static final int DEFAULT_BBQ_IVF_QUANTIZE_BITS = 1;
-
 
     /**
      * The heuristic to utilize when executing a filtered search against vectors indexed in an HNSW graph.
@@ -3170,26 +3168,17 @@ public class DenseVectorFieldMapper extends FieldMapper {
             } else if (indexOptions instanceof BBQIVFIndexOptions bbqIndexOptions) {
                 float defaultVisitRatio = (float) (bbqIndexOptions.defaultVisitPercentage / 100d);
                 float visitRatio = visitPercentage == null ? defaultVisitRatio : (float) (visitPercentage / 100d);
-                knnQuery = parentFilter != null
-                    ? new DiversifyingChildrenIVFKnnFloatVectorQuery(
-                        name(),
-                        queryVector,
-                        adjustedK,
-                        numCands,
-                        filter,
-                        parentFilter,
-                        visitRatio,
-                        bbqIndexOptions.doPrecondition()
-                    )
-                    : new CandidateIVFKnnFloatVectorQuery(
-                        name(),
-                        queryVector,
-                        adjustedK,
-                        numCands,
-                        filter,
-                        visitRatio,
-                        bbqIndexOptions.doPrecondition()
-                    );
+                knnQuery = new CandidateIVFKnnFloatVectorQuery(
+                    name(),
+                    queryVector,
+                    adjustedK,
+                    numCands,
+                    filter,
+                    visitRatio,
+                    bbqIndexOptions.clusterSize,
+                    parentFilter,
+                    bbqIndexOptions.doPrecondition()
+                );
             } else {
                 knnQuery = parentFilter != null
                     ? new ESDiversifyingChildrenFloatKnnVectorQuery(

@@ -9,7 +9,6 @@
 
 package org.elasticsearch.search.vectors;
 
-
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
@@ -18,6 +17,7 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -33,11 +33,11 @@ import org.apache.lucene.search.TopScoreDocCollectorManager;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.util.Bits;
+import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
 import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
-import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -60,6 +60,9 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     private final int clusterSize;
     private final BitSetProducer parentsFilter; // null for non-diversifying
     private final AtomicLong totalVectorsVisited;
+
+    private boolean isQueryPreconditioned = false;
+    private float[] query;
 
     public float[] getQueryVector() {
         return queryVector;
@@ -89,9 +92,10 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         Query filter,
         float visitRatio,
         int clusterSize,
-        BitSetProducer parentsFilter
+        BitSetProducer parentsFilter,
+        boolean doPrecondition
     ) {
-        this(field, queryVector, k, numCands, filter, visitRatio, clusterSize, parentsFilter, new AtomicLong(0));
+        this(field, queryVector, k, numCands, filter, visitRatio, clusterSize, parentsFilter, new AtomicLong(0), doPrecondition);
     }
 
     private CandidateIVFKnnFloatVectorQuery(
@@ -103,9 +107,10 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         float visitRatio,
         int clusterSize,
         BitSetProducer parentsFilter,
-        AtomicLong totalVectorsVisited
+        AtomicLong totalVectorsVisited,
+        boolean doPrecondition
     ) {
-        super(field, visitRatio, k, k, filter);
+        super(field, visitRatio, k, k, filter, doPrecondition);
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
         }
@@ -127,22 +132,36 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
     }
 
     @Override
-    TopDocs approximateSearch(LeafReaderContext context, AcceptDocs acceptDocs, int visitedLimit, IVFCollectorManager knnCollectorManager, float visitRatio) {
+    TopDocs approximateSearch(
+        LeafReaderContext context,
+        AcceptDocs acceptDocs,
+        int visitedLimit,
+        IVFCollectorManager knnCollectorManager,
+        float visitRatio
+    ) {
         return null;
     }
 
     @Override
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
         if (filter != null) {
-            BooleanQuery booleanQuery = new BooleanQuery.Builder()
-                .add(filter, BooleanClause.Occur.FILTER)
+            BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
                 .add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER)
                 .build();
             Query filterRewritten = indexSearcher.rewrite(booleanQuery);
             if (false == filter.equals(filterRewritten)) {
                 // Pass the same totalVectorsVisited instance to preserve count across rewrites
                 return new CandidateIVFKnnFloatVectorQuery(
-                    field, queryVector, k, numCands, filterRewritten, providedVisitRatio, clusterSize, parentsFilter, totalVectorsVisited
+                    field,
+                    queryVector,
+                    k,
+                    numCands,
+                    filterRewritten,
+                    providedVisitRatio,
+                    clusterSize,
+                    parentsFilter,
+                    totalVectorsVisited,
+                    doPrecondition
                 );
             }
         }
@@ -221,6 +240,36 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         return new KnnScoreDocQuery(topDocs.scoreDocs, reader);
     }
 
+    @Override
+    void preconditionQuery(LeafReaderContext context) throws IOException {
+        if (isQueryPreconditioned) {
+            // already preconditioned
+            return;
+        }
+        LeafReader reader = context.reader();
+        SegmentReader segmentReader = Lucene.tryUnwrapSegmentReader(reader);
+        if (segmentReader == null) {
+            // ignore and continue to the next leaf context to see if we can get a segment reader there
+            return;
+        }
+        KnnVectorsReader fieldsReader = segmentReader.getVectorReader();
+        if (fieldsReader instanceof PerFieldKnnVectorsFormat.FieldsReader) {
+            KnnVectorsReader knnVectorsReader = ((PerFieldKnnVectorsFormat.FieldsReader) fieldsReader).getFieldReader(field);
+            if (knnVectorsReader instanceof VectorPreconditioner) {
+                FieldInfo fieldInfo = segmentReader.getFieldInfos().fieldInfo(field);
+                Preconditioner preconditioner = ((VectorPreconditioner) knnVectorsReader).getPreconditioner(fieldInfo);
+                if (preconditioner != null) {
+                    final float[] out = new float[query.length];
+                    preconditioner.applyTransform(query, out);
+                    // have to keep the copy to avoid issues with reused arrays by the caller of IVFKnnFloatVectorQuery which expects
+                    // a non-preconditioned query vector to still exist
+                    query = out;
+                    isQueryPreconditioned = true;
+                }
+            }
+        }
+    }
+
     private List<IVFCentroidQuery> generateCentroidQueries(
         LeafReaderContext ctx,
         int numCentroids,
@@ -240,11 +289,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         return allCentroidQueries;
     }
 
-    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(
-        LeafReaderContext ctx,
-        int maxCentroids,
-        Weight filterWeight
-    ) throws IOException {
+    private List<IVFCentroidQuery.IVFCentroidMeta> findTopCentroids(LeafReaderContext ctx, int maxCentroids, Weight filterWeight)
+        throws IOException {
         LeafReader leafReader = ctx.reader();
         FloatVectorValues vectorValues = leafReader.getFloatVectorValues(field);
         if (vectorValues == null || vectorValues.size() == 0) {

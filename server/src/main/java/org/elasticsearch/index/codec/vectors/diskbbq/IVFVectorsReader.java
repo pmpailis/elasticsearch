@@ -76,7 +76,6 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         this.fieldInfos = state.fieldInfos;
         this.fields = new IntObjectHashMap<>();
         this.genericReaders = new GenericFlatVectorReaders();
-        String meta = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, IVF_META_EXTENSION);
         this.centroidExtension = centroidExtension;
         this.clusterExtension = clusterExtension;
         this.versionDirectIo = versionDirectIo;
@@ -525,13 +524,6 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         return centroids;
     }
 
-    public abstract PostingVisitor getPostingVisitor(
-        FieldInfo fieldInfo,
-        IndexInput postingsLists,
-        float[] target,
-        Bits needsScoring,
-        IndexInput centroidSlice
-    ) throws IOException;
     public abstract PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         IndexInput postingsLists,

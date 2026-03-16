@@ -217,7 +217,9 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             globalCentroid,
             globalCentroidDp,
             quantEncoding,
-            bulkSize
+            bulkSize,
+            preconditionerOffset,
+            preconditionerLength
         );
     }
 
@@ -800,7 +802,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             for (int j = 0; j < bulkSize; j++) {
                 int doc = docIdsScratch[j];
                 if (doc != -1) {
-                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
+                    float qcDist = osqVectorsScorer.quantizeScore(queryQuantizer.getQuantizedTarget());
                     scores[j] = qcDist;
                 } else {
                     indexInput.skipBytes(quantizedVectorByteSize);

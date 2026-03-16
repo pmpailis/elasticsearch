@@ -28,8 +28,8 @@ import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.DenseVector
 import org.elasticsearch.index.mapper.vectors.SparseVectorFieldMapper;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.inference.TaskType;
-import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.CandidateIVFKnnFloatVectorQuery;
+import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.search.vectors.SparseVectorQueryWrapper;
 import org.elasticsearch.search.vectors.VectorData;

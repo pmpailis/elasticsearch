@@ -156,15 +156,6 @@ public class NeighborQueue {
         return top;
     }
 
-    public long popRawAndAddRaw(long raw) {
-        long top = heap.top();
-        if (raw < top) {
-            return raw;
-        }
-        heap.updateTop(raw);
-        return top;
-    }
-
     public void clear() {
         heap.clear();
     }
