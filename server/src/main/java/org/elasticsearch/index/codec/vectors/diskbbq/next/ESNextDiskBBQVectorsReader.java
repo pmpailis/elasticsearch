@@ -58,7 +58,18 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
 
     public ESNextDiskBBQVectorsReader(SegmentReadState state, GenericFlatVectorReaders.LoadFlatVectorsReader getFormatReader)
         throws IOException {
-        super(state, getFormatReader);
+        super(
+            state,
+            getFormatReader,
+            ESNextDiskBBQVectorsFormat.NAME,
+            ESNextDiskBBQVectorsFormat.CENTROID_EXTENSION,
+            ESNextDiskBBQVectorsFormat.CLUSTER_EXTENSION,
+            ESNextDiskBBQVectorsFormat.IVF_META_EXTENSION,
+            ESNextDiskBBQVectorsFormat.VERSION_START,
+            ESNextDiskBBQVectorsFormat.VERSION_CURRENT,
+            ESNextDiskBBQVectorsFormat.VERSION_DIRECT_IO,
+            ESNextDiskBBQVectorsFormat.DYNAMIC_VISIT_RATIO
+        );
     }
 
     CentroidIterator getPostingListPrefetchIterator(CentroidIterator centroidIterator, IndexInput postingListSlice) throws IOException {
@@ -206,9 +217,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             globalCentroid,
             globalCentroidDp,
             quantEncoding,
-            bulkSize,
-            preconditionerOffset,
-            preconditionerLength
+            bulkSize
         );
     }
 
@@ -791,7 +800,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             for (int j = 0; j < bulkSize; j++) {
                 int doc = docIdsScratch[j];
                 if (doc != -1) {
-                    float qcDist = osqVectorsScorer.quantizeScore(queryQuantizer.getQuantizedTarget());
+                    float qcDist = osqVectorsScorer.quantizeScore(quantizedQueryScratch);
                     scores[j] = qcDist;
                 } else {
                     indexInput.skipBytes(quantizedVectorByteSize);
@@ -932,7 +941,6 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader implements Vect
             }
             return scoredDocs;
         }
-
     }
 
 }

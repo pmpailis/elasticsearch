@@ -51,10 +51,13 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.io.Channels;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
@@ -436,7 +439,8 @@ class KnnSearcher {
                 filterQuery,
                 visitRatio,
                 ES920DiskBBQVectorsFormat.DEFAULT_VECTORS_PER_CLUSTER,
-                null
+                null,
+                doPrecondition
             );
         } else {
             knnQuery = new ESKnnFloatVectorQuery(
@@ -542,7 +546,7 @@ class KnnSearcher {
         }
     }
 
-    private int[][] computeExactNNByte(Path queryPath, Query filterQuery, int vectorFileOffsetBytes) throws IOException {
+    private int[][] computeExactNNByte(Path queryPath, Query filterQuery, int topK, int vectorFileOffsetBytes) throws IOException {
         int[][] result = new int[numQueryVectors][];
         try (Directory dir = FSDirectory.open(indexPath); DirectoryReader reader = DirectoryReader.open(dir)) {
             List<Callable<Void>> tasks = new ArrayList<>();
@@ -551,7 +555,7 @@ class KnnSearcher {
                 for (int i = 0; i < numQueryVectors; i++) {
                     byte[] queryVector = new byte[dim];
                     queryReader.next(queryVector);
-                    tasks.add(new ComputeNNByteTask(i, queryVector, result, reader, filterQuery, similarityFunction));
+                    tasks.add(new ComputeNNByteTask(i, topK, queryVector, result, reader, filterQuery, similarityFunction));
                 }
                 ForkJoinPool.commonPool().invokeAll(tasks);
             }
@@ -617,11 +621,13 @@ class KnnSearcher {
         private final byte[] query;
         private final int[][] result;
         private final IndexReader reader;
-        private final Query filterQuery;
         private final VectorSimilarityFunction similarityFunction;
+        private final Query filterQuery;
+        private final int topK;
 
         ComputeNNByteTask(
             int queryOrd,
+            int topK,
             byte[] query,
             int[][] result,
             IndexReader reader,
@@ -632,14 +638,14 @@ class KnnSearcher {
             this.query = query;
             this.result = result;
             this.reader = reader;
-            this.filterQuery = filterQuery;
             this.similarityFunction = similarityFunction;
+            this.filterQuery = filterQuery;
+            this.topK = topK;
         }
 
         @Override
         public Void call() {
             IndexSearcher searcher = new IndexSearcher(reader);
-            int topK = result[0].length;
             try {
                 var queryVector = new ConstKnnByteVectorValueSource(query);
                 var docVectors = new ByteKnnVectorFieldSource(VECTOR_FIELD);
