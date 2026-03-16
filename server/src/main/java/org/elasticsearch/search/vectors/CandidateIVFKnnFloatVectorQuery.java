@@ -185,7 +185,8 @@ public class CandidateIVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery i
         List<IVFCentroidQuery> allCentroidQueries = new ArrayList<>();
         final Weight finalFilterWeight = filterWeight;
         for (LeafReaderContext context : reader.leaves()) {
-            tasks.add(() -> generateCentroidQueries(context, numCentroids, totalVectorsVisited, finalFilterWeight));
+            int finalNumCentroids = numCentroids;
+            tasks.add(() -> generateCentroidQueries(context, finalNumCentroids, totalVectorsVisited, finalFilterWeight));
         }
         List<List<IVFCentroidQuery>> perLeafResults = indexSearcher.getTaskExecutor().invokeAll(tasks).stream().toList();
         for (List<IVFCentroidQuery> centroidQueries : perLeafResults) {
