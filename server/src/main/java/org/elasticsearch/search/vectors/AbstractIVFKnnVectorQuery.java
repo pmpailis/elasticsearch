@@ -117,11 +117,6 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             filterWeight = null;
         }
 
-        // we request numCands as we are using it as an approximation measure
-        // we need to ensure we are getting at least 2*k results to ensure we cover overspill duplicates
-        // TODO move the logic for automatically adjusting percentages to the query, so we can only pass
-        // 2k to the collector.
-        IVFCollectorManager knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
         TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
 
@@ -144,6 +139,27 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             visitRatio = expected / totalVectors;
         } else {
             visitRatio = providedVisitRatio;
+        }
+
+        // Compute filter selectivity and choose collector strategy
+        IVFCollectorManager knnCollectorManager;
+        if (filterWeight != null) {
+            long filterCost = 0;
+            for (LeafReaderContext leafCtx : leafReaderContexts) {
+                ScorerSupplier ss = filterWeight.scorerSupplier(leafCtx);
+                if (ss != null) filterCost += ss.cost();
+            }
+            float selectivity = totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
+            if (selectivity > 0.7f) {
+                float overSamplingFactor = Math.max(1.2f / selectivity, 1.1f);
+                int baseK = Math.round(2f * k);
+                int oversampledK = (int) Math.ceil(baseK * overSamplingFactor);
+                knnCollectorManager = new PostFilteringIVFCollectorManager(oversampledK, baseK, indexSearcher, filterWeight);
+            } else {
+                knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
+            }
+        } else {
+            knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
         }
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
@@ -191,6 +207,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         final LeafReader reader = ctx.reader();
         final Bits liveDocs = reader.getLiveDocs();
         final int maxDoc = reader.maxDoc();
+
+        // Post-filter: pass only liveDocs as AcceptDocs (no filter → full SIMD scoring)
+        if (knnCollectorManager instanceof PostFilteringIVFCollectorManager) {
+            AcceptDocs acceptDocs = liveDocs == null
+                ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE
+                : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
+            return approximateSearch(ctx, acceptDocs, Integer.MAX_VALUE, knnCollectorManager, visitRatio);
+        }
 
         if (filterWeight == null) {
             return approximateSearch(
