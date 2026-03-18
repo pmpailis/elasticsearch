@@ -36,6 +36,7 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
     // Post-filtering fields (set when post-filtering is active)
     private Weight postFilterWeight;
     private int postFilterOriginalK;
+    private float postFilterSelectivity;
 
     public ESKnnFloatVectorQuery(String field, float[] target, int k, int numCands, Query filter, KnnSearchStrategy strategy) {
         this(field, target, k, numCands, filter, strategy, false);
@@ -78,6 +79,7 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
                     );
                     pfQuery.postFilterWeight = filterWeight;
                     pfQuery.postFilterOriginalK = kParam;
+                    pfQuery.postFilterSelectivity = selectivity;
                     Query result = pfQuery.rewrite(indexSearcher);
                     this.vectorOpsCount = pfQuery.vectorOpsCount;
                     return result;
@@ -130,7 +132,8 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
             KnnCollectorManager mgr = new PostFilteringHnswCollectorManager(
                 k,
                 postFilterOriginalK,
-                postFilterWeight
+                postFilterWeight,
+                postFilterSelectivity
             );
             return earlyTermination ? PatienceCollectorManager.wrap(mgr) : mgr;
         }

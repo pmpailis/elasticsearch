@@ -36,6 +36,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     // Post-filtering fields (set when post-filtering is active)
     private Weight postFilterWeight;
     private int postFilterOriginalK;
+    private float postFilterSelectivity;
 
     public ESKnnByteVectorQuery(String field, byte[] target, int k, int numCands, Query filter, KnnSearchStrategy strategy) {
         this(field, target, k, numCands, filter, strategy, false);
@@ -77,6 +78,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
                     );
                     pfQuery.postFilterWeight = filterWeight;
                     pfQuery.postFilterOriginalK = kParam;
+                    pfQuery.postFilterSelectivity = selectivity;
                     Query result = pfQuery.rewrite(indexSearcher);
                     this.vectorOpsCount = pfQuery.vectorOpsCount;
                     return result;
@@ -129,7 +131,8 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
             KnnCollectorManager mgr = new PostFilteringHnswCollectorManager(
                 k,
                 postFilterOriginalK,
-                postFilterWeight
+                postFilterWeight,
+                postFilterSelectivity
             );
             return earlyTermination ? PatienceCollectorManager.wrap(mgr) : mgr;
         }
