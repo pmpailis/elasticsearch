@@ -30,13 +30,15 @@ import java.util.List;
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /**
- * A KNN collector that scores all documents without the filter (preserving SIMD bulk scoring)
- * and applies the filter only at {@code topDocs()} time. Used when filter selectivity is high
- * (most docs pass), where passing the filter as AcceptDocs would hurt SIMD performance.
+ * A KNN collector that scores all documents without the filter (preserving SIMD bulk scoring for IVF
+ * and avoiding per-visit filter evaluation for HNSW) and applies the filter only at result time.
  *
- * <p>During collection, this behaves identically to {@link MaxScoreTopKnnCollector}: the queue
- * fills to {@code queueSize} and then returns the top score as the competitive threshold so
- * that HNSW can prune naturally. The filter is applied only when materializing results.
+ * <p>During search, this collector behaves identically to {@code MaxScoreTopKnnCollector}: the queue
+ * fills naturally and the competitive threshold tightens monotonically. At {@link #topDocs()} time,
+ * the queue is drained once, the filter is applied, and the top {@code originalK} passing results
+ * are returned.
+ *
+ * <p>The queue is oversampled ({@code queueSize > originalK}) to compensate for filtered-out results.
  */
 class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
 
@@ -45,9 +47,9 @@ class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
     private final NeighborQueue queue;
     private final Weight filterWeight;
     private final LeafReaderContext leafContext;
+
     private long minCompetitiveDocScore = LEAST_COMPETITIVE;
-    private List<TopDocs> topDocsResults = new ArrayList<>();
-    private int collected = 0;
+    private float decodedMinCompetitiveSimilarity = Float.NEGATIVE_INFINITY;
 
     PostFilteringKnnCollector(
         int queueSize,
@@ -72,24 +74,12 @@ class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
 
     @Override
     public float minCompetitiveSimilarity() {
-        return hasCollectedEnoughResults() ? Math.max(minCompetitiveDocScore, queue.topScore() ): Float.NEGATIVE_INFINITY ;
-    }
-
-    private boolean hasCollectedEnoughResults() {
-        if (collected >= originalK){
-            return true;
-        }
-        if(queue.size() > k()) {
-            var topDocs = materializeFromQueue();
-            collected += topDocs.scoreDocs.length;
-            return topDocs.scoreDocs.length >= originalK;
-        }
-        return false;
+        return queue.size() >= k() ? Math.max(decodedMinCompetitiveSimilarity, queue.topScore()) : decodedMinCompetitiveSimilarity;
     }
 
     @Override
     public int numCollected() {
-        return collected;
+        return queue.size();
     }
 
     @Override
@@ -101,19 +91,13 @@ class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
     void updateMinCompetitiveDocScore(long minCompetitiveDocScore) {
         long queueMinCompetitiveDocScore = queue.size() > 0 ? queue.peek() : LEAST_COMPETITIVE;
         this.minCompetitiveDocScore = Math.max(this.minCompetitiveDocScore, Math.max(queueMinCompetitiveDocScore, minCompetitiveDocScore));
+        this.decodedMinCompetitiveSimilarity = NeighborQueue.decodeScoreRaw(this.minCompetitiveDocScore);
     }
 
     @Override
     public TopDocs topDocs() {
-        topDocsResults.add(materializeFromQueue());
-        return TopDocs.merge(originalK, topDocsResults.toArray(TopDocs[]::new));
-    }
-
-    /**
-     * Drains the queue, applies the filter, and returns the top {@code originalK} passing results.
-     */
-    private TopDocs materializeFromQueue() {
         int size = queue.size();
+        // Drain queue in score order (highest first)
         int[] docIds = new int[size];
         float[] scores = new float[size];
         for (int i = size - 1; i >= 0; i--) {
@@ -121,8 +105,16 @@ class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
             scores[i] = queue.topScore();
             queue.pop();
         }
+        // Apply filter, keep top originalK passing results
         IntHashSet passing = findPassingDocs(docIds);
-        return buildTopDocs(docIds, scores, size, passing);
+        List<ScoreDoc> result = new ArrayList<>();
+        for (int i = 0; i < size && result.size() < originalK; i++) {
+            if (passing.contains(docIds[i])) {
+                result.add(new ScoreDoc(docIds[i], scores[i]));
+            }
+        }
+        TotalHits.Relation relation = earlyTerminated() ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO;
+        return new TopDocs(new TotalHits(visitedCount(), relation), result.toArray(new ScoreDoc[0]));
     }
 
     private IntHashSet findPassingDocs(int[] docIds) {
@@ -148,17 +140,6 @@ class PostFilteringKnnCollector extends AbstractMaxScoreKnnCollector {
             throw new UncheckedIOException(e);
         }
         return passing;
-    }
-
-    private TopDocs buildTopDocs(int[] docIds, float[] scores, int size, IntHashSet passing) {
-        List<ScoreDoc> result = new ArrayList<>();
-        for (int i = 0; i < size && result.size() < originalK; i++) {
-            if (passing.contains(docIds[i])) {
-                result.add(new ScoreDoc(docIds[i], scores[i]));
-            }
-        }
-        TotalHits.Relation relation = earlyTerminated() ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO;
-        return new TopDocs(new TotalHits(visitedCount(), relation), result.toArray(new ScoreDoc[0]));
     }
 
     private DocIdSetIterator newFilterIterator() throws IOException {
