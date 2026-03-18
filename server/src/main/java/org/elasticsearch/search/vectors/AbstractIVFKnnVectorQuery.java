@@ -141,9 +141,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             visitRatio = providedVisitRatio;
         }
 
-        // Compute filter selectivity and choose collector strategy
-        IVFCollectorManager knnCollectorManager;
-        if (filterWeight != null) {
+        // Compute filter selectivity and choose collector strategy.
+        // Only use post-filtering with the standard collector manager; subclasses
+        // (e.g., diversifying queries) provide custom collector managers that need
+        // the filter passed as AcceptDocs instead.
+        int baseK = Math.round(2f * k);
+        final IVFCollectorManager knnCollectorManager;
+        IVFCollectorManager defaultManager = getKnnCollectorManager(baseK, indexSearcher);
+        if (filterWeight != null && defaultManager.getClass() == IVFCollectorManager.class) {
             long filterCost = 0;
             for (LeafReaderContext leafCtx : leafReaderContexts) {
                 ScorerSupplier ss = filterWeight.scorerSupplier(leafCtx);
@@ -152,14 +157,13 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             float selectivity = totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
             if (selectivity > 0.7f) {
                 float overSamplingFactor = Math.max(1.2f / selectivity, 1.1f);
-                int baseK = Math.round(2f * k);
                 int oversampledK = (int) Math.ceil(baseK * overSamplingFactor);
                 knnCollectorManager = new PostFilteringIVFCollectorManager(oversampledK, baseK, indexSearcher, filterWeight);
             } else {
-                knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
+                knnCollectorManager = defaultManager;
             }
         } else {
-            knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
+            knnCollectorManager = defaultManager;
         }
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());

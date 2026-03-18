@@ -36,7 +36,6 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     // Post-filtering fields (set when post-filtering is active)
     private Weight postFilterWeight;
     private int postFilterOriginalK;
-    private int postFilterOversampledK;
 
     public ESKnnByteVectorQuery(String field, byte[] target, int k, int numCands, Query filter, KnnSearchStrategy strategy) {
         this(field, target, k, numCands, filter, strategy, false);
@@ -67,8 +66,6 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
                 Weight filterWeight = indexSearcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1f);
                 float selectivity = computeSelectivity(filterWeight, indexSearcher);
                 if (selectivity > 0.7f) {
-                    float overSamplingFactor = Math.max(1.2f / selectivity, 1.1f);
-                    int oversampledK = (int) Math.ceil(kParam * overSamplingFactor);
                     ESKnnByteVectorQuery pfQuery = new ESKnnByteVectorQuery(
                         field,
                         getTargetCopy(),
@@ -80,7 +77,6 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
                     );
                     pfQuery.postFilterWeight = filterWeight;
                     pfQuery.postFilterOriginalK = kParam;
-                    pfQuery.postFilterOversampledK = oversampledK;
                     Query result = pfQuery.rewrite(indexSearcher);
                     this.vectorOpsCount = pfQuery.vectorOpsCount;
                     return result;
@@ -131,7 +127,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     protected KnnCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
         if (postFilterWeight != null) {
             KnnCollectorManager mgr = new PostFilteringHnswCollectorManager(
-                postFilterOversampledK,
+                k,
                 postFilterOriginalK,
                 postFilterWeight
             );

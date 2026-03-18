@@ -22,12 +22,12 @@ import java.io.IOException;
  */
 class PostFilteringHnswCollectorManager implements KnnCollectorManager {
 
-    private final int oversampledK;
+    private final int queueSize;
     private final int originalK;
     private final Weight filterWeight;
 
-    PostFilteringHnswCollectorManager(int oversampledK, int originalK, Weight filterWeight) {
-        this.oversampledK = oversampledK;
+    PostFilteringHnswCollectorManager(int queueSize, int originalK, Weight filterWeight) {
+        this.queueSize = queueSize;
         this.originalK = originalK;
         this.filterWeight = filterWeight;
     }
@@ -35,6 +35,6 @@ class PostFilteringHnswCollectorManager implements KnnCollectorManager {
     @Override
     public PostFilteringKnnCollector newCollector(int visitedLimit, KnnSearchStrategy searchStrategy, LeafReaderContext context)
         throws IOException {
-        return new PostFilteringKnnCollector(oversampledK, originalK, visitedLimit, searchStrategy, filterWeight, context);
+        return new PostFilteringKnnCollector(queueSize, originalK, visitedLimit, searchStrategy, filterWeight, context);
     }
 }
