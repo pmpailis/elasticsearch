@@ -121,7 +121,7 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
      * Applies the filter to ScoreDocs with global doc IDs. Groups docs by leaf for efficient
      * filter iterator advancement, then returns passing docs sorted by score descending.
      */
-    private static ScoreDoc[] applyFilter(ScoreDoc[] scoreDocs, Weight filterWeight, IndexSearcher searcher) throws IOException {
+    static ScoreDoc[] applyFilter(ScoreDoc[] scoreDocs, Weight filterWeight, IndexSearcher searcher) throws IOException {
         List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
 
         // Group docs by leaf ordinal

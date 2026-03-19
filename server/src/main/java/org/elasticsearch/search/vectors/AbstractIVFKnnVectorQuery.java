@@ -38,6 +38,7 @@ import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
@@ -148,6 +149,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         int baseK = Math.round(2f * k);
         final IVFCollectorManager knnCollectorManager;
         IVFCollectorManager defaultManager = getKnnCollectorManager(baseK, indexSearcher);
+        final boolean postFiltering;
+        final Weight leafFilterWeight;
+        final int mergeK;
         if (filterWeight != null && defaultManager.getClass() == IVFCollectorManager.class) {
             long filterCost = 0;
             for (LeafReaderContext leafCtx : leafReaderContexts) {
@@ -156,14 +160,22 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             }
             float selectivity = totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
             if (selectivity > 0.7f) {
-                float overSamplingFactor = Math.max(1.2f / selectivity, 1.1f);
-                int oversampledK = (int) Math.ceil(baseK * overSamplingFactor);
-                knnCollectorManager = new PostFilteringIVFCollectorManager(oversampledK, baseK, indexSearcher, filterWeight);
+                int scaledBaseK = (int) Math.ceil(baseK / selectivity);
+                knnCollectorManager = new IVFCollectorManager(scaledBaseK, indexSearcher);
+                postFiltering = true;
+                leafFilterWeight = null;
+                mergeK = scaledBaseK;
             } else {
                 knnCollectorManager = defaultManager;
+                postFiltering = false;
+                leafFilterWeight = filterWeight;
+                mergeK = k;
             }
         } else {
             knnCollectorManager = defaultManager;
+            postFiltering = false;
+            leafFilterWeight = filterWeight;
+            mergeK = k;
         }
 
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
@@ -171,12 +183,25 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             if (doPrecondition) {
                 preconditionQuery(context);
             }
-            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
+            tasks.add(() -> searchLeaf(context, leafFilterWeight, knnCollectorManager, visitRatio));
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        // Merge sort the results
-        TopDocs topK = TopDocs.merge(k, perLeafResults);
+        // Merge sort the results, optionally post-filtering
+        if (postFiltering) {
+            TopDocs raw = TopDocs.merge(mergeK, perLeafResults);
+            vectorOpsCount = (int) raw.totalHits.value();
+            if (raw.scoreDocs.length == 0) {
+                return Queries.NO_DOCS_INSTANCE;
+            }
+            ScoreDoc[] filtered = ESKnnFloatVectorQuery.applyFilter(raw.scoreDocs, filterWeight, indexSearcher);
+            int count = Math.min(k, filtered.length);
+            if (count == 0) {
+                return Queries.NO_DOCS_INSTANCE;
+            }
+            return new KnnScoreDocQuery(Arrays.copyOf(filtered, count), reader);
+        }
+        TopDocs topK = TopDocs.merge(mergeK, perLeafResults);
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -211,14 +236,6 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         final LeafReader reader = ctx.reader();
         final Bits liveDocs = reader.getLiveDocs();
         final int maxDoc = reader.maxDoc();
-
-        // Post-filter: pass only liveDocs as AcceptDocs (no filter → full SIMD scoring)
-        if (knnCollectorManager instanceof PostFilteringIVFCollectorManager) {
-            AcceptDocs acceptDocs = liveDocs == null
-                ? ESAcceptDocs.ESAcceptDocsAll.INSTANCE
-                : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
-            return approximateSearch(ctx, acceptDocs, Integer.MAX_VALUE, knnCollectorManager, visitRatio);
-        }
 
         if (filterWeight == null) {
             return approximateSearch(
