@@ -10,11 +10,10 @@
 package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
@@ -27,21 +26,17 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
-import org.elasticsearch.common.lucene.search.Queries;
+import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
 
-import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
-
-public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryProfilerProvider {
+public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryProfilerProvider, PostFilterableKnnQuery {
     private final int kParam;
     private long vectorOpsCount;
     private final boolean earlyTermination;
+    private final boolean skipPostFilter;
+    private final FixedBitSet seenDocs;
 
     // Captured by mergeLeafResults for query-level post-filtering
     private TopDocs capturedMergedResults;
@@ -59,14 +54,30 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
         KnnSearchStrategy strategy,
         boolean earlyTermination
     ) {
+        this(field, target, k, numCands, filter, strategy, earlyTermination, false, null);
+    }
+
+    ESKnnFloatVectorQuery(
+        String field,
+        float[] target,
+        int k,
+        int numCands,
+        Query filter,
+        KnnSearchStrategy strategy,
+        boolean earlyTermination,
+        boolean skipPostFilter,
+        FixedBitSet seenDocs
+    ) {
         super(field, target, numCands, filter, strategy);
         this.kParam = k;
         this.earlyTermination = earlyTermination;
+        this.skipPostFilter = skipPostFilter;
+        this.seenDocs = seenDocs;
     }
 
     @Override
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
-        if (filter != null) {
+        if (skipPostFilter == false && filter != null) {
             BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
                 .add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER)
                 .build();
@@ -83,86 +94,23 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
     }
 
     /**
-     * Post-filtering rewrite: runs a standard KNN search (no filter, full Lucene Phase 1 + Phase 2)
-     * via an inner query, then applies the filter to the merged results at the query level.
+     * Post-filtering rewrite: creates a filter-less delegate wrapped in PostFilterAwareKnnQuery
+     * which handles filtering and retry with doc-ID exclusion.
      */
     private Query postFilterRewrite(IndexSearcher searcher, Weight filterWeight, float selectivity) throws IOException {
-        // Scale numCands by 1/selectivity to match ACORN's exploration behavior:
-        // ACORN's queue fills only with filtered docs, so at selectivity 0.7 it takes ~1.43x more
-        // visits to fill. We replicate this by inflating the search depth proportionally.
         int scaledNumCands = (int) Math.ceil(k / selectivity);
-        ESKnnFloatVectorQuery inner = new ESKnnFloatVectorQuery(
+        ESKnnFloatVectorQuery delegate = new ESKnnFloatVectorQuery(
             field,
             getTargetCopy(),
-            scaledNumCands, // kParam: keep all results from scaled search for filtering
-            scaledNumCands, // numCands: scaled search depth to match ACORN exploration
-            null,           // no filter — post-filter after merge
+            scaledNumCands,
+            scaledNumCands,
+            null,
             searchStrategy,
-            earlyTermination
+            earlyTermination,
+            true,
+            null
         );
-        inner.rewrite(searcher);
-        this.vectorOpsCount = inner.vectorOpsCount;
-
-        TopDocs raw = inner.capturedMergedResults;
-        if (raw == null || raw.scoreDocs.length == 0) {
-            return Queries.NO_DOCS_INSTANCE;
-        }
-
-        // Post-filter the merged results
-        ScoreDoc[] filtered = applyFilter(raw.scoreDocs, filterWeight, searcher);
-        int count = Math.min(kParam, filtered.length);
-        if (count == 0) {
-            return Queries.NO_DOCS_INSTANCE;
-        }
-        return new KnnScoreDocQuery(Arrays.copyOf(filtered, count), searcher.getIndexReader());
-    }
-
-    /**
-     * Applies the filter to ScoreDocs with global doc IDs. Groups docs by leaf for efficient
-     * filter iterator advancement, then returns passing docs sorted by score descending.
-     */
-    static ScoreDoc[] applyFilter(ScoreDoc[] scoreDocs, Weight filterWeight, IndexSearcher searcher) throws IOException {
-        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
-
-        // Group docs by leaf ordinal
-        @SuppressWarnings({ "unchecked", "rawtypes" })
-        List<ScoreDoc>[] byLeaf = new List[leaves.size()];
-        for (ScoreDoc sd : scoreDocs) {
-            int leafOrd = ReaderUtil.subIndex(sd.doc, leaves);
-            if (byLeaf[leafOrd] == null) {
-                byLeaf[leafOrd] = new ArrayList<>();
-            }
-            byLeaf[leafOrd].add(sd);
-        }
-
-        List<ScoreDoc> passing = new ArrayList<>();
-        for (int leafOrd = 0; leafOrd < leaves.size(); leafOrd++) {
-            if (byLeaf[leafOrd] == null) continue;
-            LeafReaderContext ctx = leaves.get(leafOrd);
-            ScorerSupplier ss = filterWeight.scorerSupplier(ctx);
-            if (ss == null) continue;
-
-            DocIdSetIterator filterIter = ss.get(NO_MORE_DOCS).iterator();
-            // Sort by local doc ID for efficient filter advancing
-            List<ScoreDoc> leafDocs = byLeaf[leafOrd];
-            leafDocs.sort(Comparator.comparingInt(sd -> sd.doc));
-
-            int filterDoc = -1;
-            for (ScoreDoc sd : leafDocs) {
-                int localDoc = sd.doc - ctx.docBase;
-                if (filterDoc < localDoc) {
-                    filterDoc = filterIter.advance(localDoc);
-                }
-                if (filterDoc == localDoc) {
-                    passing.add(sd);
-                }
-                if (filterDoc == NO_MORE_DOCS) break;
-            }
-        }
-
-        // Sort by score descending
-        passing.sort((a, b) -> Float.compare(b.score, a.score));
-        return passing.toArray(new ScoreDoc[0]);
+        return new PostFilterAwareKnnQuery(delegate, filterWeight, kParam, searcher.getIndexReader(), ops -> this.vectorOpsCount = ops);
     }
 
     private float computeSelectivity(Weight filterWeight, IndexSearcher indexSearcher) throws IOException {
@@ -193,6 +141,48 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
     public void profile(QueryProfiler queryProfiler) {
         queryProfiler.addVectorOpsCount(vectorOpsCount);
     }
+
+    // --- PostFilterableKnnQuery implementation ---
+
+    @Override
+    public TopDocs capturedResults() {
+        return capturedMergedResults;
+    }
+
+    @Override
+    public PostFilterableKnnQuery createRetryQuery(IndexReader reader) {
+        int maxDoc = reader.maxDoc();
+        FixedBitSet newSeenDocs = new FixedBitSet(Math.max(maxDoc, 1));
+        if (seenDocs != null) {
+            newSeenDocs.or(seenDocs);
+        }
+        // Add all raw docs from this round to the seen set
+        if (capturedMergedResults != null) {
+            for (ScoreDoc sd : capturedMergedResults.scoreDocs) {
+                if (sd.doc >= 0 && sd.doc < maxDoc) {
+                    newSeenDocs.set(sd.doc);
+                }
+            }
+        }
+        return new ESKnnFloatVectorQuery(
+            field,
+            getTargetCopy(),
+            kParam,
+            k, // super.k = numCands from Lucene
+            new PostFilterAwareKnnQuery.ExcludeDocsQuery(newSeenDocs, reader),
+            searchStrategy,
+            earlyTermination,
+            true,
+            newSeenDocs
+        );
+    }
+
+    @Override
+    public long vectorOpsCount() {
+        return vectorOpsCount;
+    }
+
+    // --- Accessors ---
 
     public int kParam() {
         return kParam;

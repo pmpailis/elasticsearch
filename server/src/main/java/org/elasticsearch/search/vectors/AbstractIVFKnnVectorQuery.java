@@ -38,7 +38,6 @@ import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
@@ -55,10 +54,26 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected final int k;
     protected final int numCands;
     protected final Query filter;
+    protected final boolean skipPostFilter;
     protected int vectorOpsCount;
     protected boolean doPrecondition;
 
+    // Captured raw results for PostFilterableKnnQuery
+    protected TopDocs capturedTopDocs;
+
     protected AbstractIVFKnnVectorQuery(String field, float visitRatio, int k, int numCands, Query filter, boolean doPrecondition) {
+        this(field, visitRatio, k, numCands, filter, doPrecondition, false);
+    }
+
+    protected AbstractIVFKnnVectorQuery(
+        String field,
+        float visitRatio,
+        int k,
+        int numCands,
+        Query filter,
+        boolean doPrecondition,
+        boolean skipPostFilter
+    ) {
         if (k < 1) {
             throw new IllegalArgumentException("k must be at least 1, got: " + k);
         }
@@ -74,6 +89,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         this.filter = filter;
         this.numCands = numCands;
         this.doPrecondition = doPrecondition;
+        this.skipPostFilter = skipPostFilter;
     }
 
     @Override
@@ -89,6 +105,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         if (o == null || getClass() != o.getClass()) return false;
         AbstractIVFKnnVectorQuery that = (AbstractIVFKnnVectorQuery) o;
         return k == that.k
+            && skipPostFilter == that.skipPostFilter
             && Objects.equals(field, that.field)
             && Objects.equals(filter, that.filter)
             && Objects.equals(providedVisitRatio, that.providedVisitRatio);
@@ -96,7 +113,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     @Override
     public int hashCode() {
-        return Objects.hash(field, k, filter, providedVisitRatio);
+        return Objects.hash(field, k, filter, providedVisitRatio, skipPostFilter);
     }
 
     @Override
@@ -149,10 +166,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         int baseK = Math.round(2f * k);
         final IVFCollectorManager knnCollectorManager;
         IVFCollectorManager defaultManager = getKnnCollectorManager(baseK, indexSearcher);
-        final boolean postFiltering;
         final Weight leafFilterWeight;
         final int mergeK;
-        if (filterWeight != null && defaultManager.getClass() == IVFCollectorManager.class) {
+        if (skipPostFilter == false && filterWeight != null && defaultManager.getClass() == IVFCollectorManager.class) {
             long filterCost = 0;
             for (LeafReaderContext leafCtx : leafReaderContexts) {
                 ScorerSupplier ss = filterWeight.scorerSupplier(leafCtx);
@@ -160,20 +176,37 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             }
             float selectivity = totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
             if (selectivity > 0.7f) {
+                // Create a filter-less IVF delegate wrapped in PostFilterAwareKnnQuery
                 int scaledBaseK = (int) Math.ceil(baseK / selectivity);
-                knnCollectorManager = new IVFCollectorManager(scaledBaseK, indexSearcher);
-                postFiltering = true;
-                leafFilterWeight = null;
-                mergeK = scaledBaseK;
-            } else {
-                knnCollectorManager = defaultManager;
-                postFiltering = false;
-                leafFilterWeight = filterWeight;
-                mergeK = k;
+                // Oversample visit ratio to compensate for docs that will be filtered out
+                float visitOversampling = Math.max(1.1f, 1.2f / selectivity);
+                float scaledVisitRatio = Math.min(1.0f, visitRatio * visitOversampling);
+                assert this instanceof IVFKnnFloatVectorQuery;
+                IVFKnnFloatVectorQuery self = (IVFKnnFloatVectorQuery) this;
+                IVFKnnFloatVectorQuery delegate = new IVFKnnFloatVectorQuery(
+                    field,
+                    self.getQuery(),
+                    scaledBaseK,
+                    Math.max(numCands, scaledBaseK),
+                    null,
+                    scaledVisitRatio,
+                    doPrecondition,
+                    true,
+                    null
+                );
+                return new PostFilterAwareKnnQuery(
+                    delegate,
+                    filterWeight,
+                    k,
+                    reader,
+                    ops -> this.vectorOpsCount = (int) ops
+                );
             }
+            knnCollectorManager = defaultManager;
+            leafFilterWeight = filterWeight;
+            mergeK = k;
         } else {
             knnCollectorManager = defaultManager;
-            postFiltering = false;
             leafFilterWeight = filterWeight;
             mergeK = k;
         }
@@ -187,22 +220,10 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        // Merge sort the results, optionally post-filtering
-        if (postFiltering) {
-            TopDocs raw = TopDocs.merge(mergeK, perLeafResults);
-            vectorOpsCount = (int) raw.totalHits.value();
-            if (raw.scoreDocs.length == 0) {
-                return Queries.NO_DOCS_INSTANCE;
-            }
-            ScoreDoc[] filtered = ESKnnFloatVectorQuery.applyFilter(raw.scoreDocs, filterWeight, indexSearcher);
-            int count = Math.min(k, filtered.length);
-            if (count == 0) {
-                return Queries.NO_DOCS_INSTANCE;
-            }
-            return new KnnScoreDocQuery(Arrays.copyOf(filtered, count), reader);
-        }
         TopDocs topK = TopDocs.merge(mergeK, perLeafResults);
         vectorOpsCount = (int) topK.totalHits.value();
+        // Capture raw results for PostFilterableKnnQuery.capturedResults()
+        this.capturedTopDocs = topK;
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }

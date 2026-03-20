@@ -334,6 +334,14 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits, entry.centroidSlice(ivfCentroids));
         long expectedDocs = 0;
         long actualDocs = 0;
+        // Initialize visited centroid tracking if IVF search strategy is in use
+        final IVFKnnSearchStrategy ivfStrategy;
+        if (knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy s) {
+            ivfStrategy = s;
+            ivfStrategy.initVisitedCentroids(entry.numCentroids);
+        } else {
+            ivfStrategy = null;
+        }
         // initially we visit only the "centroids to search"
         // Note, numCollected is doing the bare minimum here.
         // TODO do we need to handle nested doc counts similarly to how we handle
@@ -341,8 +349,16 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         while (centroidPrefetchingIterator.hasNext()
             && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
             PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            // Skip centroids that were visited in a previous retry round
+            if (ivfStrategy != null && ivfStrategy.shouldSkipCentroid(postingMetadata.queryCentroidOrdinal())) {
+                continue;
+            }
             expectedDocs += scorer.resetPostingsScorer(postingMetadata);
             actualDocs += scorer.visit(knnCollector);
+            // Record this centroid as visited for future retry rounds
+            if (ivfStrategy != null) {
+                ivfStrategy.markCentroidVisited(postingMetadata.queryCentroidOrdinal());
+            }
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
             }
@@ -354,8 +370,16 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
             while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
                 PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+                // Skip centroids that were visited in a previous retry round
+                if (ivfStrategy != null && ivfStrategy.shouldSkipCentroid(postingMetadata.queryCentroidOrdinal())) {
+                    continue;
+                }
                 scorer.resetPostingsScorer(postingMetadata);
                 actualDocs += scorer.visit(knnCollector);
+                // Record this centroid as visited for future retry rounds
+                if (ivfStrategy != null) {
+                    ivfStrategy.markCentroidVisited(postingMetadata.queryCentroidOrdinal());
+                }
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();
                 }

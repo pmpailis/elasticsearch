@@ -254,7 +254,7 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
 
         @Override
         public Query rewrite(IndexSearcher indexSearcher) throws IOException {
-            Query innerRewritten = innerQuery.rewrite(indexSearcher);
+            Query innerRewritten = indexSearcher.rewrite(innerQuery);
             if (innerRewritten.getClass() == MatchNoDocsQuery.class) {
                 return Queries.NO_DOCS_INSTANCE;
             }

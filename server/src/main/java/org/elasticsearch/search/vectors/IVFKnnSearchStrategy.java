@@ -9,6 +9,7 @@
 package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.search.knn.KnnSearchStrategy;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.SetOnce;
 
 import java.util.Objects;
@@ -18,10 +19,17 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     private final float visitRatio;
     private final SetOnce<AbstractMaxScoreKnnCollector> collector = new SetOnce<>();
     private final LongAccumulator accumulator;
+    private final FixedBitSet skipCentroids;
+    private FixedBitSet visitedCentroids;
 
     public IVFKnnSearchStrategy(float visitRatio, LongAccumulator accumulator) {
+        this(visitRatio, accumulator, null);
+    }
+
+    public IVFKnnSearchStrategy(float visitRatio, LongAccumulator accumulator, FixedBitSet skipCentroids) {
         this.visitRatio = visitRatio;
         this.accumulator = accumulator;
+        this.skipCentroids = skipCentroids;
     }
 
     void setCollector(AbstractMaxScoreKnnCollector collector) {
@@ -33,6 +41,39 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
 
     public float getVisitRatio() {
         return visitRatio;
+    }
+
+    /**
+     * Initializes the visited centroids tracker with the given number of centroids.
+     * Called by IVFVectorsReader when the number of centroids is known.
+     */
+    public void initVisitedCentroids(int numCentroids) {
+        if (numCentroids > 0) {
+            this.visitedCentroids = new FixedBitSet(numCentroids);
+        }
+    }
+
+    /**
+     * Returns true if the centroid with the given ordinal should be skipped (was visited in a previous round).
+     */
+    public boolean shouldSkipCentroid(int centroidOrd) {
+        return skipCentroids != null && centroidOrd >= 0 && centroidOrd < skipCentroids.length() && skipCentroids.get(centroidOrd);
+    }
+
+    /**
+     * Marks the centroid with the given ordinal as visited in this round.
+     */
+    public void markCentroidVisited(int centroidOrd) {
+        if (visitedCentroids != null && centroidOrd >= 0 && centroidOrd < visitedCentroids.length()) {
+            visitedCentroids.set(centroidOrd);
+        }
+    }
+
+    /**
+     * Returns the set of centroids visited in this search round, or null if not tracking.
+     */
+    FixedBitSet visitedCentroids() {
+        return visitedCentroids;
     }
 
     @Override

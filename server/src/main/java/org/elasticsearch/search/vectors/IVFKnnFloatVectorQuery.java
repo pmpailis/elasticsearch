@@ -12,24 +12,32 @@ import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
 import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** A {@link IVFKnnFloatVectorQuery} that uses the IVF search strategy. */
-public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
+public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements PostFilterableKnnQuery {
 
     private boolean isQueryPreconditioned = false;
     private float[] query;
+    private final float[] originalQuery;
+    private final Map<Integer, FixedBitSet> skipCentroidsPerLeaf;
+    private final ConcurrentHashMap<Integer, FixedBitSet> visitedCentroidsPerLeaf = new ConcurrentHashMap<>();
 
     /**
      * Creates a new {@link IVFKnnFloatVectorQuery} with the given parameters.
@@ -49,12 +57,44 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         float visitRatio,
         boolean doPrecondition
     ) {
-        super(field, visitRatio, k, numCands, filter, doPrecondition);
+        this(field, query, k, numCands, filter, visitRatio, doPrecondition, false, null);
+    }
+
+    IVFKnnFloatVectorQuery(
+        String field,
+        float[] query,
+        int k,
+        int numCands,
+        Query filter,
+        float visitRatio,
+        boolean doPrecondition,
+        boolean skipPostFilter,
+        Map<Integer, FixedBitSet> skipCentroidsPerLeaf
+    ) {
+        super(field, visitRatio, k, numCands, filter, doPrecondition, skipPostFilter);
         this.query = query;
+        this.originalQuery = query.clone();
+        this.skipCentroidsPerLeaf = skipCentroidsPerLeaf;
     }
 
     public float[] getQuery() {
         return query;
+    }
+
+    /**
+     * Returns the skip centroids for the given leaf ordinal, or null if none.
+     */
+    FixedBitSet getSkipCentroids(int leafOrd) {
+        return skipCentroidsPerLeaf != null ? skipCentroidsPerLeaf.get(leafOrd) : null;
+    }
+
+    /**
+     * Stores the visited centroids for the given leaf ordinal after a search completes.
+     */
+    void storeVisitedCentroids(int leafOrd, FixedBitSet visited) {
+        if (visited != null) {
+            visitedCentroidsPerLeaf.put(leafOrd, visited);
+        }
     }
 
     @Override
@@ -137,14 +177,62 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         if (floatVectorValues.size() == 0) {
             return NO_RESULTS;
         }
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, knnCollectorManager.longAccumulator);
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
+            visitRatio,
+            knnCollectorManager.longAccumulator,
+            getSkipCentroids(context.ord)
+        );
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
         if (knnCollector == null) {
             return NO_RESULTS;
         }
         strategy.setCollector(knnCollector);
         reader.searchNearestVectors(field, query, knnCollector, acceptDocs);
+
+        // Capture visited centroids for retry
+        storeVisitedCentroids(context.ord, strategy.visitedCentroids());
+
         TopDocs results = knnCollector.topDocs();
         return results != null ? results : NO_RESULTS;
+    }
+
+    // --- PostFilterableKnnQuery implementation ---
+
+    @Override
+    public TopDocs capturedResults() {
+        return capturedTopDocs;
+    }
+
+    @Override
+    public PostFilterableKnnQuery createRetryQuery(IndexReader reader) {
+        // Merge skip centroids (from previous rounds) with visited centroids (from this round)
+        Map<Integer, FixedBitSet> mergedSkip = new HashMap<>();
+        if (skipCentroidsPerLeaf != null) {
+            for (var entry : skipCentroidsPerLeaf.entrySet()) {
+                mergedSkip.put(entry.getKey(), entry.getValue().clone());
+            }
+        }
+        for (var entry : visitedCentroidsPerLeaf.entrySet()) {
+            mergedSkip.merge(entry.getKey(), entry.getValue().clone(), (existing, visited) -> {
+                existing.or(visited);
+                return existing;
+            });
+        }
+        return new IVFKnnFloatVectorQuery(
+            field,
+            originalQuery.clone(),
+            k,
+            numCands,
+            null,
+            providedVisitRatio,
+            doPrecondition,
+            true,
+            mergedSkip
+        );
+    }
+
+    @Override
+    public long vectorOpsCount() {
+        return vectorOpsCount;
     }
 }
