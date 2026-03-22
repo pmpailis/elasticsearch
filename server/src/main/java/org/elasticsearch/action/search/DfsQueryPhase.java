@@ -39,6 +39,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * This search phase fans out to every shards to execute a distributed search with a pre-collected distributed frequencies for all
@@ -219,6 +220,8 @@ class DfsQueryPhase extends SearchPhase {
                     nestedPath.get(i).trySet(knnResults.getNestedPath());
                     // this value will be consistent amongst all shards as we would have enabled/disabled oversampling
                     // as part of the TransportSearchAction#adjustSearchType before reaching out to the shards
+                    assert oversampling[i] == null || Objects.equals(oversampling[i], knnResults.oversample());
+                    assert k[i] == null || Objects.equals(k[i], knnResults.k());
                     oversampling[i] = knnResults.oversample();
                     k[i] = knnResults.k();
                 }

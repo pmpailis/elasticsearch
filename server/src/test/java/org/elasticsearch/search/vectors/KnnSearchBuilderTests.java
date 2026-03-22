@@ -75,7 +75,7 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         for (int i = 0; i < numFilters; i++) {
             builder.addFilterQuery(QueryBuilders.termQuery(randomAlphaOfLength(5), randomAlphaOfLength(10)));
         }
-        builder.optimizedRescoring(randomBoolean());
+        builder.globalRescoring(randomBoolean());
 
         return builder;
     }
@@ -256,9 +256,9 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         int adjustedK = k;
         int adjustedNumCands = numCands;
         RescoreVectorBuilder expectedRescore = rescoreVectorBuilder;
-        boolean optimizedRescoring = randomBoolean() && rescoreVectorBuilder != null;
-        builder.optimizedRescoring(optimizedRescoring);
-        if (optimizedRescoring) {
+        boolean globalRescoring = randomBoolean() && rescoreVectorBuilder != null;
+        builder.globalRescoring(globalRescoring);
+        if (globalRescoring) {
             expectedRescore = new RescoreVectorBuilder(0);
             adjustedK = Math.min((int) Math.ceil(k * rescoreVectorBuilder.oversample()), OVERSAMPLE_LIMIT);
             adjustedNumCands = Math.max(adjustedK, numCands);

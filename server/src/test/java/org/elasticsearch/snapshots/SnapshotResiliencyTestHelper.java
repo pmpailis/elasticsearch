@@ -948,7 +948,8 @@ public class SnapshotResiliencyTestHelper {
                         usageService,
                         new IndicesServiceTests.TestActionActionLoggingFieldsProvider(),
                         ActivityLogWriterProvider.NOOP,
-                        CrossProjectModeDecider.NOOP
+                        CrossProjectModeDecider.NOOP,
+                        new FeatureService(List.of())
                     )
                 );
                 actions.put(

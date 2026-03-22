@@ -17,7 +17,7 @@ import org.elasticsearch.common.lucene.Lucene;
 
 import java.io.IOException;
 
-import static org.elasticsearch.search.vectors.KnnSearchBuilder.KNN_DFS_RESCORING_TOP_K_ON_SHARDS;
+import static org.elasticsearch.search.vectors.KnnSearchBuilder.KNN_SEARCH_DFS_GLOBAL_RESCORING;
 
 public class DfsKnnResults implements Writeable {
     private final String nestedPath;
@@ -35,7 +35,7 @@ public class DfsKnnResults implements Writeable {
     public DfsKnnResults(StreamInput in) throws IOException {
         scoreDocs = in.readArray(Lucene::readScoreDoc, ScoreDoc[]::new);
         nestedPath = in.readOptionalString();
-        if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+        if (in.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
             oversample = in.readOptionalFloat();
             k = in.readOptionalVInt();
         } else {
@@ -63,7 +63,7 @@ public class DfsKnnResults implements Writeable {
     public void writeTo(StreamOutput out) throws IOException {
         out.writeArray(Lucene::writeScoreDoc, scoreDocs);
         out.writeOptionalString(nestedPath);
-        if (out.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+        if (out.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
             out.writeOptionalFloat(oversample);
             out.writeOptionalVInt(k);
         }

@@ -29,7 +29,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
 
-import static org.elasticsearch.search.vectors.KnnSearchBuilder.KNN_DFS_RESCORING_TOP_K_ON_SHARDS;
+import static org.elasticsearch.search.vectors.KnnSearchBuilder.KNN_SEARCH_DFS_GLOBAL_RESCORING;
 
 /**
  * A query that matches the provided docs with their scores. This query is used
@@ -88,7 +88,7 @@ public class KnnScoreDocQueryBuilder extends AbstractQueryBuilder<KnnScoreDocQue
         } else {
             this.filterQueries = List.of();
         }
-        if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+        if (in.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
             this.oversample = in.readOptionalFloat();
             this.k = in.readOptionalVInt();
         } else {
@@ -136,7 +136,7 @@ public class KnnScoreDocQueryBuilder extends AbstractQueryBuilder<KnnScoreDocQue
         if (out.getTransportVersion().supports(TO_CHILD_BLOCK_JOIN_QUERY)) {
             writeQueries(out, filterQueries);
         }
-        if (out.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+        if (out.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
             out.writeOptionalFloat(oversample);
             out.writeOptionalVInt(k);
         }

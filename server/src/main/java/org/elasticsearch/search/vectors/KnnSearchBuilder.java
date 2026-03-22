@@ -48,7 +48,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     public static final int NUM_CANDS_LIMIT = 10_000;
     public static final float NUM_CANDS_MULTIPLICATIVE_FACTOR = 1.5f;
     public static final float MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING = 1f;
-    private static final boolean DEFAULT_OPTIMIZED_RESCORING = true;
+    private static final boolean DEFAULT_GLOBAL_RESCORING = true;
 
     public static final ParseField FIELD_FIELD = new ParseField("field");
     public static final ParseField K_FIELD = new ParseField("k");
@@ -62,7 +62,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     public static final ParseField BOOST_FIELD = AbstractQueryBuilder.BOOST_FIELD;
     public static final ParseField INNER_HITS_FIELD = new ParseField("inner_hits");
     public static final ParseField RESCORE_VECTOR_FIELD = new ParseField("rescore_vector");
-    public static final ParseField OPTIMIZED_RESCORING_FIELD = new ParseField("optimized_rescoring");
+    public static final ParseField GLOBAL_RESCORING_FIELD = new ParseField("global_rescoring");
 
     @SuppressWarnings("unchecked")
     private static final ConstructingObjectParser<KnnSearchBuilder.Builder, Void> PARSER = new ConstructingObjectParser<>("knn", args -> {
@@ -100,7 +100,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             RESCORE_VECTOR_FIELD,
             ObjectParser.ValueType.OBJECT
         );
-        PARSER.declareBoolean(KnnSearchBuilder.Builder::optimizedRescoring, OPTIMIZED_RESCORING_FIELD);
+        PARSER.declareBoolean(KnnSearchBuilder.Builder::globalRescoring, GLOBAL_RESCORING_FIELD);
         PARSER.declareFieldArray(
             KnnSearchBuilder.Builder::addFilterQueries,
             (p, c) -> AbstractQueryBuilder.parseTopLevelQuery(p),
@@ -122,7 +122,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     }
 
     private static final TransportVersion VISIT_PERCENTAGE = TransportVersion.fromName("visit_percentage");
-    public static final TransportVersion KNN_DFS_RESCORING_TOP_K_ON_SHARDS = TransportVersion.fromName("knn_dfs_rescoring_top_k_on_shards");
+    public static final TransportVersion KNN_SEARCH_DFS_GLOBAL_RESCORING = TransportVersion.fromName("knn_search_dfs_global_rescoring");
 
     final String field;
     final VectorData queryVector;
@@ -137,7 +137,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     float boost = DEFAULT_BOOST;
     InnerHitBuilder innerHitBuilder;
     private final RescoreVectorBuilder rescoreVectorBuilder;
-    private boolean optimizedRescoring = DEFAULT_OPTIMIZED_RESCORING;
+    private boolean globalRescoring = DEFAULT_GLOBAL_RESCORING;
 
     private static final RescoreVectorBuilder NO_RESCORING = new RescoreVectorBuilder(0);
 
@@ -285,7 +285,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         InnerHitBuilder innerHitBuilder,
         String queryName,
         float boost,
-        boolean optimizedRescoring
+        boolean globalRescoring
     ) {
         if (k < 1) {
             throw new IllegalArgumentException("[" + K_FIELD.getPreferredName() + "] must be greater than 0");
@@ -332,7 +332,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         this.boost = boost;
         this.filterQueries = filterQueries;
         this.querySupplier = null;
-        this.optimizedRescoring = optimizedRescoring;
+        this.globalRescoring = globalRescoring;
     }
 
     public KnnSearchBuilder(StreamInput in) throws IOException {
@@ -353,10 +353,10 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         this.similarity = in.readOptionalFloat();
         this.innerHitBuilder = in.readOptionalWriteable(InnerHitBuilder::new);
         this.rescoreVectorBuilder = in.readOptional(RescoreVectorBuilder::new);
-        if (in.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
-            this.optimizedRescoring = in.readBoolean();
+        if (in.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
+            this.globalRescoring = in.readBoolean();
         } else {
-            this.optimizedRescoring = false;
+            this.globalRescoring = false;
         }
     }
 
@@ -446,7 +446,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             }
             return new KnnSearchBuilder(field, querySupplier.get(), k, numCands, visitPercentage, rescoreVectorBuilder, similarity).boost(
                 boost
-            ).queryName(queryName).addFilterQueries(filterQueries).innerHit(innerHitBuilder).optimizedRescoring(optimizedRescoring);
+            ).queryName(queryName).addFilterQueries(filterQueries).innerHit(innerHitBuilder).globalRescoring(globalRescoring);
         }
         if (queryVectorBuilder != null) {
             SetOnce<float[]> toSet = new SetOnce<>();
@@ -470,7 +470,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
                 .boost(boost)
                 .queryName(queryName)
                 .innerHit(innerHitBuilder)
-                .optimizedRescoring(optimizedRescoring);
+                .globalRescoring(globalRescoring);
         }
         boolean changed = false;
         List<QueryBuilder> rewrittenQueries = new ArrayList<>(filterQueries.size());
@@ -486,13 +486,13 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
                 .queryName(queryName)
                 .addFilterQueries(rewrittenQueries)
                 .innerHit(innerHitBuilder)
-                .optimizedRescoring(optimizedRescoring);
+                .globalRescoring(globalRescoring);
         }
         return this;
     }
 
-    public KnnSearchBuilder optimizedRescoring(boolean optimizedRescoring) {
-        this.optimizedRescoring = optimizedRescoring;
+    public KnnSearchBuilder globalRescoring(boolean globalRescoring) {
+        this.globalRescoring = globalRescoring;
         return this;
     }
 
@@ -501,7 +501,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             throw new IllegalArgumentException("missing rewrite");
         }
         Float oversample = getOversampleFactor(searchExecutionContext);
-        if (optimizedRescoring && (oversample != null && oversample > MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING)) {
+        if (globalRescoring && (oversample != null && oversample > MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING)) {
             int localK = Math.min((int) Math.ceil(k * oversample), OVERSAMPLE_LIMIT);
             int localNumCands = Math.max(localK, numCands);
             return new KnnVectorQueryBuilder(field, queryVector, localK, localNumCands, visitPercentage, NO_RESCORING, similarity).boost(
@@ -515,7 +515,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     }
 
     public Float getOversampleFactor(SearchExecutionContext searchExecutionContext) {
-        if (false == optimizedRescoring) {
+        if (false == globalRescoring) {
             return null;
         }
         if (rescoreVectorBuilder != null) {
@@ -561,7 +561,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             && Objects.equals(innerHitBuilder, that.innerHitBuilder)
             && Objects.equals(queryName, that.queryName)
             && boost == that.boost
-            && optimizedRescoring == that.optimizedRescoring;
+            && globalRescoring == that.globalRescoring;
     }
 
     @Override
@@ -580,7 +580,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             innerHitBuilder,
             queryName,
             boost,
-            optimizedRescoring
+            globalRescoring
         );
     }
 
@@ -626,8 +626,8 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         if (rescoreVectorBuilder != null) {
             builder.field(RESCORE_VECTOR_FIELD.getPreferredName(), rescoreVectorBuilder);
         }
-        if (optimizedRescoring != DEFAULT_OPTIMIZED_RESCORING) {
-            builder.field(OPTIMIZED_RESCORING_FIELD.getPreferredName(), optimizedRescoring);
+        if (globalRescoring != DEFAULT_GLOBAL_RESCORING) {
+            builder.field(GLOBAL_RESCORING_FIELD.getPreferredName(), globalRescoring);
         }
         return builder;
     }
@@ -651,8 +651,8 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         out.writeOptionalFloat(similarity);
         out.writeOptionalWriteable(innerHitBuilder);
         out.writeOptionalWriteable(rescoreVectorBuilder);
-        if (out.getTransportVersion().supports(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
-            out.writeBoolean(optimizedRescoring);
+        if (out.getTransportVersion().supports(KNN_SEARCH_DFS_GLOBAL_RESCORING)) {
+            out.writeBoolean(globalRescoring);
         }
     }
 
@@ -670,7 +670,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         private float boost = DEFAULT_BOOST;
         private InnerHitBuilder innerHitBuilder;
         private RescoreVectorBuilder rescoreVectorBuilder;
-        private boolean optimizedRescoring = DEFAULT_OPTIMIZED_RESCORING;
+        private boolean globalRescoring = DEFAULT_GLOBAL_RESCORING;
 
         public Builder addFilterQueries(List<QueryBuilder> filterQueries) {
             Objects.requireNonNull(filterQueries);
@@ -733,8 +733,8 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             return this;
         }
 
-        public Builder optimizedRescoring(boolean optimizedRescoring) {
-            this.optimizedRescoring = optimizedRescoring;
+        public Builder globalRescoring(boolean globalRescoring) {
+            this.globalRescoring = globalRescoring;
             return this;
         }
 
@@ -757,7 +757,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
                 innerHitBuilder,
                 queryName,
                 boost,
-                optimizedRescoring
+                globalRescoring
             );
         }
     }

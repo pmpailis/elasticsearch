@@ -22,7 +22,7 @@ public final class SearchFeatures implements FeatureSpecification {
 
     @Override
     public Set<NodeFeature> getFeatures() {
-        return Set.of(LUCENE_10_0_0_UPGRADE, LUCENE_10_1_0_UPGRADE);
+        return Set.of(LUCENE_10_0_0_UPGRADE, LUCENE_10_1_0_UPGRADE, DFS_KNN_SEARCH_GLOBAL_RESCORE);
     }
 
     public static final NodeFeature RETRIEVER_RESCORER_ENABLED = new NodeFeature("search.retriever.rescorer.enabled");
@@ -60,7 +60,7 @@ public final class SearchFeatures implements FeatureSpecification {
         "search.exponential_histogram_querydsl_boxplot"
     );
     public static final NodeFeature EXPONENTIAL_HISTOGRAM_QUERYDSL_RANGE = new NodeFeature("search.exponential_histogram_querydsl_range");
-    public static final NodeFeature DFS_KNN_RESCORE_TOP_K = new NodeFeature("search.dfs.knn_rescore_top_k");
+    public static final NodeFeature DFS_KNN_SEARCH_GLOBAL_RESCORE = new NodeFeature("search.dfs.knn_search_global_rescore");
 
     @Override
     public Set<NodeFeature> getTestFeatures() {
@@ -88,8 +88,7 @@ public final class SearchFeatures implements FeatureSpecification {
             LUCENE_10_4_0_UPGRADE_TEST,
             EXPONENTIAL_HISTOGRAM_QUERYDSL_BOXPLOT,
             EXPONENTIAL_HISTOGRAM_QUERYDSL_RANGE,
-            EXPONENTIAL_HISTOGRAM_UPSCALING_REMOVED,
-            DFS_KNN_RESCORE_TOP_K
+            EXPONENTIAL_HISTOGRAM_UPSCALING_REMOVED
         );
     }
 }

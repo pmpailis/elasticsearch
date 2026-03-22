@@ -56,6 +56,7 @@ import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.core.Tuple;
+import org.elasticsearch.features.FeatureService;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.query.InnerHitBuilder;
@@ -1440,7 +1441,7 @@ public class TransportSearchActionTests extends ESTestCase {
             source.knnSearch(List.of(new KnnSearchBuilder("field", new float[] { 1, 2, 3 }, 10, 50, 10f, null, null)));
             searchRequest.source(source);
 
-            TransportSearchAction.adjustSearchType(searchRequest, randomBoolean(), (t) -> true);
+            TransportSearchAction.adjustSearchType(searchRequest, randomBoolean(), true);
             assertEquals(SearchType.DFS_QUERY_THEN_FETCH, searchRequest.searchType());
         }
         {
@@ -1450,7 +1451,7 @@ public class TransportSearchActionTests extends ESTestCase {
             source.suggest(new SuggestBuilder().addSuggestion("field", new TermSuggestionBuilder("value")));
             searchRequest.source(source);
 
-            TransportSearchAction.adjustSearchType(searchRequest, randomBoolean(), (t) -> true);
+            TransportSearchAction.adjustSearchType(searchRequest, randomBoolean(), true);
             assertFalse(searchRequest.requestCache());
             assertEquals(SearchType.QUERY_THEN_FETCH, searchRequest.searchType());
         }
@@ -1458,7 +1459,7 @@ public class TransportSearchActionTests extends ESTestCase {
             // Single-shard searches should always use QUERY_THEN_FETCH in absence of kNN search
             SearchRequest searchRequest = new SearchRequest().searchType(RandomPicks.randomFrom(random(), SearchType.values()));
 
-            TransportSearchAction.adjustSearchType(searchRequest, true, (t) -> true);
+            TransportSearchAction.adjustSearchType(searchRequest, true, true);
             assertEquals(SearchType.QUERY_THEN_FETCH, searchRequest.searchType());
         }
     }
@@ -1963,7 +1964,8 @@ public class TransportSearchActionTests extends ESTestCase {
                 new UsageService(),
                 new TestActionActionLoggingFieldsProvider(),
                 ActivityLogWriterProvider.NOOP,
-                CrossProjectModeDecider.NOOP
+                CrossProjectModeDecider.NOOP,
+                new FeatureService(List.of())
             );
 
             CountDownLatch latch = new CountDownLatch(1);

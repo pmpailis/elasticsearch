@@ -13,7 +13,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
-import org.elasticsearch.TransportVersion;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionListenerResponseHandler;
 import org.elasticsearch.action.ActionType;
@@ -72,6 +71,7 @@ import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.common.util.concurrent.CountDown;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.features.FeatureService;
 import org.elasticsearch.index.ActionLoggingFieldsProvider;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
@@ -84,6 +84,7 @@ import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.injection.guice.Inject;
 import org.elasticsearch.node.ResponseCollectorService;
 import org.elasticsearch.rest.action.search.SearchResponseMetrics;
+import org.elasticsearch.search.SearchFeatures;
 import org.elasticsearch.search.SearchPhaseResult;
 import org.elasticsearch.search.SearchService;
 import org.elasticsearch.search.aggregations.AggregationReduceContext;
@@ -131,7 +132,6 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.action.search.SearchType.DFS_QUERY_THEN_FETCH;
@@ -139,7 +139,6 @@ import static org.elasticsearch.action.search.SearchType.QUERY_THEN_FETCH;
 import static org.elasticsearch.action.search.TransportSearchHelper.checkCCSVersionCompatibility;
 import static org.elasticsearch.search.crossproject.CrossProjectIndexResolutionValidator.indicesOptionsForCrossProjectFanout;
 import static org.elasticsearch.search.sort.FieldSortBuilder.hasPrimaryFieldSort;
-import static org.elasticsearch.search.vectors.KnnSearchBuilder.KNN_DFS_RESCORING_TOP_K_ON_SHARDS;
 import static org.elasticsearch.threadpool.ThreadPool.Names.SYSTEM_CRITICAL_READ;
 import static org.elasticsearch.threadpool.ThreadPool.Names.SYSTEM_READ;
 
@@ -189,6 +188,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
     private final UsageService usageService;
     private final boolean collectCCSTelemetry;
     private final TimeValue forceConnectTimeoutSecs;
+    private final FeatureService featureService;
     private final CrossProjectModeDecider crossProjectModeDecider;
     private final ActivityLogger<SearchLogContext> activityLogger;
 
@@ -212,7 +212,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         UsageService usageService,
         ActionLoggingFieldsProvider fieldProvider,
         ActivityLogWriterProvider logWriterProvider,
-        CrossProjectModeDecider crossProjectModeDecider
+        CrossProjectModeDecider crossProjectModeDecider,
+        FeatureService featureService
     ) {
         super(TYPE.name(), transportService, actionFilters, SearchRequest::new, EsExecutors.DIRECT_EXECUTOR_SERVICE);
         this.threadPool = threadPool;
@@ -244,6 +245,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         this.usageService = usageService;
         this.forceConnectTimeoutSecs = settings.getAsTime("search.ccs.force_connect_timeout", null);
         this.crossProjectModeDecider = crossProjectModeDecider;
+        this.featureService = featureService;
         this.activityLogger = new ActivityLogger<>(
             clusterService.getClusterSettings(),
             new SearchLogProducer(clusterService.getClusterSettings(), indexNameExpressionResolver.getSystemNamePredicate()),
@@ -771,14 +773,14 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         );
     }
 
-    static void adjustSearchType(SearchRequest searchRequest, boolean singleShard, Predicate<TransportVersion> supportsFeature) {
+    static void adjustSearchType(SearchRequest searchRequest, boolean singleShard, boolean clusterSupportsKnnDfsRescoring) {
         // if there's a kNN search, always use DFS_QUERY_THEN_FETCH
         if (searchRequest.hasKnnSearch()) {
             searchRequest.searchType(DFS_QUERY_THEN_FETCH);
             // we shouldn't optimize if we have a single shard or not all nodes of the cluster support the delayed rescoring feature
-            if (singleShard || false == supportsFeature.test(KNN_DFS_RESCORING_TOP_K_ON_SHARDS)) {
+            if (singleShard || false == clusterSupportsKnnDfsRescoring) {
                 for (KnnSearchBuilder knnSearchBuilder : searchRequest.source().knnSearch()) {
-                    knnSearchBuilder.optimizedRescoring(false);
+                    knnSearchBuilder.globalRescoring(false);
                 }
             }
             return;
@@ -1896,7 +1898,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         adjustSearchType(
             searchRequest,
             shardIterators.size() == 1,
-            (feature) -> projectState.cluster().getMinTransportVersion().supports(feature)
+            featureService.clusterHasFeature(projectState.cluster(), SearchFeatures.DFS_KNN_SEARCH_GLOBAL_RESCORE)
         );
         final DiscoveryNodes nodes = projectState.cluster().nodes();
         BiFunction<String, String, Transport.Connection> connectionLookup = buildConnectionLookup(
