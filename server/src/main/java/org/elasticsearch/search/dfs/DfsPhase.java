@@ -282,6 +282,6 @@ public class DfsPhase {
         if (profilers != null) {
             searcher.setProfiler(profilers.getCurrentQueryProfiler());
         }
-        return new DfsKnnResults(nestedPath, topDocs.scoreDocs, oversample, k);
+        return new DfsKnnResults(nestedPath, topDocs.scoreDocs, oversample, oversample != null ? k : null);
     }
 }

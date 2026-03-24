@@ -47,7 +47,7 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewriteable<KnnSearchBuilder> {
     public static final int NUM_CANDS_LIMIT = 10_000;
     public static final float NUM_CANDS_MULTIPLICATIVE_FACTOR = 1.5f;
-    public static final float MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING = 1f;
+    public static final float MINIMUM_OVERSAMPLE_FOR_GLOBAL_RESCORING = 1f;
     private static final boolean DEFAULT_GLOBAL_RESCORING = true;
 
     public static final ParseField FIELD_FIELD = new ParseField("field");
@@ -499,7 +499,7 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             throw new IllegalArgumentException("missing rewrite");
         }
         Float oversample = getOversampleFactor(searchExecutionContext);
-        if (globalRescoring && (oversample != null && oversample > MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING)) {
+        if (globalRescoring && (oversample != null && oversample > MINIMUM_OVERSAMPLE_FOR_GLOBAL_RESCORING)) {
             int localK = Math.min((int) Math.ceil(k * oversample), OVERSAMPLE_LIMIT);
             int localNumCands = Math.max(localK, numCands);
             return new KnnVectorQueryBuilder(field, queryVector, localK, localNumCands, visitPercentage, NO_RESCORING, similarity).boost(
@@ -517,13 +517,13 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             return null;
         }
         if (rescoreVectorBuilder != null) {
-            return rescoreVectorBuilder.oversample() > MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING ? rescoreVectorBuilder.oversample() : null;
+            return rescoreVectorBuilder.oversample() > MINIMUM_OVERSAMPLE_FOR_GLOBAL_RESCORING ? rescoreVectorBuilder.oversample() : null;
         }
         if (searchExecutionContext == null) {
             return null;
         }
         Float defaultOversample = getDefaultOversampleForField(field, searchExecutionContext);
-        return defaultOversample != null && defaultOversample > MINIMUM_OVERSAMPLE_FOR_TOP_K_RESCORING ? defaultOversample : null;
+        return defaultOversample != null && defaultOversample > MINIMUM_OVERSAMPLE_FOR_GLOBAL_RESCORING ? defaultOversample : null;
     }
 
     private static Float getDefaultOversampleForField(String fieldName, SearchExecutionContext searchExecutionContext) {

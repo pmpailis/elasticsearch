@@ -220,8 +220,10 @@ class DfsQueryPhase extends SearchPhase {
                     nestedPath.get(i).trySet(knnResults.getNestedPath());
                     // this value will be consistent amongst all shards as we would have enabled/disabled oversampling
                     // as part of the TransportSearchAction#adjustSearchType before reaching out to the shards
-                    assert oversampling[i] == null || Objects.equals(oversampling[i], knnResults.oversample());
-                    assert k[i] == null || Objects.equals(k[i], knnResults.k());
+                    assert oversampling[i] == null
+                        || knnResults.oversample() == null
+                        || Objects.equals(oversampling[i], knnResults.oversample());
+                    assert k[i] == null || knnResults.k() == null || Objects.equals(k[i], knnResults.k());
                     oversampling[i] = knnResults.oversample();
                     k[i] = knnResults.k();
                 }
