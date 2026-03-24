@@ -62,7 +62,6 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
     public static final ParseField BOOST_FIELD = AbstractQueryBuilder.BOOST_FIELD;
     public static final ParseField INNER_HITS_FIELD = new ParseField("inner_hits");
     public static final ParseField RESCORE_VECTOR_FIELD = new ParseField("rescore_vector");
-    public static final ParseField GLOBAL_RESCORING_FIELD = new ParseField("global_rescoring");
 
     @SuppressWarnings("unchecked")
     private static final ConstructingObjectParser<KnnSearchBuilder.Builder, Void> PARSER = new ConstructingObjectParser<>("knn", args -> {
@@ -100,7 +99,6 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
             RESCORE_VECTOR_FIELD,
             ObjectParser.ValueType.OBJECT
         );
-        PARSER.declareBoolean(KnnSearchBuilder.Builder::globalRescoring, GLOBAL_RESCORING_FIELD);
         PARSER.declareFieldArray(
             KnnSearchBuilder.Builder::addFilterQueries,
             (p, c) -> AbstractQueryBuilder.parseTopLevelQuery(p),
@@ -625,9 +623,6 @@ public class KnnSearchBuilder implements Writeable, ToXContentFragment, Rewritea
         }
         if (rescoreVectorBuilder != null) {
             builder.field(RESCORE_VECTOR_FIELD.getPreferredName(), rescoreVectorBuilder);
-        }
-        if (globalRescoring != DEFAULT_GLOBAL_RESCORING) {
-            builder.field(GLOBAL_RESCORING_FIELD.getPreferredName(), globalRescoring);
         }
         return builder;
     }
