@@ -9,22 +9,21 @@
 
 package org.elasticsearch.search.vectors;
 
+
+import com.carrotsearch.hppc.IntHashSet;
+
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
-import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
-import org.apache.lucene.util.BitSetIterator;
-import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
@@ -32,9 +31,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.function.LongConsumer;
 
@@ -91,7 +88,7 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
             vectorOps += current.vectorOpsCount();
 
             if (raw == null || raw.scoreDocs.length == 0) {
-                break;
+                continue;
             }
 
             // Post-filter the raw results
@@ -168,23 +165,27 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
     }
 
     /**
-     * Merges two arrays of ScoreDocs, deduplicating by doc ID (keeping the higher score)
-     * and sorting by score descending.
+     * Merges two score-descending arrays of ScoreDocs, deduplicating by doc ID.
+     * Both inputs are already sorted by score descending, so we append newResults
+     * after existing, skipping any doc IDs already seen.
      */
     static ScoreDoc[] mergeResults(ScoreDoc[] existing, ScoreDoc[] newResults) {
         if (existing.length == 0) return newResults;
         if (newResults.length == 0) return existing;
 
-        Map<Integer, ScoreDoc> byDoc = new HashMap<>(existing.length + newResults.length);
+        IntHashSet seen = new IntHashSet(existing.length);
+        List<ScoreDoc> merged = new ArrayList<>(existing.length + newResults.length);
         for (ScoreDoc sd : existing) {
-            byDoc.merge(sd.doc, sd, (a, b) -> a.score >= b.score ? a : b);
+            seen.add(sd.doc);
+            merged.add(sd);
         }
         for (ScoreDoc sd : newResults) {
-            byDoc.merge(sd.doc, sd, (a, b) -> a.score >= b.score ? a : b);
+            if (seen.add(sd.doc)) {
+                merged.add(sd);
+            }
         }
-        ScoreDoc[] merged = byDoc.values().toArray(new ScoreDoc[0]);
-        Arrays.sort(merged, (a, b) -> Float.compare(b.score, a.score));
-        return merged;
+        return merged.toArray
+            (new ScoreDoc[0]);
     }
 
     @Override
@@ -220,77 +221,4 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
         return Objects.hash(classHash(), delegate, k);
     }
 
-    /**
-     * A query that excludes specific global doc IDs. Used for HNSW retry to prevent
-     * re-visiting documents seen in previous rounds.
-     */
-    static class ExcludeDocsQuery extends Query {
-        private final FixedBitSet excludedGlobalDocs;
-        private final Object readerContextId;
-
-        ExcludeDocsQuery(FixedBitSet excludedGlobalDocs, IndexReader reader) {
-            this.excludedGlobalDocs = excludedGlobalDocs;
-            this.readerContextId = reader.getContext().id();
-        }
-
-        @Override
-        public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) {
-            return new Weight(this) {
-                @Override
-                public Explanation explain(LeafReaderContext context, int doc) {
-                    return Explanation.noMatch("exclude docs filter");
-                }
-
-                @Override
-                public ScorerSupplier scorerSupplier(LeafReaderContext context) {
-                    int maxDoc = context.reader().maxDoc();
-                    int docBase = context.docBase;
-                    FixedBitSet acceptBits = new FixedBitSet(maxDoc);
-                    acceptBits.set(0, maxDoc);
-                    // Clear excluded docs that fall in this leaf's range
-                    int end = docBase + maxDoc;
-                    for (int globalDoc = excludedGlobalDocs.nextSetBit(docBase);
-                        globalDoc != NO_MORE_DOCS && globalDoc < end;
-                        globalDoc = excludedGlobalDocs.nextSetBit(globalDoc + 1)) {
-                        acceptBits.clear(globalDoc - docBase);
-                    }
-                    int cardinality = acceptBits.cardinality();
-                    if (cardinality == 0) {
-                        return null;
-                    }
-                    return new DefaultScorerSupplier(
-                        new ConstantScoreScorer(0f, ScoreMode.COMPLETE_NO_SCORES, new BitSetIterator(acceptBits, cardinality))
-                    );
-                }
-
-                @Override
-                public boolean isCacheable(LeafReaderContext ctx) {
-                    return false;
-                }
-            };
-        }
-
-        @Override
-        public String toString(String field) {
-            return "ExcludeDocsQuery[excluded=" + excludedGlobalDocs.cardinality() + "]";
-        }
-
-        @Override
-        public void visit(QueryVisitor visitor) {
-            visitor.visitLeaf(this);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            ExcludeDocsQuery that = (ExcludeDocsQuery) o;
-            return excludedGlobalDocs.equals(that.excludedGlobalDocs) && readerContextId == that.readerContextId;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(classHash(), excludedGlobalDocs, readerContextId);
-        }
-    }
 }

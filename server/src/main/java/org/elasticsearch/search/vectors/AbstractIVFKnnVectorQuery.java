@@ -58,8 +58,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected int vectorOpsCount;
     protected boolean doPrecondition;
 
-    // Captured raw results for PostFilterableKnnQuery
-    protected TopDocs capturedTopDocs;
+    protected TopDocs pendingResults;
 
     protected AbstractIVFKnnVectorQuery(String field, float visitRatio, int k, int numCands, Query filter, boolean doPrecondition) {
         this(field, visitRatio, k, numCands, filter, doPrecondition, false);
@@ -223,7 +222,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         TopDocs topK = TopDocs.merge(mergeK, perLeafResults);
         vectorOpsCount = (int) topK.totalHits.value();
         // Capture raw results for PostFilterableKnnQuery.capturedResults()
-        this.capturedTopDocs = topK;
+        this.pendingResults = topK;
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }

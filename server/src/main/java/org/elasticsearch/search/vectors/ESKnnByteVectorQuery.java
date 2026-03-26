@@ -168,7 +168,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
             getTargetCopy(),
             kParam,
             k, // super.k = numCands from Lucene
-            new PostFilterAwareKnnQuery.ExcludeDocsQuery(newSeenDocs, reader),
+            new ExcludeDocsQuery(newSeenDocs, reader),
             searchStrategy,
             earlyTermination,
             true,
