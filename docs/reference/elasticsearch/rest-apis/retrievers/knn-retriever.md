@@ -83,12 +83,21 @@ Rescoring only makes sense for quantized vectors; when [quantization](/reference
 
     Applies the specified oversample factor to `k` on the approximate kNN search. The approximate kNN search will:
 
+    ::::{applies-switch}
+    :::{applies-item} stack: ga 9.0-9.3
+    * Retrieve `num_candidates` candidates per shard.
+    * From these candidates, the top `k * oversample` candidates per shard will be rescored using the original vectors.
+    * The top `k` rescored candidates will be returned.
+    :::
+    :::{applies-item} stack: ga 9.4
     * Retrieve `num_candidates` candidates per shard using approximate search, collecting the top `k * oversample` candidates per shard without rescoring.
     * Merge candidates across all shards, keeping the global top `k * oversample` candidates.
     * Rescore those global candidates using the original vectors.
-    * Return the final top `k` rescored results.
+    * Return the final rescored results. 
 
     Unlike the [`knn` query](/reference/query-languages/query-dsl/query-dsl-knn-query.md), where rescoring is applied independently per shard, the kNN retriever applies rescoring globally across all shards. This can improve accuracy since the rescoring pool includes the best candidates from all shards.
+    :::
+    ::::
 
 
 See [oversampling and rescoring quantized vectors](docs-content://solutions/search/vector/knn.md#dense-vector-knn-search-rescoring) for details.

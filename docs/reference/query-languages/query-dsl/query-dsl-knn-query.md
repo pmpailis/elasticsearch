@@ -194,7 +194,8 @@ The filter is a pre-filter, meaning that it is applied **during** the approximat
     ::::
 
     ::::{note}
-    When using the `knn` query, rescoring is applied independently on each shard. The [kNN retriever](/reference/elasticsearch/rest-apis/retrievers/knn-retriever.md) instead applies rescoring globally across all shards.
+    :applies_to: stack: ga 9.4
+    When using the `knn` query, rescoring is applied independently on each shard. [kNN search](docs-content://solutions/search/vector/knn.md) and the [kNN retriever](/reference/elasticsearch/rest-apis/retrievers/knn-retriever.md) instead applies rescoring globally across all shards.
     ::::
 
 ## Pre-filters and post-filters in knn query [knn-query-filtering]
