@@ -23,6 +23,7 @@ import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.internal.hppc.IntObjectHashMap;
 import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
@@ -37,9 +38,11 @@ import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 
 import static org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader.SIMILARITY_FUNCTIONS;
 
@@ -330,6 +333,23 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
             values,
             visitRatio
         );
+        // Use block-filter path for restrictive filters to avoid full bitset materialization
+        boolean useBlockFilter = esAcceptDocs instanceof ESAcceptDocs.ScorerSupplierAcceptDocs && percentFiltered < 0.2f;
+        if (useBlockFilter) {
+            searchWithBlockFilter(
+                fieldInfo,
+                entry,
+                target,
+                knnCollector,
+                (ESAcceptDocs.ScorerSupplierAcceptDocs) esAcceptDocs,
+                centroidPrefetchingIterator,
+                maxVectorVisited,
+                numVectors,
+                percentFiltered
+            );
+            return;
+        }
+
         Bits acceptDocsBits = acceptDocs.bits();
         PostingVisitor scorer = getPostingVisitor(fieldInfo, postListSlice, target, acceptDocsBits, entry.centroidSlice(ivfCentroids));
         long expectedDocs = 0;
@@ -477,6 +497,221 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
         }
     }
 
+    /**
+     * Block-filter search path: avoids full-segment bitset materialization by consuming the filter
+     * lazily in blocks. Uses a streaming min-heap merge of posting list doc IDs to walk a single
+     * filter iterator monotonically, then scores only posting lists with filter matches.
+     */
+    private void searchWithBlockFilter(
+        FieldInfo fieldInfo,
+        FieldEntry entry,
+        float[] target,
+        KnnCollector knnCollector,
+        ESAcceptDocs.ScorerSupplierAcceptDocs esAcceptDocs,
+        CentroidIterator centroidIterator,
+        long maxVectorVisited,
+        int numVectors,
+        float percentFiltered
+    ) throws IOException {
+        IndexInput postListSlice = entry.postingListSlice(ivfClusters);
+        IndexInput centroidSlice = entry.centroidSlice(ivfCentroids);
+
+        // Gather visitor: no acceptDocs (just reading doc IDs)
+        PostingVisitor gatherVisitor = getPostingVisitor(fieldInfo, postListSlice, target, null, centroidSlice);
+        // Score visitor: acceptDocs set per-PL via setter
+        PostingVisitor scoreVisitor = getPostingVisitor(
+            fieldInfo,
+            entry.postingListSlice(ivfClusters),
+            target,
+            null,
+            entry.centroidSlice(ivfCentroids)
+        );
+
+        // Filter iterator — NO bitset materialization
+        DocIdSetIterator filterIterator = esAcceptDocs.iterator();
+        if (filterIterator == null) {
+            return;
+        }
+
+        int avgDocsPerCentroid = Math.max(1, numVectors / Math.max(1, entry.numCentroids));
+        int batchTargetDocs = 4096;
+        int batchPLCount = Math.max(1, batchTargetDocs / avgDocsPerCentroid);
+
+        long expectedDocs = 0;
+        long actualDocs = 0;
+
+        // Phase 1: process batches of posting lists
+        while (centroidIterator.hasNext()
+            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+
+            // Collect a batch of PLs
+            List<GatheredPostingList> batch = new ArrayList<>();
+            while (centroidIterator.hasNext()
+                && batch.size() < batchPLCount
+                && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+                PostingMetadata metadata = centroidIterator.nextPosting();
+                int numVecs = gatherVisitor.resetPostingsScorer(metadata);
+                int[] docIds = new int[numVecs];
+                gatherVisitor.gatherDocIds(docIds, 0);
+                batch.add(new GatheredPostingList(metadata, docIds, numVecs));
+                expectedDocs += numVecs;
+            }
+
+            // Streaming merge via min-heap + filter
+            actualDocs += mergeFilterAndScore(batch, filterIterator, scoreVisitor, knnCollector);
+        }
+
+        // Phase 2: filtered continuation
+        if (filterIterator.docID() != DocIdSetIterator.NO_MORE_DOCS) {
+            float unfilteredRatio = (float) expectedDocs / numVectors;
+            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
+            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatio, expectedDocs / 2f);
+
+            while (centroidIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+                PostingMetadata metadata = centroidIterator.nextPosting();
+                int numVecs = gatherVisitor.resetPostingsScorer(metadata);
+                int[] docIds = new int[numVecs];
+                gatherVisitor.gatherDocIds(docIds, 0);
+
+                // Single-PL filter check (doc IDs already sorted within PL)
+                int matchCount = 0;
+                int[] matchBuffer = new int[numVecs];
+                for (int i = 0; i < numVecs; i++) {
+                    int docId = docIds[i];
+                    if (filterIterator.docID() <= docId) {
+                        filterIterator.advance(docId);
+                    }
+                    if (filterIterator.docID() == docId) {
+                        matchBuffer[matchCount++] = docId;
+                    }
+                }
+
+                if (matchCount > 0) {
+                    int[] matches = Arrays.copyOf(matchBuffer, matchCount);
+                    scoreVisitor.setAcceptDocs(new SortedDocIdsBits(matches, matchCount));
+                    scoreVisitor.resetPostingsScorer(metadata);
+                    actualDocs += scoreVisitor.visit(knnCollector);
+                    if (knnCollector.getSearchStrategy() != null) {
+                        knnCollector.getSearchStrategy().nextVectorsBlock();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Merges doc IDs from a batch of posting lists via min-heap, walks the filter iterator,
+     * and scores posting lists that have filter matches.
+     */
+    private static long mergeFilterAndScore(
+        List<GatheredPostingList> batch,
+        DocIdSetIterator filterIterator,
+        PostingVisitor scoreVisitor,
+        KnnCollector knnCollector
+    ) throws IOException {
+        // Build per-PL match lists via heap merge
+        @SuppressWarnings("unchecked")
+        List<Integer>[] plMatchLists = new List[batch.size()];
+        PriorityQueue<HeapEntry> heap = new PriorityQueue<>();
+        for (int p = 0; p < batch.size(); p++) {
+            GatheredPostingList pl = batch.get(p);
+            if (pl.numDocs > 0) {
+                heap.add(new HeapEntry(p, pl.docIds, 0, pl.numDocs));
+            }
+        }
+
+        while (heap.isEmpty() == false) {
+            HeapEntry top = heap.poll();
+            int docId = top.currentDocId();
+            int plIdx = top.plIndex;
+
+            // Check filter — iterator only advances forward
+            if (filterIterator.docID() <= docId) {
+                filterIterator.advance(docId);
+            }
+            if (filterIterator.docID() == docId) {
+                if (plMatchLists[plIdx] == null) {
+                    plMatchLists[plIdx] = new ArrayList<>();
+                }
+                plMatchLists[plIdx].add(docId);
+            }
+
+            // Advance this PL's cursor
+            if (top.advance()) {
+                heap.add(top);
+            }
+        }
+
+        // Score matching PLs
+        long scoredDocs = 0;
+        for (int p = 0; p < batch.size(); p++) {
+            if (plMatchLists[p] == null || plMatchLists[p].isEmpty()) {
+                continue; // Skip entire posting list
+            }
+            int[] matchArray = plMatchLists[p].stream().mapToInt(Integer::intValue).toArray();
+            scoreVisitor.setAcceptDocs(new SortedDocIdsBits(matchArray, matchArray.length));
+            scoreVisitor.resetPostingsScorer(batch.get(p).metadata);
+            scoredDocs += scoreVisitor.visit(knnCollector);
+            if (knnCollector.getSearchStrategy() != null) {
+                knnCollector.getSearchStrategy().nextVectorsBlock();
+            }
+        }
+        return scoredDocs;
+    }
+
+    record GatheredPostingList(PostingMetadata metadata, int[] docIds, int numDocs) {}
+
+    static class HeapEntry implements Comparable<HeapEntry> {
+        final int plIndex;
+        final int[] docIds;
+        final int limit;
+        int cursor;
+
+        HeapEntry(int plIndex, int[] docIds, int cursor, int limit) {
+            this.plIndex = plIndex;
+            this.docIds = docIds;
+            this.cursor = cursor;
+            this.limit = limit;
+        }
+
+        int currentDocId() {
+            return docIds[cursor];
+        }
+
+        boolean advance() {
+            cursor++;
+            return cursor < limit;
+        }
+
+        @Override
+        public int compareTo(HeapEntry other) {
+            return Integer.compare(currentDocId(), other.currentDocId());
+        }
+    }
+
+    static final class SortedDocIdsBits implements Bits {
+        private final int[] matchDocIds;
+        private final int count;
+
+        SortedDocIdsBits(int[] matchDocIds, int count) {
+            this.matchDocIds = matchDocIds;
+            this.count = count;
+        }
+
+        @Override
+        public boolean get(int docId) {
+            if (count == 0 || docId < matchDocIds[0] || docId > matchDocIds[count - 1]) {
+                return false;
+            }
+            return Arrays.binarySearch(matchDocIds, 0, count, docId) >= 0;
+        }
+
+        @Override
+        public int length() {
+            return count == 0 ? 0 : matchDocIds[count - 1] + 1;
+        }
+    }
+
     public abstract PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         IndexInput postingsLists,
@@ -491,5 +726,23 @@ public abstract class IVFVectorsReader extends KnnVectorsReader {
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /**
+         * Reads doc IDs from the current posting list without reading vector data.
+         * Skips vector bytes via skipBytes(). Returns number of doc IDs written to buffer.
+         * Must call {@link #resetPostingsScorer} before calling this.
+         * Note: docBase is modified; call resetPostingsScorer() again before visit().
+         */
+        default int gatherDocIds(int[] buffer, int offset) throws IOException {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Sets the acceptDocs filter for subsequent {@link #visit} calls.
+         * Used by the block-filter path to provide per-posting-list filter bits.
+         */
+        default void setAcceptDocs(Bits acceptDocs) {
+            throw new UnsupportedOperationException();
+        }
     }
 }
