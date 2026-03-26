@@ -27,6 +27,7 @@ import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -131,6 +132,18 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements
     }
 
     @Override
+    protected int countTotalVectors(List<LeafReaderContext> leaves) throws IOException {
+        int totalVectors = 0;
+        for (LeafReaderContext leaf : leaves) {
+            FloatVectorValues fvv = leaf.reader().getFloatVectorValues(field);
+            if (fvv != null) {
+                totalVectors += fvv.size();
+            }
+        }
+        return totalVectors;
+    }
+
+    @Override
     protected void preconditionQuery(LeafReaderContext context) throws IOException {
         if (isQueryPreconditioned) {
             // already preconditioned
@@ -198,7 +211,17 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements
 
     @Override
     PostFilterableKnnQuery createPostFilterDelegate(int scaledK, int scaledNumCands, float scaledVisitRatio) {
-        return new IVFKnnFloatVectorQuery(field, getQuery(), scaledK, scaledNumCands, null, scaledVisitRatio, doPrecondition, true, null);
+        return new IVFKnnFloatVectorQuery(
+            field,
+            originalQuery.clone(),
+            scaledK,
+            scaledNumCands,
+            null,
+            scaledVisitRatio,
+            doPrecondition,
+            true,
+            null
+        );
     }
 
     // --- PostFilterableKnnQuery implementation ---

@@ -156,20 +156,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return searcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1f);
     }
 
-    private int countTotalVectors(List<LeafReaderContext> leaves) throws IOException {
-        int totalVectors = 0;
-        for (LeafReaderContext leaf : leaves) {
-            FloatVectorValues fvv = leaf.reader().getFloatVectorValues(field);
-            if (fvv != null) {
-                totalVectors += fvv.size();
-            }
-        }
-        return totalVectors;
-    }
+    protected abstract int countTotalVectors(List<LeafReaderContext> leaves) throws IOException;
 
     private float computeVisitRatio(int totalVectors) {
         if (providedVisitRatio != 0.0f) {
             return providedVisitRatio;
+        }
+        if (totalVectors == 0) {
+            return 1.0f;
         }
         float expected = (float) Math.round(
             Math.log10(totalVectors) * Math.log10(totalVectors) * (Math.min(10_000, Math.max(numCands, 5 * k)))

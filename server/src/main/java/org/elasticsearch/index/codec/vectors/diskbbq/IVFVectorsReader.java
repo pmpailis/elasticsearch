@@ -374,7 +374,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
                 scorer.resetPostingsScorer(postingMetadata);
                 actualDocs += scorer.visit(knnCollector);
                 if (ivfStrategy != null) {
-                    ivfStrategy.markCentraboidVisited(postingMetadata.queryCentroidOrdinal());
+                    ivfStrategy.markCentroidVisited(postingMetadata.queryCentroidOrdinal());
                 }
                 if (knnCollector.getSearchStrategy() != null) {
                     knnCollector.getSearchStrategy().nextVectorsBlock();

@@ -81,7 +81,6 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
         PostFilterableKnnQuery current = delegate;
 
         for (int round = 0; round < MAX_ROUNDS; round++) {
-            // Execute the delegate's search
             Query delegateQuery = (Query) current;
             delegateQuery.rewrite(searcher);
 
@@ -89,7 +88,7 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
             vectorOps += current.vectorOpsCount();
 
             if (raw == null || raw.scoreDocs.length == 0) {
-                continue;
+                break;
             }
 
             // Post-filter the raw results
@@ -165,25 +164,35 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
         return passing.toArray(new ScoreDoc[0]);
     }
 
-    /**
-     * Merges two score-descending arrays of ScoreDocs, deduplicating by doc ID.
-     * Both inputs are already sorted by score descending, so we append newResults
-     * after existing, skipping any doc IDs already seen.
-     */
     static ScoreDoc[] mergeResults(ScoreDoc[] existing, ScoreDoc[] newResults) {
         if (existing.length == 0) return newResults;
         if (newResults.length == 0) return existing;
 
-        IntHashSet seen = new IntHashSet(existing.length);
+        IntHashSet seen = new IntHashSet(existing.length + newResults.length);
         List<ScoreDoc> merged = new ArrayList<>(existing.length + newResults.length);
-        for (ScoreDoc sd : existing) {
-            seen.add(sd.doc);
-            merged.add(sd);
-        }
-        for (ScoreDoc sd : newResults) {
-            if (seen.add(sd.doc)) {
-                merged.add(sd);
+        int i = 0, j = 0;
+        while (i < existing.length && j < newResults.length) {
+            ScoreDoc next;
+            if (existing[i].score >= newResults[j].score) {
+                next = existing[i++];
+            } else {
+                next = newResults[j++];
             }
+            if (seen.add(next.doc)) {
+                merged.add(next);
+            }
+        }
+        while (i < existing.length) {
+            if (seen.add(existing[i].doc)) {
+                merged.add(existing[i]);
+            }
+            i++;
+        }
+        while (j < newResults.length) {
+            if (seen.add(newResults[j].doc)) {
+                merged.add(newResults[j]);
+            }
+            j++;
         }
         return merged.toArray(new ScoreDoc[0]);
     }
