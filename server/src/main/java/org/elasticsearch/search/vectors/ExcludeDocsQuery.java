@@ -56,9 +56,8 @@ class ExcludeDocsQuery extends Query {
                 int maxDoc = context.reader().maxDoc();
                 int docBase = context.docBase;
                 FixedBitSet leafBits = new FixedBitSet(maxDoc);
-                for (int globalDoc = acceptDocs.nextSetBit(docBase);
-                    globalDoc != -1 && globalDoc < docBase + maxDoc;
-                    globalDoc = acceptDocs.nextSetBit(globalDoc + 1)) {
+                for (int globalDoc = acceptDocs.nextSetBit(docBase); globalDoc != -1 && globalDoc < docBase + maxDoc; globalDoc = acceptDocs
+                    .nextSetBit(globalDoc + 1)) {
                     leafBits.set(globalDoc - docBase);
                 }
                 int cardinality = leafBits.cardinality();

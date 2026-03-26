@@ -196,11 +196,16 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements
         return results != null ? results : NO_RESULTS;
     }
 
+    @Override
+    PostFilterableKnnQuery createPostFilterDelegate(int scaledK, int scaledNumCands, float scaledVisitRatio) {
+        return new IVFKnnFloatVectorQuery(field, getQuery(), scaledK, scaledNumCands, null, scaledVisitRatio, doPrecondition, true, null);
+    }
+
     // --- PostFilterableKnnQuery implementation ---
 
     @Override
     public TopDocs capturedResults() {
-        return capturedTopDocs;
+        return pendingResults;
     }
 
     @Override

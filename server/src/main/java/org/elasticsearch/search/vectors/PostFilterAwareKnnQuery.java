@@ -9,7 +9,6 @@
 
 package org.elasticsearch.search.vectors;
 
-
 import com.carrotsearch.hppc.IntHashSet;
 
 import org.apache.lucene.index.IndexReader;
@@ -17,10 +16,10 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
@@ -49,6 +48,8 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
  * 4. If not enough results, creates a retry delegate and continues
  */
 public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvider {
+
+    public static final float POST_FILTERING_THRESHOLD = 0.7f;
 
     static final int MAX_ROUNDS = 5;
 
@@ -184,8 +185,7 @@ public class PostFilterAwareKnnQuery extends Query implements QueryProfilerProvi
                 merged.add(sd);
             }
         }
-        return merged.toArray
-            (new ScoreDoc[0]);
+        return merged.toArray(new ScoreDoc[0]);
     }
 
     @Override

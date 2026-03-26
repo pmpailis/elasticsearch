@@ -44,6 +44,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.LongAccumulator;
 
 import static org.elasticsearch.search.vectors.AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE;
+import static org.elasticsearch.search.vectors.PostFilterAwareKnnQuery.POST_FILTERING_THRESHOLD;
 
 abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerProvider {
 
@@ -59,10 +60,6 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected boolean doPrecondition;
 
     protected TopDocs pendingResults;
-
-    protected AbstractIVFKnnVectorQuery(String field, float visitRatio, int k, int numCands, Query filter, boolean doPrecondition) {
-        this(field, visitRatio, k, numCands, filter, doPrecondition, false);
-    }
 
     protected AbstractIVFKnnVectorQuery(
         String field,
@@ -119,114 +116,117 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     public Query rewrite(IndexSearcher indexSearcher) throws IOException {
         vectorOpsCount = 0;
         IndexReader reader = indexSearcher.getIndexReader();
+        List<LeafReaderContext> leaves = reader.leaves();
 
-        final Weight filterWeight;
-        if (filter != null) {
-            BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
-                .add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER)
-                .build();
-            Query rewritten = indexSearcher.rewrite(booleanQuery);
-            if (rewritten.getClass() == MatchNoDocsQuery.class) {
-                return rewritten;
-            }
-            filterWeight = indexSearcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1f);
-        } else {
-            filterWeight = null;
+        final Weight filterWeight = createFilterWeight(indexSearcher);
+        if (filterWeight == null && filter != null) {
+            return new MatchNoDocsQuery();
         }
 
-        TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
-        List<LeafReaderContext> leafReaderContexts = reader.leaves();
+        int totalVectors = countTotalVectors(leaves);
+        float visitRatio = computeVisitRatio(totalVectors);
 
-        assert this instanceof IVFKnnFloatVectorQuery;
+        // Post-filter check: only for standard collector, not for subclass overrides (e.g., diversifying)
+        IVFCollectorManager collectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
+        if (skipPostFilter == false && filterWeight != null && collectorManager.getClass() == IVFCollectorManager.class) {
+            float selectivity = computeSelectivity(filterWeight, leaves, totalVectors);
+            if (selectivity > POST_FILTERING_THRESHOLD) {
+                return postFilterRewrite(filterWeight, selectivity, visitRatio, reader);
+            }
+        }
+
+        return executeSearch(indexSearcher, leaves, filterWeight, collectorManager, visitRatio);
+    }
+
+    /**
+     * Creates a filter Weight from the configured filter query, or returns null
+     * if there is no filter or the filter rewrites to MatchNoDocsQuery.
+     */
+    private Weight createFilterWeight(IndexSearcher searcher) throws IOException {
+        if (filter == null) {
+            return null;
+        }
+        BooleanQuery booleanQuery = new BooleanQuery.Builder().add(filter, BooleanClause.Occur.FILTER)
+            .add(new FieldExistsQuery(field), BooleanClause.Occur.FILTER)
+            .build();
+        Query rewritten = searcher.rewrite(booleanQuery);
+        if (rewritten.getClass() == MatchNoDocsQuery.class) {
+            return null;
+        }
+        return searcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1f);
+    }
+
+    private int countTotalVectors(List<LeafReaderContext> leaves) throws IOException {
         int totalVectors = 0;
-        for (LeafReaderContext leafReaderContext : leafReaderContexts) {
-            LeafReader leafReader = leafReaderContext.reader();
-            FloatVectorValues floatVectorValues = leafReader.getFloatVectorValues(field);
-            if (floatVectorValues != null) {
-                totalVectors += floatVectorValues.size();
+        for (LeafReaderContext leaf : leaves) {
+            FloatVectorValues fvv = leaf.reader().getFloatVectorValues(field);
+            if (fvv != null) {
+                totalVectors += fvv.size();
             }
         }
+        return totalVectors;
+    }
 
-        final float visitRatio;
-        if (providedVisitRatio == 0.0f) {
-            // dynamically set the percentage
-            float expected = (float) Math.round(
-                Math.log10(totalVectors) * Math.log10(totalVectors) * (Math.min(10_000, Math.max(numCands, 5 * k)))
-            );
-            visitRatio = expected / totalVectors;
-        } else {
-            visitRatio = providedVisitRatio;
+    private float computeVisitRatio(int totalVectors) {
+        if (providedVisitRatio != 0.0f) {
+            return providedVisitRatio;
         }
+        float expected = (float) Math.round(
+            Math.log10(totalVectors) * Math.log10(totalVectors) * (Math.min(10_000, Math.max(numCands, 5 * k)))
+        );
+        return expected / totalVectors;
+    }
 
-        // Compute filter selectivity and choose collector strategy.
-        // Only use post-filtering with the standard collector manager; subclasses
-        // (e.g., diversifying queries) provide custom collector managers that need
-        // the filter passed as AcceptDocs instead.
+    private static float computeSelectivity(Weight filterWeight, List<LeafReaderContext> leaves, int totalVectors) throws IOException {
+        long filterCost = 0;
+        for (LeafReaderContext leafCtx : leaves) {
+            ScorerSupplier ss = filterWeight.scorerSupplier(leafCtx);
+            if (ss != null) {
+                filterCost += ss.cost();
+            }
+        }
+        return totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
+    }
+
+    private Query postFilterRewrite(Weight filterWeight, float selectivity, float visitRatio, IndexReader reader) {
         int baseK = Math.round(2f * k);
-        final IVFCollectorManager knnCollectorManager;
-        IVFCollectorManager defaultManager = getKnnCollectorManager(baseK, indexSearcher);
-        final Weight leafFilterWeight;
-        final int mergeK;
-        if (skipPostFilter == false && filterWeight != null && defaultManager.getClass() == IVFCollectorManager.class) {
-            long filterCost = 0;
-            for (LeafReaderContext leafCtx : leafReaderContexts) {
-                ScorerSupplier ss = filterWeight.scorerSupplier(leafCtx);
-                if (ss != null) filterCost += ss.cost();
-            }
-            float selectivity = totalVectors > 0 ? Math.min(1f, (float) filterCost / totalVectors) : 0f;
-            if (selectivity > 0.7f) {
-                // Create a filter-less IVF delegate wrapped in PostFilterAwareKnnQuery
-                int scaledBaseK = (int) Math.ceil(baseK / selectivity);
-                // Oversample visit ratio to compensate for docs that will be filtered out
-                float visitOversampling = Math.max(1.1f, 1.2f / selectivity);
-                float scaledVisitRatio = Math.min(1.0f, visitRatio * visitOversampling);
-                assert this instanceof IVFKnnFloatVectorQuery;
-                IVFKnnFloatVectorQuery self = (IVFKnnFloatVectorQuery) this;
-                IVFKnnFloatVectorQuery delegate = new IVFKnnFloatVectorQuery(
-                    field,
-                    self.getQuery(),
-                    scaledBaseK,
-                    Math.max(numCands, scaledBaseK),
-                    null,
-                    scaledVisitRatio,
-                    doPrecondition,
-                    true,
-                    null
-                );
-                return new PostFilterAwareKnnQuery(
-                    delegate,
-                    filterWeight,
-                    k,
-                    reader,
-                    ops -> this.vectorOpsCount = (int) ops
-                );
-            }
-            knnCollectorManager = defaultManager;
-            leafFilterWeight = filterWeight;
-            mergeK = k;
-        } else {
-            knnCollectorManager = defaultManager;
-            leafFilterWeight = filterWeight;
-            mergeK = k;
-        }
+        int scaledBaseK = (int) Math.ceil(baseK / selectivity);
+        float visitOversampling = Math.max(1.1f, 1.2f / selectivity);
+        float scaledVisitRatio = Math.min(1.0f, visitRatio * visitOversampling);
+        PostFilterableKnnQuery delegate = createPostFilterDelegate(scaledBaseK, Math.max(numCands, scaledBaseK), scaledVisitRatio);
+        return new PostFilterAwareKnnQuery(delegate, filterWeight, k, reader, ops -> this.vectorOpsCount = (int) ops);
+    }
 
-        List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
-        for (LeafReaderContext context : leafReaderContexts) {
+    /**
+     * Creates a filter-less delegate query for post-filtering. Subclasses provide
+     * the concrete query type with the appropriate vector data.
+     */
+    abstract PostFilterableKnnQuery createPostFilterDelegate(int scaledK, int scaledNumCands, float scaledVisitRatio);
+
+    private Query executeSearch(
+        IndexSearcher indexSearcher,
+        List<LeafReaderContext> leaves,
+        Weight filterWeight,
+        IVFCollectorManager collectorManager,
+        float visitRatio
+    ) throws IOException {
+        TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
+        List<Callable<TopDocs>> tasks = new ArrayList<>(leaves.size());
+        for (LeafReaderContext context : leaves) {
             if (doPrecondition) {
                 preconditionQuery(context);
             }
-            tasks.add(() -> searchLeaf(context, leafFilterWeight, knnCollectorManager, visitRatio));
+            tasks.add(() -> searchLeaf(context, filterWeight, collectorManager, visitRatio));
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        TopDocs topK = TopDocs.merge(mergeK, perLeafResults);
+        TopDocs topK = TopDocs.merge(k, perLeafResults);
         vectorOpsCount = (int) topK.totalHits.value();
-        // Capture raw results for PostFilterableKnnQuery.capturedResults()
         this.pendingResults = topK;
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
         }
-        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+        return new KnnScoreDocQuery(topK.scoreDocs, indexSearcher.getIndexReader());
     }
 
     private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
