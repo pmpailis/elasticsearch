@@ -16,6 +16,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.query.AbstractQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
@@ -235,7 +236,9 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
         RescoreVectorBuilder rescoreVectorBuilder = randomBoolean()
             ? null
             : new RescoreVectorBuilder(randomFloatBetween(1.0f, 10.0f, false));
+        boolean globalRescoring = randomBoolean();
         KnnSearchBuilder builder = new KnnSearchBuilder(field, vector, k, numCands, visitPercentage, rescoreVectorBuilder, similarity);
+        builder.globalRescoring(globalRescoring);
 
         float boost = AbstractQueryBuilder.DEFAULT_BOOST;
         if (randomBoolean()) {
@@ -251,13 +254,27 @@ public class KnnSearchBuilderTests extends AbstractXContentSerializingTestCase<K
             builder.addFilterQuery(filter);
         }
 
+        Float oversample = builder.getOversampleFactor(null);
+        int expectedK;
+        int expectedNumCands;
+        RescoreVectorBuilder expectedRescore;
+        if (globalRescoring && oversample != null && oversample > KnnSearchBuilder.MINIMUM_OVERSAMPLE_FOR_GLOBAL_RESCORING) {
+            expectedK = Math.min((int) Math.ceil(k * oversample), DenseVectorFieldMapper.OVERSAMPLE_LIMIT);
+            expectedNumCands = Math.max(expectedK, numCands);
+            expectedRescore = new RescoreVectorBuilder(0);
+        } else {
+            expectedK = k;
+            expectedNumCands = numCands;
+            expectedRescore = rescoreVectorBuilder;
+        }
+
         QueryBuilder expected = new KnnVectorQueryBuilder(
             field,
             VectorData.fromFloats(vector),
-            k,
-            numCands,
+            expectedK,
+            expectedNumCands,
             visitPercentage,
-            rescoreVectorBuilder,
+            expectedRescore,
             similarity
         ).addFilterQueries(filterQueries).boost(boost);
         assertEquals(expected, builder.toQueryBuilder(null));
