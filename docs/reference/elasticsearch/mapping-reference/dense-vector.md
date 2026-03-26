@@ -589,8 +589,8 @@ $$$dense-vector-index-options$$$
 :   (required, float) The amount to oversample the search results by. This value should be one of the following:
     * Greater than `1.0` and less than `10.0`
     * Exactly `0` to indicate no oversampling and rescoring should occur {applies_to}`stack: ga 9.1`
-    :   The higher the value, the more vectors will be gathered and rescored with the raw values per shard.
-    :   In case a knn query specifies a `rescore_vector` parameter, the query `rescore_vector` parameter will be used instead.
+    :   The higher the value, the more vectors will be gathered and rescored with the raw values. When using the [`knn` query](/reference/query-languages/query-dsl/query-dsl-knn-query.md), rescoring is applied per shard. When using the [kNN retriever](/reference/elasticsearch/rest-apis/retrievers/knn-retriever.md), rescoring is applied globally across top results from all shards.
+    :   In case a knn query or kNN retriever specifies a `rescore_vector` parameter, the query-level `rescore_vector` parameter will be used instead.
     :   See [oversampling and rescoring quantized vectors](docs-content://solutions/search/vector/knn.md#dense-vector-knn-search-rescoring) for details.
 ::::
 
