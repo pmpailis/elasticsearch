@@ -17,17 +17,18 @@ import java.util.concurrent.atomic.LongAccumulator;
 
 public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     private final float visitRatio;
+    private final int numCands;
+    private final int k;
     private final SetOnce<AbstractMaxScoreKnnCollector> collector = new SetOnce<>();
     private final LongAccumulator accumulator;
     private final FixedBitSet skipCentroids;
     private FixedBitSet visitedCentroids;
 
-    public IVFKnnSearchStrategy(float visitRatio, LongAccumulator accumulator) {
-        this(visitRatio, accumulator, null);
-    }
 
-    public IVFKnnSearchStrategy(float visitRatio, LongAccumulator accumulator, FixedBitSet skipCentroids) {
+    public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, LongAccumulator accumulator, FixedBitSet skipCentroids) {
         this.visitRatio = visitRatio;
+        this.numCands = numCands;
+        this.k = k;
         this.accumulator = accumulator;
         this.skipCentroids = skipCentroids;
     }
@@ -43,6 +44,13 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
         return visitRatio;
     }
 
+    public int getNumCands() {
+        return numCands;
+    }
+
+    public int getK() {
+        return k;
+    }
     /**
      * Initializes the visited centroids tracker with the given number of centroids.
      * Called by IVFVectorsReader when the number of centroids is known.
@@ -81,12 +89,12 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         IVFKnnSearchStrategy that = (IVFKnnSearchStrategy) o;
-        return visitRatio == that.visitRatio;
+        return visitRatio == that.visitRatio && numCands == that.numCands && k == that.k && Objects.equals(skipCentroids, that.skipCentroids);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(visitRatio);
+        return Objects.hash(visitRatio, numCands, k, skipCentroids);
     }
 
     /**

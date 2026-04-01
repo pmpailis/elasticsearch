@@ -192,6 +192,8 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery implements
         }
         IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
             visitRatio,
+            numCands,
+            k,
             knnCollectorManager.longAccumulator,
             getSkipCentroids(context.ord)
         );

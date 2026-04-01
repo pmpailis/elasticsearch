@@ -11,7 +11,6 @@ package org.elasticsearch.search.vectors;
 
 import com.carrotsearch.hppc.IntHashSet;
 
-import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -102,6 +101,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         AbstractIVFKnnVectorQuery that = (AbstractIVFKnnVectorQuery) o;
         return k == that.k
             && skipPostFilter == that.skipPostFilter
+            && numCands == that.numCands
             && Objects.equals(field, that.field)
             && Objects.equals(filter, that.filter)
             && Objects.equals(providedVisitRatio, that.providedVisitRatio);
@@ -109,7 +109,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     @Override
     public int hashCode() {
-        return Objects.hash(field, k, filter, providedVisitRatio, skipPostFilter);
+        return Objects.hash(field, k, numCands, filter, providedVisitRatio, skipPostFilter);
     }
 
     @Override
