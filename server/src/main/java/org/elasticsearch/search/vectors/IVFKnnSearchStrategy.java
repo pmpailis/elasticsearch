@@ -24,7 +24,6 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     private final FixedBitSet skipCentroids;
     private FixedBitSet visitedCentroids;
 
-
     public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, LongAccumulator accumulator, FixedBitSet skipCentroids) {
         this.visitRatio = visitRatio;
         this.numCands = numCands;
@@ -51,6 +50,7 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     public int getK() {
         return k;
     }
+
     /**
      * Initializes the visited centroids tracker with the given number of centroids.
      * Called by IVFVectorsReader when the number of centroids is known.
@@ -89,7 +89,10 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         IVFKnnSearchStrategy that = (IVFKnnSearchStrategy) o;
-        return visitRatio == that.visitRatio && numCands == that.numCands && k == that.k && Objects.equals(skipCentroids, that.skipCentroids);
+        return visitRatio == that.visitRatio
+            && numCands == that.numCands
+            && k == that.k
+            && Objects.equals(skipCentroids, that.skipCentroids);
     }
 
     @Override

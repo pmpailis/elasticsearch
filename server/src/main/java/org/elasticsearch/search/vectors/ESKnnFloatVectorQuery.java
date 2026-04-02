@@ -37,6 +37,7 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
     private final boolean earlyTermination;
     private final boolean skipPostFilter;
     private final FixedBitSet seenDocs;
+    private final TopDocs seedResults;
 
     // Captured by mergeLeafResults for query-level post-filtering
     private TopDocs capturedMergedResults;
@@ -68,11 +69,27 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
         boolean skipPostFilter,
         FixedBitSet seenDocs
     ) {
+        this(field, target, k, numCands, filter, strategy, earlyTermination, skipPostFilter, seenDocs, null);
+    }
+
+    ESKnnFloatVectorQuery(
+        String field,
+        float[] target,
+        int k,
+        int numCands,
+        Query filter,
+        KnnSearchStrategy strategy,
+        boolean earlyTermination,
+        boolean skipPostFilter,
+        FixedBitSet seenDocs,
+        TopDocs seedResults
+    ) {
         super(field, target, numCands, filter, strategy);
         this.kParam = k;
         this.earlyTermination = earlyTermination;
         this.skipPostFilter = skipPostFilter;
         this.seenDocs = seenDocs;
+        this.seedResults = seedResults;
     }
 
     @Override
@@ -99,13 +116,14 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
      */
     private Query postFilterRewrite(IndexSearcher searcher, Weight filterWeight, float selectivity) throws IOException {
         int scaledNumCands = (int) Math.ceil(k / selectivity);
+        KnnSearchStrategy seeded = new KnnSearchStrategy.Seeded(null, 10, searchStrategy);
         ESKnnFloatVectorQuery delegate = new ESKnnFloatVectorQuery(
             field,
             getTargetCopy(),
             scaledNumCands,
             scaledNumCands,
             null,
-            searchStrategy,
+            seeded,
             earlyTermination,
             true,
             null
@@ -173,7 +191,8 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
             searchStrategy,
             earlyTermination,
             true,
-            newSeenDocs
+            newSeenDocs,
+            capturedMergedResults
         );
     }
 
@@ -195,6 +214,9 @@ public class ESKnnFloatVectorQuery extends KnnFloatVectorQuery implements QueryP
     @Override
     protected KnnCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
         KnnCollectorManager base = super.getKnnCollectorManager(k, searcher);
+        if (seedResults != null && seedResults.scoreDocs.length > 0) {
+            base = new SeededRetryCollectorManager(base, seedResults, field);
+        }
         return earlyTermination ? PatienceCollectorManager.wrap(base) : base;
     }
 }

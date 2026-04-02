@@ -37,6 +37,7 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     private final boolean earlyTermination;
     private final boolean skipPostFilter;
     private final FixedBitSet seenDocs;
+    private final TopDocs seedResults;
 
     // Captured by mergeLeafResults for query-level post-filtering
     private TopDocs capturedMergedResults;
@@ -68,11 +69,27 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
         boolean skipPostFilter,
         FixedBitSet seenDocs
     ) {
+        this(field, target, k, numCands, filter, strategy, earlyTermination, skipPostFilter, seenDocs, null);
+    }
+
+    ESKnnByteVectorQuery(
+        String field,
+        byte[] target,
+        int k,
+        int numCands,
+        Query filter,
+        KnnSearchStrategy strategy,
+        boolean earlyTermination,
+        boolean skipPostFilter,
+        FixedBitSet seenDocs,
+        TopDocs seedResults
+    ) {
         super(field, target, numCands, filter, strategy);
         this.kParam = k;
         this.earlyTermination = earlyTermination;
         this.skipPostFilter = skipPostFilter;
         this.seenDocs = seenDocs;
+        this.seedResults = seedResults;
     }
 
     @Override
@@ -172,7 +189,8 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
             searchStrategy,
             earlyTermination,
             true,
-            newSeenDocs
+            newSeenDocs,
+            capturedMergedResults
         );
     }
 
@@ -194,6 +212,9 @@ public class ESKnnByteVectorQuery extends KnnByteVectorQuery implements QueryPro
     @Override
     protected KnnCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
         KnnCollectorManager base = super.getKnnCollectorManager(k, searcher);
+        if (seedResults != null && seedResults.scoreDocs.length > 0) {
+            base = new SeededRetryCollectorManager(base, seedResults, field);
+        }
         return earlyTermination ? PatienceCollectorManager.wrap(base) : base;
     }
 }
