@@ -60,6 +60,7 @@ public final class SearchFeatures implements FeatureSpecification {
         "search.exponential_histogram_querydsl_boxplot"
     );
     public static final NodeFeature EXPONENTIAL_HISTOGRAM_QUERYDSL_RANGE = new NodeFeature("search.exponential_histogram_querydsl_range");
+    public static final NodeFeature DEFAULT_DISK_BBQ = new NodeFeature("search.default_disk_bbq");
     public static final NodeFeature DFS_KNN_SEARCH_GLOBAL_RESCORE = new NodeFeature("search.dfs.knn_search_global_rescore");
 
     @Override
@@ -88,7 +89,8 @@ public final class SearchFeatures implements FeatureSpecification {
             LUCENE_10_4_0_UPGRADE_TEST,
             EXPONENTIAL_HISTOGRAM_QUERYDSL_BOXPLOT,
             EXPONENTIAL_HISTOGRAM_QUERYDSL_RANGE,
-            EXPONENTIAL_HISTOGRAM_UPSCALING_REMOVED
+            EXPONENTIAL_HISTOGRAM_UPSCALING_REMOVED,
+            DEFAULT_DISK_BBQ
         );
     }
 }
