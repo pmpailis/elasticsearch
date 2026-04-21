@@ -26,6 +26,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOSupplier;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 
 /** A {@link IVFKnnFloatSlicedVectorQuery} that uses the IVF search strategy with an sliced index. */
@@ -59,6 +60,12 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
         super(field, query, k, numCands, filter, visitRatio, doPrecondition);
         this.sliceField = Objects.requireNonNull(sliceField);
         this.sliceId = Objects.requireNonNull(sliceId);
+    }
+
+    @Override
+    boolean supportsTwoPhaseSearch(List<LeafReaderContext> leafReaderContexts) {
+        // Sliced queries need slice-aware AcceptDocs — two-phase path not yet supported
+        return false;
     }
 
     @Override

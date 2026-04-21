@@ -17,6 +17,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -33,12 +34,15 @@ import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.LongAccumulator;
 
@@ -117,29 +121,83 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             filterWeight = null;
         }
 
-        // we request numCands as we are using it as an approximation measure
-        // we need to ensure we are getting at least 2*k results to ensure we cover overspill duplicates
-        // TODO move the logic for automatically adjusting percentages to the query, so we can only pass
-        // 2k to the collector.
         IVFCollectorManager knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
         TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
-
-        // When providedVisitRatio is 0.0f (dynamic), the codec computes the visit ratio
-        // per-segment using the Two-Signal model with segment-size awareness.
         final float visitRatio = providedVisitRatio;
 
+        // Use two-phase path when a filter is present and segments support it
+        if (filterWeight != null && supportsTwoPhaseSearch(leafReaderContexts)) {
+            return rewriteTwoPhase(indexSearcher, reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
+        }
+
+        return rewriteSinglePhase(reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
+    }
+
+    private Query rewriteSinglePhase(
+        IndexReader reader,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        TaskExecutor taskExecutor,
+        List<LeafReaderContext> leafReaderContexts,
+        float visitRatio
+    ) throws IOException {
         List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
-            if (doPrecondition) {
-                preconditionQuery(context);
-            }
             tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
         }
         TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        // Merge sort the results
         TopDocs topK = TopDocs.merge(k, perLeafResults);
+        vectorOpsCount = (int) topK.totalHits.value();
+        if (topK.scoreDocs.length == 0) {
+            return Queries.NO_DOCS_INSTANCE;
+        }
+        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+    }
+
+    /**
+     * Two-phase search: Phase 1 gathers doc IDs + filters per segment, Phase 2 scores
+     * matching posting lists in parallel from a global work queue.
+     */
+    private Query rewriteTwoPhase(
+        IndexSearcher indexSearcher,
+        IndexReader reader,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        TaskExecutor taskExecutor,
+        List<LeafReaderContext> leafReaderContexts,
+        float visitRatio
+    ) throws IOException {
+        // ── Phase 1: per-segment gather + filter ──
+        List<Callable<SegmentGatherResult>> gatherTasks = new ArrayList<>(leafReaderContexts.size());
+        for (LeafReaderContext context : leafReaderContexts) {
+            if (doPrecondition) {
+                preconditionQuery(context);
+            }
+            gatherTasks.add(() -> gatherLeaf(context, filterWeight, knnCollectorManager, visitRatio));
+        }
+        List<SegmentGatherResult> gatherResults = taskExecutor.invokeAll(gatherTasks);
+
+        // ── Phase 2: cross-segment parallel scoring ──
+        List<ScoringItem> allItems = new ArrayList<>();
+        for (SegmentGatherResult sgr : gatherResults) {
+            allItems.addAll(sgr.scoringItems);
+        }
+        if (allItems.isEmpty()) {
+            return Queries.NO_DOCS_INSTANCE;
+        }
+
+        int numThreads = Math.max(1, leafReaderContexts.size());
+        List<List<ScoringItem>> partitions = partitionWork(allItems, numThreads);
+
+        List<Callable<TopDocs>> scoringTasks = new ArrayList<>(partitions.size());
+        for (List<ScoringItem> partition : partitions) {
+            scoringTasks.add(() -> scorePartition(partition, knnCollectorManager));
+        }
+        TopDocs[] partitionResults = taskExecutor.invokeAll(scoringTasks).toArray(TopDocs[]::new);
+
+        TopDocs topK = TopDocs.merge(k, partitionResults);
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -199,6 +257,12 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         );
     }
 
+    /**
+     * Returns true if all segments support the two-phase gather+score path.
+     * Checks that the codec reader supports gatherDocIds() (ES940+ only, not ES920).
+     */
+    abstract boolean supportsTwoPhaseSearch(List<LeafReaderContext> leafReaderContexts);
+
     abstract void preconditionQuery(LeafReaderContext context) throws IOException;
 
     abstract TopDocs approximateSearch(
@@ -209,6 +273,22 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         float visitRatio
     ) throws IOException;
 
+    /**
+     * Phase 1: gather doc IDs from posting lists without scoring, then filter via advance().
+     * Returns per-PL match lists as ScoringItems.
+     */
+    abstract SegmentGatherResult gatherLeaf(
+        LeafReaderContext context,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float visitRatio
+    ) throws IOException;
+
+    /**
+     * Phase 2: score a partition of ScoringItems from potentially multiple segments.
+     */
+    abstract TopDocs scorePartition(List<ScoringItem> items, IVFCollectorManager knnCollectorManager) throws IOException;
+
     protected IVFCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
         return new IVFCollectorManager(k, searcher);
     }
@@ -216,6 +296,122 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     @Override
     public final void profile(QueryProfiler queryProfiler) {
         queryProfiler.addVectorOpsCount(vectorOpsCount);
+    }
+
+    // ── Work partitioning ──
+
+    static List<List<ScoringItem>> partitionWork(List<ScoringItem> items, int numThreads) {
+        long totalWork = 0;
+        for (ScoringItem item : items) {
+            totalWork += item.matchCount;
+        }
+        long targetPerThread = Math.max(1, totalWork / numThreads);
+        List<List<ScoringItem>> partitions = new ArrayList<>();
+        List<ScoringItem> current = new ArrayList<>();
+        long currentWork = 0;
+        for (ScoringItem item : items) {
+            current.add(item);
+            currentWork += item.matchCount;
+            if (currentWork >= targetPerThread && partitions.size() < numThreads - 1) {
+                partitions.add(current);
+                current = new ArrayList<>();
+                currentWork = 0;
+            }
+        }
+        if (current.isEmpty() == false) {
+            partitions.add(current);
+        }
+        return partitions;
+    }
+
+    // ── Filter intersection via min-heap merge ──
+
+    /**
+     * Merges doc IDs from multiple gathered posting lists via min-heap, walks a filter iterator
+     * with advance(), and builds per-PL match lists. SOAR duplicates are handled naturally
+     * since all occurrences of the same docId are consecutive in the heap.
+     */
+    static List<ScoringItem> mergeAndFilter(
+        LeafReaderContext leafCtx,
+        List<IVFVectorsReader.GatheredPostingList> gathered,
+        DocIdSetIterator filterIterator
+    ) throws IOException {
+        PriorityQueue<HeapEntry> heap = new PriorityQueue<>();
+        for (int p = 0; p < gathered.size(); p++) {
+            IVFVectorsReader.GatheredPostingList pl = gathered.get(p);
+            if (pl.numDocs() > 0) {
+                heap.add(new HeapEntry(p, pl.docIds(), 0, pl.numDocs()));
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Integer>[] plMatchLists = new List[gathered.size()];
+
+        while (heap.isEmpty() == false) {
+            HeapEntry top = heap.poll();
+            int docId = top.currentDocId();
+            int plIdx = top.plIndex;
+
+            // Filter check — iterator only advances forward
+            if (filterIterator.docID() <= docId) {
+                filterIterator.advance(docId);
+            }
+            if (filterIterator.docID() == docId) {
+                if (plMatchLists[plIdx] == null) {
+                    plMatchLists[plIdx] = new ArrayList<>();
+                }
+                plMatchLists[plIdx].add(docId);
+            }
+
+            if (top.advance()) {
+                heap.add(top);
+            }
+        }
+
+        // Build ScoringItems and prefetch matching posting lists
+        List<ScoringItem> result = new ArrayList<>();
+        for (int p = 0; p < gathered.size(); p++) {
+            if (plMatchLists[p] == null || plMatchLists[p].isEmpty()) {
+                continue;
+            }
+            int[] matchArray = plMatchLists[p].stream().mapToInt(Integer::intValue).toArray();
+            result.add(new ScoringItem(leafCtx, gathered.get(p).metadata(), matchArray, matchArray.length));
+        }
+        return result;
+    }
+
+    // ── Data types ──
+
+    record ScoringItem(LeafReaderContext leafCtx, PostingMetadata metadata, int[] matchedDocIds, int matchCount) {}
+
+    record SegmentGatherResult(LeafReaderContext leafCtx, List<ScoringItem> scoringItems) {}
+
+    static class HeapEntry implements Comparable<HeapEntry> {
+        final int plIndex;
+        final int[] docIds;
+        final int limit;
+        int cursor;
+
+        HeapEntry(int plIndex, int[] docIds, int cursor, int limit) {
+            this.plIndex = plIndex;
+            this.docIds = docIds;
+            this.cursor = cursor;
+            this.limit = limit;
+        }
+
+        int currentDocId() {
+            return docIds[cursor];
+        }
+
+        boolean advance() {
+            cursor++;
+            return cursor < limit;
+        }
+
+        @Override
+        public int compareTo(HeapEntry other) {
+            return Integer.compare(currentDocId(), other.currentDocId());
+        }
     }
 
     static class IVFCollectorManager implements KnnCollectorManager {

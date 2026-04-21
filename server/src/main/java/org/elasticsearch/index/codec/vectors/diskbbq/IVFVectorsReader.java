@@ -37,6 +37,7 @@ import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -407,6 +408,113 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         }
     }
 
+    /**
+     * Gathers doc IDs from posting lists without scoring vectors.
+     * Used in Phase 1 of the two-phase parallel search.
+     * Returns a list of (PostingMetadata, docIds[]) pairs for each visited centroid.
+     */
+    public final List<GatheredPostingList> gather(String field, float[] target, KnnCollector knnCollector, AcceptDocs acceptDocs)
+        throws IOException {
+        final FieldInfo fieldInfo = state.fieldInfos.fieldInfo(field);
+        if (fieldInfo == null || fieldInfo.getVectorDimension() == 0) {
+            return List.of();
+        }
+        if (fieldInfo.getVectorEncoding().equals(VectorEncoding.FLOAT32) == false) {
+            return List.of();
+        }
+        final E entry = fields.get(fieldInfo.number);
+        if (hasNoVectors(fieldInfo, entry)) {
+            return List.of();
+        }
+
+        final ESAcceptDocs esAcceptDocs;
+        if (acceptDocs instanceof ESAcceptDocs) {
+            esAcceptDocs = (ESAcceptDocs) acceptDocs;
+        } else {
+            esAcceptDocs = null;
+        }
+
+        final FloatVectorValues values = getFloatVectorValues(field);
+        final IndexInput centroids = entry.centroidSlice(ivfCentroids);
+        final int numVectors = getNumberOfVectors(entry, values, centroids, esAcceptDocs);
+        if (numVectors == 0) {
+            return List.of();
+        }
+        final float approximateCost;
+        if (esAcceptDocs instanceof ESAcceptDocs.ESAcceptDocsAll) {
+            approximateCost = numVectors;
+        } else {
+            approximateCost = esAcceptDocs == null ? acceptDocs.cost() : esAcceptDocs.approximateCost();
+        }
+        int k = knnCollector.k();
+        int numCands = k;
+        float visitRatio = dynamicVisitRatio;
+        if (knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy ivfSearchStrategy) {
+            visitRatio = ivfSearchStrategy.getVisitRatio();
+            numCands = ivfSearchStrategy.getNumCands();
+            k = ivfSearchStrategy.getK();
+        }
+        if (visitRatio == dynamicVisitRatio) {
+            visitRatio = Math.min(computeDynamicVisitRatio(numCands, k), computeSegmentSizeCap(numVectors));
+        }
+        long maxVectorVisited = (long) (2.0 * visitRatio * numVectors);
+        IndexInput postListSlice = entry.postingListSlice(ivfClusters);
+        CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
+            fieldInfo,
+            entry.numCentroids,
+            centroids,
+            target,
+            postListSlice,
+            acceptDocs,
+            approximateCost,
+            values,
+            visitRatio
+        );
+        // Create a PostingVisitor with null acceptDocs — only used for gatherDocIds
+        PostingVisitor gatherVisitor = getPostingVisitor(
+            fieldInfo,
+            values,
+            postListSlice,
+            target,
+            null,
+            entry.centroidSlice(ivfCentroids),
+            esAcceptDocs
+        );
+
+        List<GatheredPostingList> result = new ArrayList<>();
+        long expectedDocs = 0;
+        while (centroidPrefetchingIterator.hasNext()
+            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            int numVecs = gatherVisitor.resetPostingsScorer(postingMetadata);
+            expectedDocs += numVecs;
+            int[] docIds = new int[numVecs];
+            int gathered = gatherVisitor.gatherDocIds(docIds, 0);
+            result.add(new GatheredPostingList(postingMetadata, docIds, gathered));
+            if (knnCollector.getSearchStrategy() != null) {
+                knnCollector.getSearchStrategy().nextVectorsBlock();
+            }
+        }
+        return result;
+    }
+
+    /** A posting list's metadata and gathered doc IDs from Phase 1. */
+    public record GatheredPostingList(PostingMetadata metadata, int[] docIds, int numDocs) {}
+
+    /** Returns a cloned posting list IndexInput slice for the given field. For Phase 2 per-thread use. */
+    public IndexInput getPostingListSlice(String field) throws IOException {
+        FieldInfo fieldInfo = state.fieldInfos.fieldInfo(field);
+        E entry = fields.get(fieldInfo.number);
+        return entry.postingListSlice(ivfClusters.clone());
+    }
+
+    /** Returns a cloned centroid IndexInput slice for the given field. For Phase 2 per-thread use. */
+    public IndexInput getCentroidSlice(String field) throws IOException {
+        FieldInfo fieldInfo = state.fieldInfos.fieldInfo(field);
+        E entry = fields.get(fieldInfo.number);
+        return entry.centroidSlice(ivfCentroids.clone());
+    }
+
     private static boolean hasNoVectors(FieldInfo fieldInfo, FieldEntry fieldEntry) {
         return fieldInfo.getVectorDimension() == 0
             || fieldEntry == null
@@ -577,6 +685,52 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /**
+         * Reads doc IDs from the current posting list without reading vector data.
+         * Must call {@link #resetPostingsScorer} before this. Skips vector bytes via skipBytes().
+         * Note: docBase is modified; call resetPostingsScorer() again before visit().
+         * @return number of doc IDs written to buffer
+         */
+        default int gatherDocIds(int[] buffer, int offset) throws IOException {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Sets the acceptDocs filter for subsequent {@link #visit} calls.
+         * Used by the two-phase search to provide per-posting-list filter bits.
+         */
+        default void setAcceptDocs(Bits acceptDocs) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /**
+     * A Bits implementation backed by a sorted array of doc IDs.
+     * Uses range-check fast path + binary search for O(log n) lookups.
+     * Avoids segment-sized FixedBitSet allocation.
+     */
+    public static final class SortedDocIdsBits implements Bits {
+        private final int[] matchDocIds;
+        private final int count;
+
+        public SortedDocIdsBits(int[] matchDocIds, int count) {
+            this.matchDocIds = matchDocIds;
+            this.count = count;
+        }
+
+        @Override
+        public boolean get(int docId) {
+            if (count == 0 || docId < matchDocIds[0] || docId > matchDocIds[count - 1]) {
+                return false;
+            }
+            return Arrays.binarySearch(matchDocIds, 0, count, docId) >= 0;
+        }
+
+        @Override
+        public int length() {
+            return count == 0 ? 0 : matchDocIds[count - 1] + 1;
+        }
     }
 
 }

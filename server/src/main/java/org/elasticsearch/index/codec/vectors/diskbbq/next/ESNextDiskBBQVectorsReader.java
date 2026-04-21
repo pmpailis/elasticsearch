@@ -914,7 +914,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
         final IndexInput indexInput;
         final FieldEntry entry;
         final FieldInfo fieldInfo;
-        final Bits acceptDocs;
+        Bits acceptDocs;
         private final ES940OSQVectorsScorer osqVectorsScorer;
         final float[] scores = new float[BULK_SIZE];
         final float[] correctionsLower = new float[BULK_SIZE];
@@ -1060,6 +1060,33 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
                 docBase += docIdsScratch[j];
                 docIdsScratch[j] = docBase;
             }
+        }
+
+        @Override
+        public int gatherDocIds(int[] buffer, int offset) throws IOException {
+            indexInput.seek(slicePos);
+            int gathered = 0;
+            int limit = vectors - BULK_SIZE + 1;
+            int i = 0;
+            for (; i < limit; i += BULK_SIZE) {
+                readDocIds(BULK_SIZE);
+                System.arraycopy(docIdsScratch, 0, buffer, offset + gathered, BULK_SIZE);
+                gathered += BULK_SIZE;
+                indexInput.skipBytes(quantizedByteLength * BULK_SIZE);
+            }
+            if (i < vectors) {
+                int tailSize = vectors - i;
+                readDocIds(tailSize);
+                System.arraycopy(docIdsScratch, 0, buffer, offset + gathered, tailSize);
+                gathered += tailSize;
+                indexInput.skipBytes(quantizedByteLength * tailSize);
+            }
+            return gathered;
+        }
+
+        @Override
+        public void setAcceptDocs(Bits acceptDocs) {
+            this.acceptDocs = acceptDocs;
         }
 
         @Override
