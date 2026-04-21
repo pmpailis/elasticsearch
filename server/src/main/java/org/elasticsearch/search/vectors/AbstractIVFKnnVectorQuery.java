@@ -126,42 +126,24 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
         final float visitRatio = providedVisitRatio;
 
-        // Use two-phase path when a filter is present and segments support it
-        if (filterWeight != null && supportsTwoPhaseSearch(leafReaderContexts)) {
-            return rewriteTwoPhase(indexSearcher, reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
+        // Parallel posting scoring: gather doc IDs first, then score in parallel across segments.
+        // Falls back to legacy single-phase path for codecs that don't support gatherDocIds (ES920).
+        if (supportsParallelScoring(leafReaderContexts)) {
+            return rewriteParallel(reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
         }
-
-        return rewriteSinglePhase(reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
-    }
-
-    private Query rewriteSinglePhase(
-        IndexReader reader,
-        Weight filterWeight,
-        IVFCollectorManager knnCollectorManager,
-        TaskExecutor taskExecutor,
-        List<LeafReaderContext> leafReaderContexts,
-        float visitRatio
-    ) throws IOException {
-        List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
-        for (LeafReaderContext context : leafReaderContexts) {
-            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
-        }
-        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
-
-        TopDocs topK = TopDocs.merge(k, perLeafResults);
-        vectorOpsCount = (int) topK.totalHits.value();
-        if (topK.scoreDocs.length == 0) {
-            return Queries.NO_DOCS_INSTANCE;
-        }
-        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+        return rewriteLegacy(reader, filterWeight, knnCollectorManager, taskExecutor, leafReaderContexts, visitRatio);
     }
 
     /**
-     * Two-phase search: Phase 1 gathers doc IDs + filters per segment, Phase 2 scores
-     * matching posting lists in parallel from a global work queue.
+     * Parallel posting list scoring: two-phase approach that works with or without filters.
+     *
+     * Phase 1 (per-segment, parallel): visit centroids, gather doc IDs from posting lists,
+     *   prefetch posting list data for scoring.
+     * Phase 2 (cross-segment, parallel): if filter exists, walk global doc ID queue with
+     *   advance() to determine matches; then score matching posting lists from a global work
+     *   queue balanced across threads. Shared competitive scores enable early termination.
      */
-    private Query rewriteTwoPhase(
-        IndexSearcher indexSearcher,
+    private Query rewriteParallel(
         IndexReader reader,
         Weight filterWeight,
         IVFCollectorManager knnCollectorManager,
@@ -169,28 +151,30 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         List<LeafReaderContext> leafReaderContexts,
         float visitRatio
     ) throws IOException {
-        // ── Phase 1: per-segment gather + filter ──
-        List<Callable<SegmentGatherResult>> gatherTasks = new ArrayList<>(leafReaderContexts.size());
+        // ── Phase 1: per-segment gather + filter (streaming per-segment heaps) ──
+        List<Callable<List<ScoringItem>>> gatherTasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
             if (doPrecondition) {
                 preconditionQuery(context);
             }
             gatherTasks.add(() -> gatherLeaf(context, filterWeight, knnCollectorManager, visitRatio));
         }
-        List<SegmentGatherResult> gatherResults = taskExecutor.invokeAll(gatherTasks);
+        List<List<ScoringItem>> perSegmentItems = taskExecutor.invokeAll(gatherTasks);
 
-        // ── Phase 2: cross-segment parallel scoring ──
-        List<ScoringItem> allItems = new ArrayList<>();
-        for (SegmentGatherResult sgr : gatherResults) {
-            allItems.addAll(sgr.scoringItems);
+        // ── Phase 2: collect global work queue and score in parallel ──
+        List<ScoringItem> workQueue = new ArrayList<>();
+        for (List<ScoringItem> segmentItems : perSegmentItems) {
+            workQueue.addAll(segmentItems);
         }
-        if (allItems.isEmpty()) {
+        if (workQueue.isEmpty()) {
             return Queries.NO_DOCS_INSTANCE;
         }
 
+        // Partition work evenly across threads (preserving segment locality)
         int numThreads = Math.max(1, leafReaderContexts.size());
-        List<List<ScoringItem>> partitions = partitionWork(allItems, numThreads);
+        List<List<ScoringItem>> partitions = partitionWork(workQueue, numThreads);
 
+        // Score partitions in parallel with shared competitive scores
         List<Callable<TopDocs>> scoringTasks = new ArrayList<>(partitions.size());
         for (List<ScoringItem> partition : partitions) {
             scoringTasks.add(() -> scorePartition(partition, knnCollectorManager));
@@ -205,9 +189,39 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return new KnnScoreDocQuery(topK.scoreDocs, reader);
     }
 
+    /** Legacy single-phase path: one thread per segment, centroid selection + scoring coupled. */
+    private Query rewriteLegacy(
+        IndexReader reader,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        TaskExecutor taskExecutor,
+        List<LeafReaderContext> leafReaderContexts,
+        float visitRatio
+    ) throws IOException {
+        List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
+        for (LeafReaderContext context : leafReaderContexts) {
+            if (doPrecondition) {
+                preconditionQuery(context);
+            }
+            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
+        }
+        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
+
+        TopDocs topK = TopDocs.merge(k, perLeafResults);
+        vectorOpsCount = (int) topK.totalHits.value();
+        if (topK.scoreDocs.length == 0) {
+            return Queries.NO_DOCS_INSTANCE;
+        }
+        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+    }
+
     private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
         throws IOException {
         TopDocs results = getLeafResults(ctx, filterWeight, knnCollectorManager, visitRatio);
+        return deduplicateAndGlobalize(results, ctx);
+    }
+
+    private static TopDocs deduplicateAndGlobalize(TopDocs results, LeafReaderContext ctx) {
         IntHashSet dedup = new IntHashSet(results.scoreDocs.length * 4 / 3);
         int deduplicateCount = 0;
         for (ScoreDoc scoreDoc : results.scoreDocs) {
@@ -257,11 +271,10 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         );
     }
 
-    /**
-     * Returns true if all segments support the two-phase gather+score path.
-     * Checks that the codec reader supports gatherDocIds() (ES940+ only, not ES920).
-     */
-    abstract boolean supportsTwoPhaseSearch(List<LeafReaderContext> leafReaderContexts);
+    // ── Abstract methods for subclass implementation ──
+
+    /** Whether all segments support the parallel gather+score path (ES940+ codecs). */
+    abstract boolean supportsParallelScoring(List<LeafReaderContext> leafReaderContexts);
 
     abstract void preconditionQuery(LeafReaderContext context) throws IOException;
 
@@ -274,19 +287,19 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     ) throws IOException;
 
     /**
-     * Phase 1: gather doc IDs from posting lists without scoring, then filter via advance().
-     * Returns per-PL match lists as ScoringItems.
+     * Phase 1: per-segment centroid selection + doc ID gathering via streaming min-heap.
+     * If filter: walks gathered doc IDs in sorted order with advance() to build per-PL match lists.
+     * If no filter: all gathered PLs become ScoringItems directly (matchedDocIds=null).
+     * Prefetches posting list data as PLs are consumed from the heap.
      */
-    abstract SegmentGatherResult gatherLeaf(
+    abstract List<ScoringItem> gatherLeaf(
         LeafReaderContext context,
         Weight filterWeight,
         IVFCollectorManager knnCollectorManager,
         float visitRatio
     ) throws IOException;
 
-    /**
-     * Phase 2: score a partition of ScoringItems from potentially multiple segments.
-     */
+    /** Phase 2: score a partition of posting lists, potentially from multiple segments. */
     abstract TopDocs scorePartition(List<ScoringItem> items, IVFCollectorManager knnCollectorManager) throws IOException;
 
     protected IVFCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
@@ -300,10 +313,11 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     // ── Work partitioning ──
 
+    /** Partition scoring items into balanced chunks for parallel execution. */
     static List<List<ScoringItem>> partitionWork(List<ScoringItem> items, int numThreads) {
         long totalWork = 0;
         for (ScoringItem item : items) {
-            totalWork += item.matchCount;
+            totalWork += item.numDocs;
         }
         long targetPerThread = Math.max(1, totalWork / numThreads);
         List<List<ScoringItem>> partitions = new ArrayList<>();
@@ -311,7 +325,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         long currentWork = 0;
         for (ScoringItem item : items) {
             current.add(item);
-            currentWork += item.matchCount;
+            currentWork += item.numDocs;
             if (currentWork >= targetPerThread && partitions.size() < numThreads - 1) {
                 partitions.add(current);
                 current = new ArrayList<>();
@@ -327,73 +341,73 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     // ── Filter intersection via min-heap merge ──
 
     /**
-     * Merges doc IDs from multiple gathered posting lists via min-heap, walks a filter iterator
-     * with advance(), and builds per-PL match lists. SOAR duplicates are handled naturally
-     * since all occurrences of the same docId are consecutive in the heap.
+     * Processes gathered posting lists through a per-segment min-heap, checking each doc ID
+     * against the filter via advance(). Emits ScoringItems as PLs are fully consumed.
+     * SOAR: same docId from multiple PLs is consecutive in the heap — advance() handles naturally.
      */
-    static List<ScoringItem> mergeAndFilter(
+    static List<ScoringItem> gatherAndFilter(
         LeafReaderContext leafCtx,
         List<IVFVectorsReader.GatheredPostingList> gathered,
-        DocIdSetIterator filterIterator
+        DocIdSetIterator filterIterator,
+        IVFVectorsReader<?> ivfReader,
+        String field
     ) throws IOException {
         PriorityQueue<HeapEntry> heap = new PriorityQueue<>();
-        for (int p = 0; p < gathered.size(); p++) {
-            IVFVectorsReader.GatheredPostingList pl = gathered.get(p);
+        for (IVFVectorsReader.GatheredPostingList pl : gathered) {
             if (pl.numDocs() > 0) {
-                heap.add(new HeapEntry(p, pl.docIds(), 0, pl.numDocs()));
+                heap.add(new HeapEntry(pl.metadata(), pl.docIds(), 0, pl.numDocs()));
             }
         }
 
-        @SuppressWarnings("unchecked")
-        List<Integer>[] plMatchLists = new List[gathered.size()];
+        // Per-PL match accumulation (keyed by PostingMetadata identity)
+        java.util.IdentityHashMap<PostingMetadata, List<Integer>> perPLMatches = new java.util.IdentityHashMap<>();
+
+        List<ScoringItem> result = new ArrayList<>();
 
         while (heap.isEmpty() == false) {
             HeapEntry top = heap.poll();
             int docId = top.currentDocId();
-            int plIdx = top.plIndex;
 
             // Filter check — iterator only advances forward
             if (filterIterator.docID() <= docId) {
                 filterIterator.advance(docId);
             }
             if (filterIterator.docID() == docId) {
-                if (plMatchLists[plIdx] == null) {
-                    plMatchLists[plIdx] = new ArrayList<>();
-                }
-                plMatchLists[plIdx].add(docId);
+                perPLMatches.computeIfAbsent(top.metadata, m -> new ArrayList<>()).add(docId);
             }
 
             if (top.advance()) {
                 heap.add(top);
+            } else {
+                // PL fully consumed — emit ScoringItem if it has matches
+                List<Integer> matches = perPLMatches.remove(top.metadata);
+                if (matches != null && matches.isEmpty() == false) {
+                    int[] matchArray = matches.stream().mapToInt(Integer::intValue).toArray();
+                    result.add(new ScoringItem(leafCtx, top.metadata, matchArray, matchArray.length));
+                    ivfReader.prefetchPostingList(field, top.metadata);
+                }
             }
-        }
-
-        // Build ScoringItems and prefetch matching posting lists
-        List<ScoringItem> result = new ArrayList<>();
-        for (int p = 0; p < gathered.size(); p++) {
-            if (plMatchLists[p] == null || plMatchLists[p].isEmpty()) {
-                continue;
-            }
-            int[] matchArray = plMatchLists[p].stream().mapToInt(Integer::intValue).toArray();
-            result.add(new ScoringItem(leafCtx, gathered.get(p).metadata(), matchArray, matchArray.length));
         }
         return result;
     }
 
     // ── Data types ──
 
-    record ScoringItem(LeafReaderContext leafCtx, PostingMetadata metadata, int[] matchedDocIds, int matchCount) {}
-
-    record SegmentGatherResult(LeafReaderContext leafCtx, List<ScoringItem> scoringItems) {}
+    /**
+     * A posting list to score: metadata to locate it, and the doc IDs that should be scored.
+     * When no filter: matchedDocIds is null and numDocs is the full posting list size.
+     * When filtered: matchedDocIds contains only the docs that passed the filter.
+     */
+    record ScoringItem(LeafReaderContext leafCtx, PostingMetadata metadata, int[] matchedDocIds, int numDocs) {}
 
     static class HeapEntry implements Comparable<HeapEntry> {
-        final int plIndex;
+        final PostingMetadata metadata;
         final int[] docIds;
         final int limit;
         int cursor;
 
-        HeapEntry(int plIndex, int[] docIds, int cursor, int limit) {
-            this.plIndex = plIndex;
+        HeapEntry(PostingMetadata metadata, int[] docIds, int cursor, int limit) {
+            this.metadata = metadata;
             this.docIds = docIds;
             this.cursor = cursor;
             this.limit = limit;

@@ -63,8 +63,8 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
     }
 
     @Override
-    boolean supportsTwoPhaseSearch(List<LeafReaderContext> leafReaderContexts) {
-        // Sliced queries need slice-aware AcceptDocs — two-phase path not yet supported
+    boolean supportsParallelScoring(List<LeafReaderContext> leafReaderContexts) {
+        // Sliced queries need slice-aware AcceptDocs — parallel scoring path not yet supported
         return false;
     }
 

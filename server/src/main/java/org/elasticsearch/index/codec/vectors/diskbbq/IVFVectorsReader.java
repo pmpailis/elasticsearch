@@ -515,6 +515,14 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         return entry.centroidSlice(ivfCentroids.clone());
     }
 
+    /** Prefetch a posting list's data so it's warm in the page cache for scoring. */
+    public void prefetchPostingList(String field, PostingMetadata metadata) throws IOException {
+        FieldInfo fieldInfo = state.fieldInfos.fieldInfo(field);
+        E entry = fields.get(fieldInfo.number);
+        IndexInput postListSlice = entry.postingListSlice(ivfClusters);
+        postListSlice.prefetch(metadata.offset(), metadata.length());
+    }
+
     private static boolean hasNoVectors(FieldInfo fieldInfo, FieldEntry fieldEntry) {
         return fieldInfo.getVectorDimension() == 0
             || fieldEntry == null

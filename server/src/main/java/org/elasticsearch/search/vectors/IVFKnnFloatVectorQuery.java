@@ -34,6 +34,7 @@ import org.elasticsearch.index.codec.vectors.diskbbq.es94.ES940DiskBBQVectorsRea
 import org.elasticsearch.index.codec.vectors.diskbbq.next.ESNextDiskBBQVectorsReader;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -135,13 +136,12 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
     }
 
     @Override
-    boolean supportsTwoPhaseSearch(List<LeafReaderContext> leafReaderContexts) {
+    boolean supportsParallelScoring(List<LeafReaderContext> leafReaderContexts) {
         for (LeafReaderContext ctx : leafReaderContexts) {
             IVFVectorsReader<?> ivfReader = getIVFVectorsReader(ctx.reader());
             if (ivfReader == null) {
                 return false;
             }
-            // Only ES940+ and ESNext codecs support gatherDocIds
             if ((ivfReader instanceof ES940DiskBBQVectorsReader || ivfReader instanceof ESNextDiskBBQVectorsReader) == false) {
                 return false;
             }
@@ -169,75 +169,74 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
     }
 
     @Override
-    SegmentGatherResult gatherLeaf(
-        LeafReaderContext context,
-        Weight filterWeight,
-        IVFCollectorManager knnCollectorManager,
-        float visitRatio
-    ) throws IOException {
+    List<ScoringItem> gatherLeaf(LeafReaderContext context, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
+        throws IOException {
         LeafReader reader = context.reader();
         Bits liveDocs = reader.getLiveDocs();
         int maxDoc = reader.maxDoc();
 
-        ScorerSupplier supplier = filterWeight.scorerSupplier(context);
-        if (supplier == null) {
-            return new SegmentGatherResult(context, List.of());
+        // Build AcceptDocs for centroid iterator (needed for centroid filtering)
+        final AcceptDocs acceptDocs;
+        if (filterWeight != null) {
+            ScorerSupplier supplier = filterWeight.scorerSupplier(context);
+            if (supplier == null) {
+                return List.of();
+            }
+            acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
+        } else {
+            acceptDocs = liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
         }
 
-        // Create AcceptDocs for the centroid iterator (it needs this for centroid filtering)
-        ESAcceptDocs acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
-
-        // Get the IVFVectorsReader for this segment
         IVFVectorsReader<?> ivfReader = getIVFVectorsReader(reader);
         if (ivfReader == null) {
-            // Not an IVF segment — fall back to empty
-            return new SegmentGatherResult(context, List.of());
+            return List.of();
         }
 
-        // Phase 1: gather doc IDs via centroid selection + gatherDocIds()
+        // Gather doc IDs from posting lists (centroids selected, vectors skipped)
         IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.longAccumulator);
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, context);
         if (knnCollector == null) {
-            return new SegmentGatherResult(context, List.of());
+            return List.of();
         }
         strategy.setCollector(knnCollector);
 
         List<IVFVectorsReader.GatheredPostingList> gathered = ivfReader.gather(field, query, knnCollector, acceptDocs);
         if (gathered.isEmpty()) {
-            return new SegmentGatherResult(context, List.of());
+            return List.of();
         }
 
-        // Phase 1.5: filter advance — get a fresh filter iterator (no bitset materialization)
-        DocIdSetIterator filterIterator = supplier.get(DocIdSetIterator.NO_MORE_DOCS).iterator();
-        if (liveDocs != null) {
-            filterIterator = new FilteredDocIdSetIterator(filterIterator) {
-                @Override
-                protected boolean match(int doc) {
-                    return liveDocs.get(doc);
-                }
-            };
+        if (filterWeight != null) {
+            // Filtered: merge doc IDs via per-segment heap, walk filter with advance()
+            ScorerSupplier freshSupplier = filterWeight.scorerSupplier(context);
+            if (freshSupplier == null) {
+                return List.of();
+            }
+            DocIdSetIterator filterIterator = freshSupplier.get(DocIdSetIterator.NO_MORE_DOCS).iterator();
+            if (liveDocs != null) {
+                filterIterator = new FilteredDocIdSetIterator(filterIterator) {
+                    @Override
+                    protected boolean match(int doc) {
+                        return liveDocs.get(doc);
+                    }
+                };
+            }
+            return gatherAndFilter(context, gathered, filterIterator, ivfReader, field);
         }
 
-        List<ScoringItem> scoringItems = mergeAndFilter(context, gathered, filterIterator);
-
-        // Prefetch matching posting lists so vector data is warm for Phase 2
-        if (scoringItems.isEmpty() == false) {
-            FloatVectorValues values = reader.getFloatVectorValues(field);
-            if (values != null) {
-                // Use reader to prefetch — the posting list data will be in page cache for Phase 2
-                for (ScoringItem item : scoringItems) {
-                    // Prefetching is best-effort; the codec reader handles it via IndexInput
-                }
+        // No filter: all PLs go to scoring, prefetch their data
+        List<ScoringItem> items = new ArrayList<>(gathered.size());
+        for (IVFVectorsReader.GatheredPostingList pl : gathered) {
+            if (pl.numDocs() > 0) {
+                items.add(new ScoringItem(context, pl.metadata(), null, pl.numDocs()));
+                ivfReader.prefetchPostingList(field, pl.metadata());
             }
         }
-
-        return new SegmentGatherResult(context, scoringItems);
+        return items;
     }
 
     @Override
     TopDocs scorePartition(List<ScoringItem> items, IVFCollectorManager knnCollectorManager) throws IOException {
         IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(0f, numCands, k, knnCollectorManager.longAccumulator);
-        // Use the first item's leaf context to create the collector (context is needed but scoring is global)
         LeafReaderContext firstCtx = items.get(0).leafCtx();
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, firstCtx);
         if (knnCollector == null) {
@@ -245,7 +244,7 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         }
         strategy.setCollector(knnCollector);
 
-        // Lazily create PostingVisitors per segment (each needs its own IndexInput clone)
+        // Per-segment PostingVisitors (each thread needs its own cloned IndexInputs)
         Map<LeafReaderContext, IVFVectorsReader.PostingVisitor> visitors = new HashMap<>();
 
         for (ScoringItem item : items) {
@@ -256,7 +255,14 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
                     throw new RuntimeException(e);
                 }
             });
-            visitor.setAcceptDocs(new IVFVectorsReader.SortedDocIdsBits(item.matchedDocIds(), item.matchCount()));
+
+            // Set per-PL filter: null means no filter (score all), otherwise SortedDocIdsBits
+            if (item.matchedDocIds() != null) {
+                visitor.setAcceptDocs(new IVFVectorsReader.SortedDocIdsBits(item.matchedDocIds(), item.numDocs()));
+            } else {
+                visitor.setAcceptDocs(null); // no filter — score all docs in this PL
+            }
+
             visitor.resetPostingsScorer(item.metadata());
             visitor.visit(knnCollector);
             if (knnCollector.getSearchStrategy() != null) {
@@ -264,40 +270,47 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
             }
         }
 
+        // Globalize doc IDs and dedup
         TopDocs topDocs = knnCollector.topDocs();
-        // Convert segment-local doc IDs to global doc IDs and dedup
-        IntHashSet dedup = new IntHashSet(topDocs.scoreDocs.length * 4 / 3);
-        int deduplicateCount = 0;
+        // Since a partition may span multiple segments, we need per-doc segment lookup.
+        // Build a segment boundary map for efficient lookup.
         for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
-            // Determine which leaf this doc came from based on the ScoringItems
-            // Since we process items in order and each has a leafCtx, we need to adjust doc IDs
-            // The doc IDs in the collector are segment-local, so we must add docBase
-        }
-        // For simplicity, do dedup per-leaf by adjusting in a post-processing pass
-        for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
+            // The collector stores segment-local doc IDs. We need to find which segment
+            // each doc came from. Since items are ordered by segment (partitioning preserves
+            // locality), and docIds within a segment are unique ranges, use the leaf's docBase.
+            // For partitions spanning multiple segments, find the right leaf.
             scoreDoc.doc += findDocBase(scoreDoc.doc, items);
         }
-        // Dedup
-        dedup.clear();
-        deduplicateCount = 0;
+        return deduplicateTopDocs(topDocs);
+    }
+
+    private static int findDocBase(int localDocId, List<ScoringItem> items) {
+        // Partitions preserve segment locality, so most items share the same leafCtx.
+        // For multi-segment partitions, find the segment whose maxDoc range contains localDocId.
+        LeafReaderContext lastCtx = null;
+        for (ScoringItem item : items) {
+            LeafReaderContext ctx = item.leafCtx();
+            if (ctx != lastCtx) {
+                if (localDocId < ctx.reader().maxDoc()) {
+                    return ctx.docBase;
+                }
+                lastCtx = ctx;
+            }
+        }
+        // Fallback: use the last segment seen
+        return items.get(items.size() - 1).leafCtx().docBase;
+    }
+
+    private static TopDocs deduplicateTopDocs(TopDocs topDocs) {
+        IntHashSet dedup = new IntHashSet(topDocs.scoreDocs.length * 4 / 3);
+        int count = 0;
         ScoreDoc[] dedupDocs = new ScoreDoc[topDocs.scoreDocs.length];
         for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
             if (dedup.add(scoreDoc.doc)) {
-                dedupDocs[deduplicateCount++] = scoreDoc;
+                dedupDocs[count++] = scoreDoc;
             }
         }
-        return new TopDocs(topDocs.totalHits, Arrays.copyOf(dedupDocs, deduplicateCount));
-    }
-
-    /**
-     * Finds the docBase for a segment-local doc ID by checking which ScoringItem's segment it belongs to.
-     * Since items in a partition may span multiple segments, we need to track this.
-     */
-    private static int findDocBase(int docId, List<ScoringItem> items) {
-        // All items in a partition should have the same leafCtx due to segment-locality preserving partitioning.
-        // But if they span segments, we need a proper mapping. For now, use the first item's docBase.
-        // TODO: This needs proper handling when items span multiple segments
-        return items.get(0).leafCtx().docBase;
+        return new TopDocs(topDocs.totalHits, Arrays.copyOf(dedupDocs, count));
     }
 
     private IVFVectorsReader.PostingVisitor createScoringVisitor(LeafReaderContext ctx) throws IOException {
@@ -314,7 +327,7 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
             query,
             null, // acceptDocs set per-PL via setAcceptDocs()
             ivfReader.getCentroidSlice(field),
-            null // no ESAcceptDocs needed for Phase 2 scoring
+            null  // no ESAcceptDocs needed for Phase 2
         );
     }
 
