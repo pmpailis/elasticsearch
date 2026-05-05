@@ -84,6 +84,7 @@ import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.support.CoreValuesSourceType;
 import org.elasticsearch.search.lookup.Source;
+import org.elasticsearch.search.vectors.CachingEnableFilterQuery;
 import org.elasticsearch.search.vectors.DenseVectorQuery;
 import org.elasticsearch.search.vectors.DiversifyingChildrenIVFKnnFloatVectorQuery;
 import org.elasticsearch.search.vectors.DiversifyingParentBlockQuery;
@@ -93,6 +94,7 @@ import org.elasticsearch.search.vectors.ESKnnByteVectorQuery;
 import org.elasticsearch.search.vectors.ESKnnFloatVectorQuery;
 import org.elasticsearch.search.vectors.IVFKnnFloatVectorQuery;
 import org.elasticsearch.search.vectors.PostFilterKnnQuery;
+import org.elasticsearch.search.vectors.PostFilterableKnnQuery;
 import org.elasticsearch.search.vectors.RescoreKnnVectorQuery;
 import org.elasticsearch.search.vectors.VectorData;
 import org.elasticsearch.search.vectors.VectorSimilarityQuery;
@@ -3027,7 +3029,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
             Float similarityThreshold,
             BitSetProducer parentFilter,
             FilterHeuristic heuristic,
-            boolean hnswEarlyTermination
+            boolean hnswEarlyTermination,
+            float postFilterSelectivityThreshold,
+            boolean hasIndexSort
         ) {
             if (indexType.hasVectors() == false) {
                 throw new IllegalArgumentException(
@@ -3049,7 +3053,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     similarityThreshold,
                     parentFilter,
                     knnSearchStrategy,
-                    hnswEarlyTermination
+                    hnswEarlyTermination,
+                    postFilterSelectivityThreshold,
+                    hasIndexSort
                 );
                 case FLOAT, BFLOAT16 -> createKnnFloatQuery(
                     resolvedQueryVector.asFloatVector(),
@@ -3061,7 +3067,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     similarityThreshold,
                     parentFilter,
                     knnSearchStrategy,
-                    hnswEarlyTermination
+                    hnswEarlyTermination,
+                    postFilterSelectivityThreshold,
+                    hasIndexSort
                 );
                 case BIT -> createKnnBitQuery(
                     resolvedQueryVector.asByteVector(),
@@ -3071,7 +3079,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     similarityThreshold,
                     parentFilter,
                     knnSearchStrategy,
-                    hnswEarlyTermination
+                    hnswEarlyTermination,
+                    postFilterSelectivityThreshold,
+                    hasIndexSort
                 );
             };
         }
@@ -3099,9 +3109,18 @@ public class DenseVectorFieldMapper extends FieldMapper {
             Float similarityThreshold,
             BitSetProducer parentFilter,
             KnnSearchStrategy searchStrategy,
-            boolean hnswEarlyTermination
+            boolean hnswEarlyTermination,
+            float postFilterSelectivityThreshold,
+            boolean hasIndexSort
         ) {
             element.checkDimensions(dims, queryVector.length);
+            // Force the filter to be cacheable because it will be eagerly transformed into a bitset.
+            // Simple filters (e.g., term queries) are normally considered too cheap to cache by the
+            // default strategy, but once materialized as a bitset on every execution they become
+            // significantly more expensive, making caching essential.
+            // Pre-filter consumers eagerly materialize the filter into a bitset; PostFilterKnnQuery
+            // gets the raw filter to avoid an unnecessary cache build.
+            Query cachedFilter = filter == null ? null : new CachingEnableFilterQuery(filter);
             Query knnQuery;
             if (indexOptions != null && indexOptions.isFlat()) {
                 var exactKnnQuery = parentFilter != null
@@ -3117,14 +3136,17 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     ? new ESDiversifyingChildrenByteKnnVectorQuery(
                         name(),
                         queryVector,
-                        filter,
+                        cachedFilter,
                         k,
                         numCands,
                         parentFilter,
                         searchStrategy,
                         hnswEarlyTermination
                     )
-                    : new ESKnnByteVectorQuery(name(), queryVector, k, numCands, filter, searchStrategy, hnswEarlyTermination);
+                    : new ESKnnByteVectorQuery(name(), queryVector, k, numCands, cachedFilter, searchStrategy, hnswEarlyTermination);
+            }
+            if (filter != null && hasIndexSort == false && knnQuery instanceof PostFilterableKnnQuery pfknnQuery) {
+                knnQuery = new PostFilterKnnQuery(pfknnQuery, filter, k, name(), parentFilter, postFilterSelectivityThreshold);
             }
             if (similarityThreshold != null) {
                 knnQuery = new VectorSimilarityQuery(
@@ -3144,7 +3166,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
             Float similarityThreshold,
             BitSetProducer parentFilter,
             KnnSearchStrategy searchStrategy,
-            boolean hnswEarlyTermination
+            boolean hnswEarlyTermination,
+            float postFilterSelectivityThreshold,
+            boolean hasIndexSort
         ) {
             element.checkDimensions(dims, queryVector.length);
 
@@ -3152,6 +3176,13 @@ public class DenseVectorFieldMapper extends FieldMapper {
                 float squaredMagnitude = ESVectorUtil.dotProduct(queryVector, queryVector);
                 element.checkVectorMagnitude(similarity, ByteElement.errorElementsAppender(queryVector), squaredMagnitude);
             }
+            // Force the filter to be cacheable because it will be eagerly transformed into a bitset.
+            // Simple filters (e.g., term queries) are normally considered too cheap to cache by the
+            // default strategy, but once materialized as a bitset on every execution they become
+            // significantly more expensive, making caching essential.
+            // Pre-filter consumers eagerly materialize the filter into a bitset; PostFilterKnnQuery
+            // gets the raw filter to avoid an unnecessary cache build.
+            Query cachedFilter = filter == null ? null : new CachingEnableFilterQuery(filter);
             Query knnQuery;
             if (indexOptions != null && indexOptions.isFlat()) {
                 var exactKnnQuery = parentFilter != null
@@ -3167,14 +3198,17 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     ? new ESDiversifyingChildrenByteKnnVectorQuery(
                         name(),
                         queryVector,
-                        filter,
+                        cachedFilter,
                         k,
                         numCands,
                         parentFilter,
                         searchStrategy,
                         hnswEarlyTermination
                     )
-                    : new ESKnnByteVectorQuery(name(), queryVector, k, numCands, filter, searchStrategy, hnswEarlyTermination);
+                    : new ESKnnByteVectorQuery(name(), queryVector, k, numCands, cachedFilter, searchStrategy, hnswEarlyTermination);
+            }
+            if (filter != null && hasIndexSort == false && knnQuery instanceof PostFilterableKnnQuery pfknnQuery) {
+                knnQuery = new PostFilterKnnQuery(pfknnQuery, filter, k, name(), parentFilter, postFilterSelectivityThreshold);
             }
             if (similarityThreshold != null) {
                 knnQuery = new VectorSimilarityQuery(
@@ -3196,7 +3230,9 @@ public class DenseVectorFieldMapper extends FieldMapper {
             Float similarityThreshold,
             BitSetProducer parentFilter,
             KnnSearchStrategy knnSearchStrategy,
-            boolean hnswEarlyTermination
+            boolean hnswEarlyTermination,
+            float postFilterSelectivityThreshold,
+            boolean hasIndexSort
         ) {
             element.checkDimensions(dims, queryVector.length);
             element.checkVectorBounds(queryVector);
@@ -3227,6 +3263,15 @@ public class DenseVectorFieldMapper extends FieldMapper {
                 adjustedK = Math.min((int) Math.ceil(k * oversample), OVERSAMPLE_LIMIT);
                 numCands = Math.max(adjustedK, numCands);
             }
+            // Force the filter to be cacheable because it will be eagerly transformed into a bitset.
+            // Simple filters (e.g., term queries) are normally considered too cheap to cache by the
+            // default strategy, but once materialized as a bitset on every execution they become
+            // significantly more expensive, making caching essential.
+            // Pre-filter consumers (HNSW graph traversal, IVF posting-list iteration) eagerly materialize
+            // the filter into a bitset, so we force the cache wrapper. PostFilterKnnQuery (below) only
+            // evaluates the filter against a small candidate set per query and gets the raw filter so
+            // we don't pay an unnecessary cache build.
+            Query cachedFilter = filter == null ? null : new CachingEnableFilterQuery(filter);
             Query knnQuery;
             if (indexOptions != null && indexOptions.isFlat()) {
                 var exactKnnQuery = parentFilter != null
@@ -3265,13 +3310,25 @@ public class DenseVectorFieldMapper extends FieldMapper {
                     ? new ESDiversifyingChildrenFloatKnnVectorQuery(
                         name(),
                         queryVector,
-                        filter,
+                        cachedFilter,
                         adjustedK,
                         numCands,
                         parentFilter,
-                        knnSearchStrategy
+                        knnSearchStrategy,
+                        hnswEarlyTermination
                     )
-                    : new ESKnnFloatVectorQuery(name(), queryVector, adjustedK, numCands, filter, knnSearchStrategy, hnswEarlyTermination);
+                    : new ESKnnFloatVectorQuery(
+                        name(),
+                        queryVector,
+                        adjustedK,
+                        numCands,
+                        cachedFilter,
+                        knnSearchStrategy,
+                        hnswEarlyTermination
+                    );
+            }
+            if (filter != null && hasIndexSort == false && knnQuery instanceof PostFilterableKnnQuery pfknnQuery) {
+                knnQuery = new PostFilterKnnQuery(pfknnQuery, filter, adjustedK, name(), parentFilter, postFilterSelectivityThreshold);
             }
             if (rescore) {
                 knnQuery = RescoreKnnVectorQuery.fromInnerQuery(name(), queryVector, k, adjustedK, knnQuery);

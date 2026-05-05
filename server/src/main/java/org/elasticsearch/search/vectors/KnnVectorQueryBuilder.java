@@ -564,15 +564,18 @@ public class KnnVectorQueryBuilder extends LeafQueryBuilder<KnnVectorQueryBuilde
 
         DenseVectorFieldMapper.FilterHeuristic heuristic = context.getIndexSettings().getHnswFilterHeuristic();
         boolean hnswEarlyTermination = context.getIndexSettings().getHnswEarlyTermination();
+        float postFilterSelectivityThreshold = context.getIndexSettings().getPostFilterSelectivityThreshold();
         Float oversample = rescoreVectorBuilder() == null ? null : rescoreVectorBuilder.oversample();
-        if (filterQuery != null && (vectorFieldType.getIndexOptions() == null || vectorFieldType.getIndexOptions().isFlat() == false)) {
-            // Force the filter to be cacheable because it will be eagerly transformed into a bitset.
-            // Simple filters (e.g., term queries) are normally considered too cheap to cache by the
-            // default strategy, but once materialized as a bitset on every execution they become
-            // significantly more expensive, making caching essential.
-            filterQuery = new CachingEnableFilterQuery(filterQuery);
-        }
-
+        // The decision to wrap the filter with CachingEnableFilterQuery is made downstream in
+        // DenseVectorFieldType#createKnnQuery: HNSW/IVF KnnQueries (both the pre-filter consumer
+        // and the post-filter pipeline) share the same cached wrapper so the bitset materialized
+        // during selectivity computation is reused on the fallback path and across repeated
+        // queries. Only the flat (exact-KNN) branch keeps the raw filter — flat doesn't benefit
+        // from bitset caching.
+        // Index-sorted segments don't compose with the HNSW retry path (seedDocs / ExcludeDocsQuery
+        // operate on a sort-shuffled doc-id space) so disable the post-filter wrap entirely when the
+        // index has a sort — the inner pre-filter knn query is used as-is.
+        boolean hasIndexSort = context.getIndexSettings().getIndexSortConfig().hasIndexSort();
         return vectorFieldType.createKnnQuery(
             queryVector,
             k,
@@ -583,7 +586,9 @@ public class KnnVectorQueryBuilder extends LeafQueryBuilder<KnnVectorQueryBuilde
             vectorSimilarity,
             parentBitSet,
             heuristic,
-            hnswEarlyTermination
+            hnswEarlyTermination,
+            postFilterSelectivityThreshold,
+            hasIndexSort
         );
     }
 

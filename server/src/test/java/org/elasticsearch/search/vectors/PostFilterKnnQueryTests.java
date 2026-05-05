@@ -11,6 +11,7 @@ package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
@@ -18,15 +19,19 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
+import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.test.ESTestCase;
@@ -70,6 +75,10 @@ public class PostFilterKnnQueryTests extends ESTestCase {
             assertEquals(3, result.length);
             assertEquals(1, result[0].doc);
             assertEquals(0.9f, result[0].score, 0.001f);
+            assertEquals(2, result[1].doc);
+            assertEquals(0.8f, result[1].score, 0.001f);
+            assertEquals(3, result[2].doc);
+            assertEquals(0.6f, result[2].score, 0.001f);
         }
     }
 
@@ -259,6 +268,231 @@ public class PostFilterKnnQueryTests extends ESTestCase {
                 assertEquals(q1, q2);
                 assertEquals(q1.hashCode(), q2.hashCode());
                 assertNotEquals(q1, q3);
+            }
+        }
+    }
+
+    public void testHNSWPostFilterRetryFindsEnoughResults() throws IOException {
+        // Set up a scenario where most of the nearest neighbors don't match the filter,
+        // so the wrapper needs to retry with broader search to fill k results.
+        // 30 docs total, only 5 match filter (selectivity = 5/30 ≈ 0.83 with FieldExistsQuery counting all 30).
+        // The matching docs are spread across the vector space, so the first round
+        // may not find enough matching results. The wrapper's retry loop should eventually fill k.
+        try (Directory dir = newDirectory()) {
+            IndexWriterConfig iwc = new IndexWriterConfig();
+            try (IndexWriter writer = new IndexWriter(dir, iwc)) {
+                for (int i = 0; i < 30; i++) {
+                    Document doc = new Document();
+                    float[] vector = new float[] { (float) i, (float) (30 - i) };
+                    doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
+                    // 25 docs match → selectivity = 25/30 ≈ 0.83 > 0.7 → post-filter
+                    // but the matching docs nearest to the query [30,0] are at i=25..29 (only 5 of 25 match)
+                    doc.add(new StringField("tag", i < 25 ? "match" : "nomatch", Field.Store.YES));
+                    writer.addDocument(doc);
+                }
+                writer.forceMerge(1);
+                writer.commit();
+            }
+
+            try (IndexReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = newSearcher(reader);
+                Query filter = new TermQuery(new Term("tag", "match"));
+                int k = 5;
+                // Query vector [30,0] is nearest to docs 25-29 (all "nomatch"),
+                // so the wrapper must retry to find 5 "match" docs from farther away
+                ESKnnFloatVectorQuery innerQuery = new ESKnnFloatVectorQuery(
+                    "vec",
+                    new float[] { 30f, 0f },
+                    k,
+                    8,
+                    filter,
+                    new KnnSearchStrategy.Hnsw(10)
+                );
+                PostFilterKnnQuery query = new PostFilterKnnQuery(
+                    innerQuery,
+                    filter,
+                    k,
+                    "vec",
+                    null,
+                    PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                );
+                TopDocs topDocs = searcher.search(query, k);
+                assertTrue("Expected results from retry rounds", topDocs.scoreDocs.length > 0);
+                for (ScoreDoc sd : topDocs.scoreDocs) {
+                    String tag = reader.storedFields().document(sd.doc).get("tag");
+                    assertEquals("All results should match filter", "match", tag);
+                }
+            }
+        }
+    }
+
+    public void testHNSWPostFilterTruncatesToK() throws IOException {
+        // When post-filtering passes more results than k, verify only top-k are returned
+        try (Directory dir = newDirectory()) {
+            IndexWriterConfig iwc = new IndexWriterConfig();
+            try (IndexWriter writer = new IndexWriter(dir, iwc)) {
+                for (int i = 0; i < 20; i++) {
+                    Document doc = new Document();
+                    float[] vector = new float[] { (float) i, (float) (20 - i) };
+                    doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
+                    // All docs match filter → all pass post-filter, but only k returned
+                    doc.add(new StringField("tag", "match", Field.Store.NO));
+                    writer.addDocument(doc);
+                }
+                writer.forceMerge(1);
+                writer.commit();
+            }
+
+            try (IndexReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = newSearcher(reader);
+                Query filter = new TermQuery(new Term("tag", "match"));
+                int k = 3;
+                ESKnnFloatVectorQuery innerQuery = new ESKnnFloatVectorQuery(
+                    "vec",
+                    new float[] { 0f, 20f },
+                    k,
+                    20,
+                    filter,
+                    new KnnSearchStrategy.Hnsw(10)
+                );
+                // selectivity = 1.0 > 0.7 → post-filter path, but only k results returned
+                PostFilterKnnQuery query = new PostFilterKnnQuery(
+                    innerQuery,
+                    filter,
+                    k,
+                    "vec",
+                    null,
+                    PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                );
+                TopDocs topDocs = searcher.search(query, k);
+                assertEquals(k, topDocs.scoreDocs.length);
+            }
+        }
+    }
+
+    public void testHNSWNestedPostFilter() throws IOException {
+        // Test post-filtering with nested (parent/child) document structure via PostFilterKnnQuery wrapper.
+        // Doc layout: [child, child, PARENT, child, child, PARENT, ...]
+        try (Directory dir = newDirectory()) {
+            IndexWriterConfig iwc = new IndexWriterConfig();
+            try (IndexWriter writer = new IndexWriter(dir, iwc)) {
+                // Parent 0: children at 0,1 → parent at 2
+                addChildDoc(writer, new float[] { 1, 0 }, "common");
+                addChildDoc(writer, new float[] { 2, 0 }, "common");
+                writer.addDocument(new Document()); // parent doc 2
+
+                // Parent 1: children at 3,4 → parent at 5
+                addChildDoc(writer, new float[] { 3, 0 }, "common");
+                addChildDoc(writer, new float[] { 4, 0 }, "common");
+                writer.addDocument(new Document()); // parent doc 5
+
+                // Parent 2: children at 6,7 → parent at 8
+                addChildDoc(writer, new float[] { 5, 0 }, "common");
+                addChildDoc(writer, new float[] { 6, 0 }, "common");
+                writer.addDocument(new Document()); // parent doc 8
+
+                // Parent 3: children at 9,10 → parent at 11 (rare, nearest to query)
+                addChildDoc(writer, new float[] { 10, 0 }, "rare");
+                addChildDoc(writer, new float[] { 11, 0 }, "rare");
+                writer.addDocument(new Document()); // parent doc 11
+
+                writer.forceMerge(1);
+                writer.commit();
+            }
+
+            try (IndexReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = newSearcher(reader);
+                // 8 children total: 6 "common" + 2 "rare" → selectivity = 0.75 > 0.7
+                Query filter = new TermQuery(new Term("tag", "common"));
+                BitSetProducer parentsFilter = context -> {
+                    FixedBitSet bits = new FixedBitSet(context.reader().maxDoc());
+                    bits.set(2);
+                    bits.set(5);
+                    bits.set(8);
+                    bits.set(11);
+                    return bits;
+                };
+                int k = 2;
+                // Query nearest to rare docs — inner query has the filter for pre-filter fallback
+                ESDiversifyingChildrenFloatKnnVectorQuery innerQuery = new ESDiversifyingChildrenFloatKnnVectorQuery(
+                    "vec",
+                    new float[] { 11f, 0f },
+                    filter,
+                    k,
+                    10,
+                    parentsFilter,
+                    new KnnSearchStrategy.Hnsw(10)
+                );
+                // Wrapper handles post-filter with parent deduplication
+                PostFilterKnnQuery query = new PostFilterKnnQuery(
+                    innerQuery,
+                    filter,
+                    k,
+                    "vec",
+                    parentsFilter,
+                    PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                );
+                TopDocs topDocs = searcher.search(query, k);
+                assertTrue("Expected at least 1 result", topDocs.scoreDocs.length > 0);
+                for (ScoreDoc sd : topDocs.scoreDocs) {
+                    String tag = reader.storedFields().document(sd.doc).get("tag");
+                    assertEquals("Nested post-filter must only return matching children", "common", tag);
+                }
+            }
+        }
+    }
+
+    private static void addChildDoc(IndexWriter writer, float[] vector, String tag) throws IOException {
+        Document doc = new Document();
+        doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
+        doc.add(new StringField("tag", tag, Field.Store.YES));
+        writer.addDocument(doc);
+    }
+
+    public void testHNSWPostFilterSearch() throws IOException {
+        // Create an HNSW index with 20 vectors: 16 tagged "common", 4 tagged "rare"
+        // selectivity = 16/20 = 0.8 > 0.7 threshold → post-filtering activated via wrapper
+        try (Directory dir = newDirectory()) {
+            IndexWriterConfig iwc = new IndexWriterConfig();
+            try (IndexWriter writer = new IndexWriter(dir, iwc)) {
+                for (int i = 0; i < 20; i++) {
+                    Document doc = new Document();
+                    float[] vector = new float[] { (float) i, (float) (20 - i) };
+                    doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
+                    doc.add(new StringField("tag", i < 16 ? "common" : "rare", Field.Store.YES));
+                    writer.addDocument(doc);
+                }
+                writer.forceMerge(1);
+                writer.commit();
+            }
+
+            try (IndexReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = newSearcher(reader);
+                Query filter = new TermQuery(new Term("tag", "common"));
+                int k = 20;
+                int numCands = 30;
+                ESKnnFloatVectorQuery innerQuery = new ESKnnFloatVectorQuery(
+                    "vec",
+                    new float[] { 0f, 20f },
+                    k,
+                    numCands,
+                    filter,
+                    new KnnSearchStrategy.Hnsw(10)
+                );
+                PostFilterKnnQuery query = new PostFilterKnnQuery(
+                    innerQuery,
+                    filter,
+                    k,
+                    "vec",
+                    null,
+                    PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                );
+                TopDocs topDocs = searcher.search(query, k);
+                assertEquals("expected 16 matching results", 16, topDocs.scoreDocs.length);
+                for (ScoreDoc sd : topDocs.scoreDocs) {
+                    String tag = reader.storedFields().document(sd.doc).get("tag");
+                    assertEquals("All results should match filter", "common", tag);
+                }
             }
         }
     }
