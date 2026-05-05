@@ -3291,7 +3291,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
                         queryVector,
                         adjustedK,
                         numCands,
-                        filter,
+                        cachedFilter,
                         parentFilter,
                         visitRatio,
                         bbqIndexOptions.doPrecondition()
@@ -3301,7 +3301,7 @@ public class DenseVectorFieldMapper extends FieldMapper {
                         queryVector,
                         adjustedK,
                         numCands,
-                        filter,
+                        cachedFilter,
                         visitRatio,
                         bbqIndexOptions.doPrecondition()
                     );

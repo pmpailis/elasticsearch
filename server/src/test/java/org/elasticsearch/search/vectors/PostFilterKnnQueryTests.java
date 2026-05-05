@@ -9,6 +9,7 @@
 
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnFloatVectorField;
@@ -33,7 +34,9 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.tests.util.TestUtil;
 import org.apache.lucene.util.FixedBitSet;
+import org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
@@ -447,6 +450,49 @@ public class PostFilterKnnQueryTests extends ESTestCase {
         doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
         doc.add(new StringField("tag", tag, Field.Store.YES));
         writer.addDocument(doc);
+    }
+
+    public void testIVFPostFilterSearch() throws IOException {
+        // Create an IVF index with 200 vectors: 160 tagged "common", 40 tagged "rare"
+        // selectivity = 160/200 = 0.8 > 0.7 threshold → post-filtering should activate via wrapper
+        // vectorsPerCluster minimum is 64, so we need enough docs
+        KnnVectorsFormat format = new ES920DiskBBQVectorsFormat(128, 4);
+        try (Directory dir = newDirectory()) {
+            IndexWriterConfig iwc = new IndexWriterConfig();
+            iwc.setCodec(TestUtil.alwaysKnnVectorsFormat(format));
+            try (IndexWriter writer = new IndexWriter(dir, iwc)) {
+                for (int i = 0; i < 200; i++) {
+                    Document doc = new Document();
+                    float[] vector = new float[] { (float) i, (float) (200 - i) };
+                    doc.add(new KnnFloatVectorField("vec", vector, VectorSimilarityFunction.EUCLIDEAN));
+                    doc.add(new StringField("tag", i < 160 ? "common" : "rare", Field.Store.YES));
+                    writer.addDocument(doc);
+                }
+                writer.forceMerge(1);
+                writer.commit();
+            }
+
+            try (IndexReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = newSearcher(reader);
+                Query filter = new TermQuery(new Term("tag", "common"));
+                int k = 5;
+                IVFKnnFloatVectorQuery innerQuery = new IVFKnnFloatVectorQuery("vec", new float[] { 0f, 200f }, k, 10, filter, 0.5f, false);
+                PostFilterKnnQuery query = new PostFilterKnnQuery(
+                    innerQuery,
+                    filter,
+                    k,
+                    "vec",
+                    null,
+                    PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                );
+                TopDocs topDocs = searcher.search(query, k);
+                assertEquals("expected 5 results", 5, topDocs.scoreDocs.length);
+                for (ScoreDoc sd : topDocs.scoreDocs) {
+                    String tag = reader.storedFields().document(sd.doc).get("tag");
+                    assertEquals("All results should match filter", "common", tag);
+                }
+            }
+        }
     }
 
     public void testHNSWPostFilterSearch() throws IOException {
