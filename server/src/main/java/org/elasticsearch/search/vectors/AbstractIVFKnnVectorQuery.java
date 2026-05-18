@@ -34,12 +34,14 @@ import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
+import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.LongAccumulator;
 
@@ -130,16 +132,42 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         // per-segment using the Two-Signal model with segment-size awareness.
         final float visitRatio = providedVisitRatio;
 
-        List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
+        List<Callable<BatchedPostingVisitor>> tasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
             if (doPrecondition) {
                 preconditionQuery(context);
             }
-            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
+            tasks.add(() -> fetchCentroidIterators(context, filterWeight, knnCollectorManager, visitRatio));
         }
-        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
+        // phase 1; init centroids iterators per leaf and prepare eval tasks
+        BatchedPostingVisitor[] perLeafCentroidIterators = taskExecutor.invokeAll(tasks).toArray(BatchedPostingVisitor[]::new);
 
-        TopDocs topK = mergeLeafResults(k, perLeafResults);
+        // create a queue (update the data structure as needed) to generate tasks per batched visitor
+        // each centroid iterator should contribute up to INITIAL_TASKS tasks.
+        // a PostingSearchTask contains all info that is needed in order to evaluate, filter, and collect results from
+        // exactly 1 posting list.
+        // each BatchedPostingVisitor should have a yield like method that would return a new PostingSearchTask in a ring-buffer like manner.
+        // every time we grab a new postingsearch task from a postingvisitor we ask to prefetch the next one.
+        // so we'll always have num_leaves * INITIAL_TASKS prefetched
+        // queue here is a max-heap that would make sure that we always score the nearest centroid first
+        Queue<PostingSearchTask> postingSearchTaskQueue = initQueueFromLeafCentroidIterator();
+
+        // init a posting scorer per leaf (that way we can keep track of topdocs/collectors/filter bitset etc)
+        LeafPostingsScorer[] postingsScorers = new LeafPostingsScorer[leafReaderContexts.size()];
+
+        // now that we have our postingsearchtask queue, our posting visitors and scorers (maybe we could combine their functionality)
+        // let's gather all results async in the gatherPerLeafResults method using the same indexSearcher.getTaskExecutor()
+        // the idea is to have a global "overwatch" (that could be the collector) to keep
+        // track of whether we have enough results or not
+        // once we have collected enough (on a global-level) we exit
+        // otherwise we keep submitting new tasks to be executed.
+        // the results are stored in the collector, so once we exit, we ask the collectors to return
+        // their topdocs
+        TopDocs[] perLeafResults = gatherPerLeafResults();
+
+        //things to discuss as a follow-up: could we avoid materiazing the full bitset for the filter?
+
+        TopDocs topK = mergeLeafResults(k, perLeafResults );
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -182,6 +210,13 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         );
         return new TopDocs(new TotalHits(totalHitsValue, relation), mergedScoreDocs);
     }
+
+    abstract BatchedPostingVisitor fetchCentroidIterators(
+        LeafReaderContext context,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float visitRatio
+    ) throws IOException;
 
     private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
         throws IOException {

@@ -16,9 +16,14 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.Weight;
+import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.Lucene;
+import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
+import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 
 import java.io.IOException;
@@ -87,6 +92,48 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         int result = super.hashCode();
         result = 31 * result + Arrays.hashCode(query);
         return result;
+    }
+
+    private IVFVectorsReader<?> getIVFVectorsReader(LeafReader reader) {
+        SegmentReader segmentReader = Lucene.tryUnwrapSegmentReader(reader);
+        if (segmentReader == null) {
+            return null;
+        }
+        KnnVectorsReader fieldsReader = segmentReader.getVectorReader();
+        if (fieldsReader instanceof PerFieldKnnVectorsFormat.FieldsReader perField) {
+            KnnVectorsReader fieldReader = perField.getFieldReader(field);
+            if (fieldReader instanceof IVFVectorsReader<?> ivf) {
+                return ivf;
+            }
+        }
+        if (fieldsReader instanceof IVFVectorsReader<?> ivf) {
+            return ivf;
+        }
+        return null;
+    }
+
+    @Override
+    BatchedPostingVisitor fetchCentroidIterators(LeafReaderContext context, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
+            LeafReader reader = context.reader();
+            Bits liveDocs = reader.getLiveDocs();
+            int maxDoc = reader.maxDoc();
+
+            final AcceptDocs acceptDocs;
+            if (filterWeight != null) {
+                ScorerSupplier supplier = filterWeight.scorerSupplier(context);
+                if (supplier == null) {
+                    return null;
+                }
+                acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
+            } else {
+                acceptDocs = liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
+            }
+
+            IVFVectorsReader<?> ivfReader = getIVFVectorsReader(reader);
+            if (ivfReader == null) {
+                return null;
+            }
+            return ivfReader.getBatchedPostingVisitor();
     }
 
     @Override

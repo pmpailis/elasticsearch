@@ -480,6 +480,16 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         IOUtils.close(closeables);
     }
 
+    public void getBatchedPostingVisitor() {
+        //      honor all existing functionality including centroid filtering etc
+        var centroidIterator = getCentroidIterator();
+        // BatchedPostingVisitor ->
+        //      the idea here is that it should prefetch expected visited ration / avg cluster size / num_segments
+        //      and then have an in-place way to load and prefetch the next batch, every time the batch we prefetch will be lower by half
+        //      until we reach a lower limit of 1 (obvs)
+        return new BatchedPostingVisitor();
+    }
+
     protected static class FieldEntry implements GenericFlatVectorReaders.Field {
         protected final String rawVectorFormatName;
         protected final boolean useDirectIOReads;
