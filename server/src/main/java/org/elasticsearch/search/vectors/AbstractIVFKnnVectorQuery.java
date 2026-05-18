@@ -53,6 +53,22 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
 
+    // Poison-pill task used to wake worker threads blocked on the global queue when all work is
+    // done. Sentinel has Float.NEGATIVE_INFINITY priority so it sorts to the bottom of the heap
+    // and never overtakes real work.
+    private static final PostingSearchTask POISON_PILL = new PostingSearchTask(
+        null,
+        null,
+        new PostingMetadata[0],
+        Float.NEGATIVE_INFINITY
+    );
+
+    // Postings bundled into a single PostingSearchTask. An "envelope" pins a small group of
+    // consecutive postings from the same leaf to one worker, so the leaf's lock and the global
+    // queue are touched once per N postings instead of once per posting — and the OS-level
+    // prefetch hints fire in a tight burst for nearby file regions.
+    private static final int ENVELOPE_SIZE = 4;
+
     protected final String field;
     protected final float providedVisitRatio;
     protected final int k;
@@ -194,44 +210,59 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             seedBatch(taskQueue, outstanding, scorer);
         }
 
-        // Phase 3: drain the queue with worker callables. Each worker pulls the highest-scoring
-        // centroid available across all leaves, executes it under its leaf's lock, and either
-        // refills 1-ahead from the same leaf or — when that leaf has fully drained the previous
-        // batch — kicks off the next (halved) batch. Workers exit once the queue is empty and
-        // nothing else is in flight.
+        // Phase 3: drain the queue with worker callables. Each worker blocks on the queue via
+        // `take()` (cheap park/unpark under PriorityBlockingQueue's internal condition) until a
+        // task is available. When the last in-flight task completes and `outstanding` hits 0,
+        // that worker pushes one POISON_PILL per worker so every blocked thread wakes up cleanly
+        // and exits — no busy-spinning, no timeout polling.
         // TODO: avoid materializing the full filter bitset in ESAcceptDocs.ScorerSupplierAcceptDocs
         // when only used via AcceptDocs.bits() in the parallel path.
         int numWorkers = Math.max(1, leafReaderContexts.size());
-        List<Callable<Void>> workers = new ArrayList<>(numWorkers);
-        for (int w = 0; w < numWorkers; w++) {
+        if (outstanding.get() == 0) {
+            // No real work was seeded (all leaves were null or returned no tasks); skip the worker
+            // dispatch entirely to avoid blocking forever on take().
+            numWorkers = 0;
+        }
+        final int workerCount = numWorkers;
+        List<Callable<Void>> workers = new ArrayList<>(workerCount);
+        for (int w = 0; w < workerCount; w++) {
             workers.add(() -> {
                 while (true) {
-                    PostingSearchTask task = taskQueue.poll();
-                    if (task == null) {
-                        if (outstanding.get() == 0) {
-                            return null;
-                        }
-                        // Another worker is mid-flight and may refill the queue; brief spin until
-                        // it either finishes its refill or the global counter drops to zero.
-                        // TODO: replace the spin with a Phaser/CountDownLatch on per-leaf drain.
-                        Thread.onSpinWait();
-                        continue;
+                    PostingSearchTask task;
+                    try {
+                        task = taskQueue.take();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                    if (task == POISON_PILL) {
+                        return null;
                     }
                     try {
-                        if (task.scorer().shouldContinue()) {
-                            task.scorer().scorePosting(task.metadata());
-                        }
-                        int leafInFlight = task.producer().onTaskCompleted();
+                        // Score the envelope under a single per-leaf lock acquisition. The scorer
+                        // re-checks shouldContinue() between postings so cross-leaf early
+                        // termination still preempts mid-envelope.
+                        task.scorer().scorePostings(task.envelope());
+                        int leafInFlight = task.producer().onTaskCompleted(task.envelope().length);
                         if (leafInFlight == 0 && task.producer().hasNext() && task.scorer().shouldContinue()) {
                             seedBatch(taskQueue, outstanding, task.scorer());
                         }
                     } finally {
-                        outstanding.decrementAndGet();
+                        if (outstanding.decrementAndGet() == 0) {
+                            // Last envelope finished: wake every worker (including this one) so
+                            // they unblock from take() and exit. We emit `workerCount` poison
+                            // pills — exactly enough for each worker to receive one.
+                            for (int i = 0; i < workerCount; i++) {
+                                taskQueue.offer(POISON_PILL);
+                            }
+                        }
                     }
                 }
             });
         }
-        taskExecutor.invokeAll(workers);
+        if (workers.isEmpty() == false) {
+            taskExecutor.invokeAll(workers);
+        }
 
         // Phase 4: produce per-leaf TopDocs from each IVF scorer's collector (with dedup).
         // Fallback leaves already have their TopDocs populated from Phase 1.5.
@@ -297,21 +328,42 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     /**
      * Pulls the next batch from {@code scorer.bpv()} (size halved from the previous one, floor 1),
-     * issues prefetch for each yielded posting list, and enqueues them as {@link PostingSearchTask}
-     * instances. Each enqueued task is also counted in {@code outstanding} so workers know the
-     * total amount of in-flight work across all leaves.
+     * issues prefetch for each yielded posting list, and packs them into envelopes of up to
+     * {@link #ENVELOPE_SIZE} postings — each envelope is enqueued as a single
+     * {@link PostingSearchTask}. Bundling within a leaf preserves cross-leaf parallelism (each
+     * envelope is still a unit picked up by exactly one worker) while collapsing per-posting
+     * queue and lock overhead. Each enqueued envelope is counted once in {@code outstanding}.
      */
     private static void seedBatch(PriorityBlockingQueue<PostingSearchTask> queue, AtomicInteger outstanding, LeafPostingsScorer scorer)
         throws IOException {
         BatchedPostingVisitor bpv = scorer.bpv();
-        int batch = bpv.nextBatch();
-        for (int b = 0; b < batch; b++) {
-            PostingMetadata md = bpv.yieldNext();
-            if (md == null) {
+        int remaining = bpv.nextBatch();
+        PostingMetadata[] buffer = new PostingMetadata[ENVELOPE_SIZE];
+        while (remaining > 0) {
+            int envelopeSize = Math.min(ENVELOPE_SIZE, remaining);
+            int filled = 0;
+            float bestScore = Float.NEGATIVE_INFINITY;
+            for (int i = 0; i < envelopeSize; i++) {
+                PostingMetadata md = bpv.yieldNext();
+                if (md == null) {
+                    break;
+                }
+                buffer[filled++] = md;
+                if (md.documentCentroidScore() > bestScore) {
+                    bestScore = md.documentCentroidScore();
+                }
+            }
+            if (filled == 0) {
                 break;
             }
-            queue.offer(new PostingSearchTask(scorer, bpv, md));
+            PostingMetadata[] envelope = new PostingMetadata[filled];
+            System.arraycopy(buffer, 0, envelope, 0, filled);
+            queue.offer(new PostingSearchTask(scorer, bpv, envelope, bestScore));
             outstanding.incrementAndGet();
+            remaining -= filled;
+            if (filled < envelopeSize) {
+                break;
+            }
         }
     }
 

@@ -122,11 +122,13 @@ public final class BatchedPostingVisitor {
     }
 
     /**
-     * Decrements the in-flight counter after a task yielded by this visitor has been fully
-     * processed. Returns the remaining number of tasks yielded but not yet completed; when this
-     * reaches zero the orchestrator should kick off the next (halved) batch.
+     * Decrements the in-flight counter by {@code postings} after an envelope of posting lists
+     * yielded by this visitor has been fully processed. The count must match the number of
+     * postings drawn out of {@link #yieldNext()} for the completed envelope, so the per-leaf
+     * counter stays consistent. Returns the remaining number of postings yielded but not yet
+     * completed; when this reaches zero the orchestrator should kick off the next (halved) batch.
      */
-    public int onTaskCompleted() {
-        return inFlight.decrementAndGet();
+    public int onTaskCompleted(int postings) {
+        return inFlight.addAndGet(-postings);
     }
 }

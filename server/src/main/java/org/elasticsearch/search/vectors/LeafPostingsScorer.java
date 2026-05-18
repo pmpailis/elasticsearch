@@ -94,21 +94,45 @@ final class LeafPostingsScorer {
     }
 
     /**
-     * Executes one posting list under the leaf's lock: resets the visitor onto the given
-     * posting metadata, scores its docs into the collector, and ticks the strategy's
-     * cross-leaf {@code nextVectorsBlock} broadcast.
+     * Executes an envelope of posting lists under the leaf's lock. Acquires the lock once for
+     * the whole envelope (amortizing lock cost across multiple postings from the same leaf),
+     * re-checking {@code shouldContinue()} between postings so a cross-leaf
+     * {@link IVFKnnSearchStrategy#nextVectorsBlock} broadcast can still terminate this leaf
+     * mid-envelope. Returns the number of postings actually scored — callers use this to
+     * decrement the per-leaf in-flight counter and the global outstanding counter consistently.
      */
-    void scorePosting(PostingMetadata meta) throws IOException {
+    int scorePostings(PostingMetadata[] envelope) throws IOException {
         lock.lock();
         try {
-            expectedDocs += bpv.postingVisitor().resetPostingsScorer(meta);
-            actualDocs += bpv.postingVisitor().visit(collector);
-            if (collector.getSearchStrategy() != null) {
-                collector.getSearchStrategy().nextVectorsBlock();
+            int scored = 0;
+            for (PostingMetadata meta : envelope) {
+                if (shouldContinueUnderLock() == false) {
+                    break;
+                }
+                expectedDocs += bpv.postingVisitor().resetPostingsScorer(meta);
+                actualDocs += bpv.postingVisitor().visit(collector);
+                if (collector.getSearchStrategy() != null) {
+                    collector.getSearchStrategy().nextVectorsBlock();
+                }
+                scored++;
             }
+            return scored;
         } finally {
             lock.unlock();
         }
+    }
+
+    private boolean shouldContinueUnderLock() {
+        if (bpv.maxVectorVisited() > expectedDocs || collector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY) {
+            return true;
+        }
+        if (bpv.filtered()) {
+            float unfilteredRatioVisited = (float) expectedDocs / bpv.numVectors();
+            int filteredVectors = (int) Math.ceil(bpv.numVectors() * bpv.percentFiltered());
+            float expectedScored = Math.min(2f * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+            return actualDocs < expectedScored || actualDocs < collector.k();
+        }
+        return false;
     }
 
     /**
