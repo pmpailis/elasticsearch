@@ -34,15 +34,17 @@ import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
-import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
+import org.elasticsearch.index.codec.vectors.diskbbq.BatchedPostingVisitor;
+import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.Queue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAccumulator;
 
 import static org.elasticsearch.search.vectors.AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE;
@@ -132,42 +134,116 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         // per-segment using the Two-Signal model with segment-size awareness.
         final float visitRatio = providedVisitRatio;
 
-        List<Callable<BatchedPostingVisitor>> tasks = new ArrayList<>(leafReaderContexts.size());
+        // Phase 1: build a per-leaf BatchedPostingVisitor in parallel. Each holds the leaf's
+        // CentroidIterator + PostingVisitor + posting-list slice and drives adaptive prefetch.
+        // Leaves whose vector format is not IVF (e.g. an HNSW index queried through an IVF
+        // query — exercised by getStableIndexStore tests) come back as null and fall back to
+        // the legacy per-leaf searchLeaf path below.
+        List<Callable<BatchedPostingVisitor>> fetchTasks = new ArrayList<>(leafReaderContexts.size());
         for (LeafReaderContext context : leafReaderContexts) {
             if (doPrecondition) {
                 preconditionQuery(context);
             }
-            tasks.add(() -> fetchCentroidIterators(context, filterWeight, knnCollectorManager, visitRatio));
+            fetchTasks.add(() -> fetchCentroidIterators(context, filterWeight, knnCollectorManager, visitRatio, leafReaderContexts.size()));
         }
-        // phase 1; init centroids iterators per leaf and prepare eval tasks
-        BatchedPostingVisitor[] perLeafCentroidIterators = taskExecutor.invokeAll(tasks).toArray(BatchedPostingVisitor[]::new);
+        BatchedPostingVisitor[] perLeafCentroidIterators = taskExecutor.invokeAll(fetchTasks).toArray(BatchedPostingVisitor[]::new);
 
-        // create a queue (update the data structure as needed) to generate tasks per batched visitor
-        // each centroid iterator should contribute up to INITIAL_TASKS tasks.
-        // a PostingSearchTask contains all info that is needed in order to evaluate, filter, and collect results from
-        // exactly 1 posting list.
-        // each BatchedPostingVisitor should have a yield like method that would return a new PostingSearchTask in a ring-buffer like manner.
-        // every time we grab a new postingsearch task from a postingvisitor we ask to prefetch the next one.
-        // so we'll always have num_leaves * INITIAL_TASKS prefetched
-        // queue here is a max-heap that would make sure that we always score the nearest centroid first
-        Queue<PostingSearchTask> postingSearchTaskQueue = initQueueFromLeafCentroidIterator();
+        TopDocs[] perLeafResults = new TopDocs[leafReaderContexts.size()];
 
-        // init a posting scorer per leaf (that way we can keep track of topdocs/collectors/filter bitset etc)
+        // Phase 1.5: legacy fallback for non-IVF leaves — run the existing per-leaf searchLeaf
+        // path in parallel and stash the resulting TopDocs directly. These leaves don't
+        // participate in the global queue.
+        List<Integer> fallbackLeaves = new ArrayList<>();
+        for (int i = 0; i < leafReaderContexts.size(); i++) {
+            if (perLeafCentroidIterators[i] == null) {
+                fallbackLeaves.add(i);
+            }
+        }
+        if (fallbackLeaves.isEmpty() == false) {
+            List<Callable<TopDocs>> fallbackTasks = new ArrayList<>(fallbackLeaves.size());
+            for (int i : fallbackLeaves) {
+                LeafReaderContext ctx = leafReaderContexts.get(i);
+                fallbackTasks.add(() -> searchLeaf(ctx, filterWeight, knnCollectorManager, visitRatio));
+            }
+            List<TopDocs> fallbackResults = taskExecutor.invokeAll(fallbackTasks);
+            for (int j = 0; j < fallbackLeaves.size(); j++) {
+                perLeafResults[fallbackLeaves.get(j)] = fallbackResults.get(j);
+            }
+        }
+
+        // Phase 2: pair each BatchedPostingVisitor with a per-leaf scorer (owns the collector +
+        // a ReentrantLock around the stateful PostingVisitor) and seed a global max-heap with
+        // each leaf's initial batch of posting-list tasks.
         LeafPostingsScorer[] postingsScorers = new LeafPostingsScorer[leafReaderContexts.size()];
+        PriorityBlockingQueue<PostingSearchTask> taskQueue = new PriorityBlockingQueue<>();
+        AtomicInteger outstanding = new AtomicInteger(0);
+        for (int i = 0; i < leafReaderContexts.size(); i++) {
+            BatchedPostingVisitor bpv = perLeafCentroidIterators[i];
+            if (bpv == null) {
+                continue;
+            }
+            LeafReaderContext ctx = leafReaderContexts.get(i);
+            IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.longAccumulator);
+            AbstractMaxScoreKnnCollector collector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
+            if (collector == null) {
+                continue;
+            }
+            strategy.setCollector(collector);
+            LeafPostingsScorer scorer = new LeafPostingsScorer(i, ctx, bpv, collector);
+            postingsScorers[i] = scorer;
+            seedBatch(taskQueue, outstanding, scorer);
+        }
 
-        // now that we have our postingsearchtask queue, our posting visitors and scorers (maybe we could combine their functionality)
-        // let's gather all results async in the gatherPerLeafResults method using the same indexSearcher.getTaskExecutor()
-        // the idea is to have a global "overwatch" (that could be the collector) to keep
-        // track of whether we have enough results or not
-        // once we have collected enough (on a global-level) we exit
-        // otherwise we keep submitting new tasks to be executed.
-        // the results are stored in the collector, so once we exit, we ask the collectors to return
-        // their topdocs
-        TopDocs[] perLeafResults = gatherPerLeafResults();
+        // Phase 3: drain the queue with worker callables. Each worker pulls the highest-scoring
+        // centroid available across all leaves, executes it under its leaf's lock, and either
+        // refills 1-ahead from the same leaf or — when that leaf has fully drained the previous
+        // batch — kicks off the next (halved) batch. Workers exit once the queue is empty and
+        // nothing else is in flight.
+        // TODO: avoid materializing the full filter bitset in ESAcceptDocs.ScorerSupplierAcceptDocs
+        // when only used via AcceptDocs.bits() in the parallel path.
+        int numWorkers = Math.max(1, leafReaderContexts.size());
+        List<Callable<Void>> workers = new ArrayList<>(numWorkers);
+        for (int w = 0; w < numWorkers; w++) {
+            workers.add(() -> {
+                while (true) {
+                    PostingSearchTask task = taskQueue.poll();
+                    if (task == null) {
+                        if (outstanding.get() == 0) {
+                            return null;
+                        }
+                        // Another worker is mid-flight and may refill the queue; brief spin until
+                        // it either finishes its refill or the global counter drops to zero.
+                        // TODO: replace the spin with a Phaser/CountDownLatch on per-leaf drain.
+                        Thread.onSpinWait();
+                        continue;
+                    }
+                    try {
+                        if (task.scorer().shouldContinue()) {
+                            task.scorer().scorePosting(task.metadata());
+                        }
+                        int leafInFlight = task.producer().onTaskCompleted();
+                        if (leafInFlight == 0 && task.producer().hasNext() && task.scorer().shouldContinue()) {
+                            seedBatch(taskQueue, outstanding, task.scorer());
+                        }
+                    } finally {
+                        outstanding.decrementAndGet();
+                    }
+                }
+            });
+        }
+        taskExecutor.invokeAll(workers);
 
-        //things to discuss as a follow-up: could we avoid materiazing the full bitset for the filter?
+        // Phase 4: produce per-leaf TopDocs from each IVF scorer's collector (with dedup).
+        // Fallback leaves already have their TopDocs populated from Phase 1.5.
+        for (int i = 0; i < postingsScorers.length; i++) {
+            if (postingsScorers[i] != null) {
+                perLeafResults[i] = postingsScorers[i].finalizeTopDocs();
+            } else if (perLeafResults[i] == null) {
+                perLeafResults[i] = NO_RESULTS;
+            }
+        }
 
-        TopDocs topK = mergeLeafResults(k, perLeafResults );
+        TopDocs topK = mergeLeafResults(k, perLeafResults);
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -215,8 +291,29 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         LeafReaderContext context,
         Weight filterWeight,
         IVFCollectorManager knnCollectorManager,
-        float visitRatio
+        float visitRatio,
+        int numLeaves
     ) throws IOException;
+
+    /**
+     * Pulls the next batch from {@code scorer.bpv()} (size halved from the previous one, floor 1),
+     * issues prefetch for each yielded posting list, and enqueues them as {@link PostingSearchTask}
+     * instances. Each enqueued task is also counted in {@code outstanding} so workers know the
+     * total amount of in-flight work across all leaves.
+     */
+    private static void seedBatch(PriorityBlockingQueue<PostingSearchTask> queue, AtomicInteger outstanding, LeafPostingsScorer scorer)
+        throws IOException {
+        BatchedPostingVisitor bpv = scorer.bpv();
+        int batch = bpv.nextBatch();
+        for (int b = 0; b < batch; b++) {
+            PostingMetadata md = bpv.yieldNext();
+            if (md == null) {
+                break;
+            }
+            queue.offer(new PostingSearchTask(scorer, bpv, md));
+            outstanding.incrementAndGet();
+        }
+    }
 
     private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
         throws IOException {

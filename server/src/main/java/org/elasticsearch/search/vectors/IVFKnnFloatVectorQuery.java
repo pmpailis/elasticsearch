@@ -21,9 +21,9 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.Lucene;
+import org.elasticsearch.index.codec.vectors.diskbbq.BatchedPostingVisitor;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
-import org.elasticsearch.index.codec.vectors.diskbbq.PrefetchingCentroidIterator;
 import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
 
 import java.io.IOException;
@@ -113,27 +113,43 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
     }
 
     @Override
-    BatchedPostingVisitor fetchCentroidIterators(LeafReaderContext context, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio) throws IOException {
-            LeafReader reader = context.reader();
-            Bits liveDocs = reader.getLiveDocs();
-            int maxDoc = reader.maxDoc();
+    BatchedPostingVisitor fetchCentroidIterators(
+        LeafReaderContext context,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float visitRatio,
+        int numLeaves
+    ) throws IOException {
+        LeafReader reader = context.reader();
+        AcceptDocs acceptDocs = buildAcceptDocs(context, filterWeight);
+        if (acceptDocs == null) {
+            return null;
+        }
+        IVFVectorsReader<?> ivfReader = getIVFVectorsReader(reader);
+        if (ivfReader == null) {
+            return null;
+        }
+        FieldInfo fieldInfo = reader.getFieldInfos().fieldInfo(field);
+        return ivfReader.getBatchedPostingVisitor(fieldInfo, query, acceptDocs, visitRatio, numCands, k, numLeaves);
+    }
 
-            final AcceptDocs acceptDocs;
-            if (filterWeight != null) {
-                ScorerSupplier supplier = filterWeight.scorerSupplier(context);
-                if (supplier == null) {
-                    return null;
-                }
-                acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
-            } else {
-                acceptDocs = liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
-            }
-
-            IVFVectorsReader<?> ivfReader = getIVFVectorsReader(reader);
-            if (ivfReader == null) {
+    /**
+     * Builds the per-leaf {@link AcceptDocs} for the parallel posting path. Returns {@code null}
+     * to signal "skip this leaf" — either because the filter has no matches or because a
+     * subclass (e.g. {@link IVFKnnFloatSlicedVectorQuery}) determined the slice does not apply.
+     */
+    protected AcceptDocs buildAcceptDocs(LeafReaderContext context, Weight filterWeight) throws IOException {
+        LeafReader reader = context.reader();
+        Bits liveDocs = reader.getLiveDocs();
+        int maxDoc = reader.maxDoc();
+        if (filterWeight != null) {
+            ScorerSupplier supplier = filterWeight.scorerSupplier(context);
+            if (supplier == null) {
                 return null;
             }
-            return ivfReader.getBatchedPostingVisitor();
+            return new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
+        }
+        return liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
     }
 
     @Override

@@ -319,26 +319,6 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             );
         }
 
-        final ESAcceptDocs esAcceptDocs;
-        if (acceptDocs instanceof ESAcceptDocs) {
-            esAcceptDocs = (ESAcceptDocs) acceptDocs;
-        } else {
-            esAcceptDocs = null;
-        }
-
-        final FloatVectorValues values = getFloatVectorValues(field);
-        final IndexInput centroids = entry.centroidSlice(ivfCentroids);
-        final int numVectors = getNumberOfVectors(entry, values, centroids, esAcceptDocs);
-        if (numVectors == 0) {
-            return; // nothing more to do if there are no vectors in this segment / slice
-        }
-        final float approximateCost;
-        if (esAcceptDocs instanceof ESAcceptDocs.ESAcceptDocsAll) {
-            approximateCost = numVectors;
-        } else {
-            approximateCost = esAcceptDocs == null ? acceptDocs.cost() : esAcceptDocs.approximateCost();
-        }
-        float percentFiltered = Math.max(0f, Math.min(1f, approximateCost / numVectors));
         int k = knnCollector.k();
         int numCands = k;
         float visitRatio = dynamicVisitRatio;
@@ -349,13 +329,88 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             k = ivfSearchStrategy.getK();
         }
 
+        LeafResources resources = resolveLeafResources(fieldInfo, entry, target, acceptDocs, visitRatio, numCands, k);
+        if (resources == null) {
+            return;
+        }
+        long expectedDocs = 0;
+        long actualDocs = 0;
+        // initially we visit only the "centroids to search"
+        // Note, numCollected is doing the bare minimum here.
+        // TODO do we need to handle nested doc counts similarly to how we handle
+        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
+        while (resources.centroidIterator.hasNext()
+            && (resources.maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            PostingMetadata postingMetadata = resources.centroidIterator.nextPosting();
+            expectedDocs += resources.postingVisitor.resetPostingsScorer(postingMetadata);
+            actualDocs += resources.postingVisitor.visit(knnCollector);
+            if (knnCollector.getSearchStrategy() != null) {
+                knnCollector.getSearchStrategy().nextVectorsBlock();
+            }
+        }
+        if (resources.filtered) {
+            // TODO Adjust the value here when using centroid filtering
+            float unfilteredRatioVisited = (float) expectedDocs / resources.numVectors;
+            int filteredVectors = (int) Math.ceil(resources.numVectors * resources.percentFiltered);
+            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
+            while (resources.centroidIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+                PostingMetadata postingMetadata = resources.centroidIterator.nextPosting();
+                resources.postingVisitor.resetPostingsScorer(postingMetadata);
+                actualDocs += resources.postingVisitor.visit(knnCollector);
+                if (knnCollector.getSearchStrategy() != null) {
+                    knnCollector.getSearchStrategy().nextVectorsBlock();
+                }
+            }
+        }
+    }
+
+    /**
+     * Resolves the per-leaf state needed to score IVF posting lists: the centroid iterator, the
+     * posting visitor, and the bookkeeping numbers (numVectors, maxVectorVisited, filter flag)
+     * that downstream loops use to decide when to stop.
+     *
+     * <p>Shared between the codec-internal {@link #search(String, float[], KnnCollector, AcceptDocs)}
+     * loop and the parallel-search path entered through
+     * {@link #getBatchedPostingVisitor(FieldInfo, float[], AcceptDocs, float, int, int, int)}.
+     * Returns {@code null} when the segment has no vectors to score.
+     */
+    private LeafResources resolveLeafResources(
+        FieldInfo fieldInfo,
+        E entry,
+        float[] target,
+        AcceptDocs acceptDocs,
+        float visitRatio,
+        int numCands,
+        int k
+    ) throws IOException {
+        final ESAcceptDocs esAcceptDocs;
+        if (acceptDocs instanceof ESAcceptDocs) {
+            esAcceptDocs = (ESAcceptDocs) acceptDocs;
+        } else {
+            esAcceptDocs = null;
+        }
+
+        final FloatVectorValues values = getFloatVectorValues(fieldInfo.name);
+        final IndexInput centroids = entry.centroidSlice(ivfCentroids);
+        final int numVectors = getNumberOfVectors(entry, values, centroids, esAcceptDocs);
+        if (numVectors == 0) {
+            return null;
+        }
+        final float approximateCost;
+        if (esAcceptDocs instanceof ESAcceptDocs.ESAcceptDocsAll) {
+            approximateCost = numVectors;
+        } else {
+            approximateCost = esAcceptDocs == null ? acceptDocs.cost() : esAcceptDocs.approximateCost();
+        }
+        float percentFiltered = Math.max(0f, Math.min(1f, approximateCost / numVectors));
+
         if (visitRatio == dynamicVisitRatio) {
             visitRatio = Math.min(computeDynamicVisitRatio(numCands, k), computeSegmentSizeCap(numVectors));
         }
         // we account for soar vectors here. We can potentially visit a vector twice so we multiply by 2 here.
         long maxVectorVisited = (long) (2.0 * visitRatio * numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
-        CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
+        CentroidIterator centroidIterator = getCentroidIterator(
             fieldInfo,
             entry.numCentroids,
             centroids,
@@ -367,7 +422,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             visitRatio
         );
         Bits acceptDocsBits = acceptDocs.bits();
-        PostingVisitor scorer = getPostingVisitor(
+        PostingVisitor postingVisitor = getPostingVisitor(
             fieldInfo,
             values,
             postListSlice,
@@ -376,36 +431,30 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             entry.centroidSlice(ivfCentroids),
             esAcceptDocs
         );
-        long expectedDocs = 0;
-        long actualDocs = 0;
-        // initially we visit only the "centroids to search"
-        // Note, numCollected is doing the bare minimum here.
-        // TODO do we need to handle nested doc counts similarly to how we handle
-        // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
-        while (centroidPrefetchingIterator.hasNext()
-            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-            PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
-            expectedDocs += scorer.resetPostingsScorer(postingMetadata);
-            actualDocs += scorer.visit(knnCollector);
-            if (knnCollector.getSearchStrategy() != null) {
-                knnCollector.getSearchStrategy().nextVectorsBlock();
-            }
-        }
-        if (acceptDocsBits != null) {
-            // TODO Adjust the value here when using centroid filtering
-            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
-            int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
-            float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
-            while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
-                scorer.resetPostingsScorer(postingMetadata);
-                actualDocs += scorer.visit(knnCollector);
-                if (knnCollector.getSearchStrategy() != null) {
-                    knnCollector.getSearchStrategy().nextVectorsBlock();
-                }
-            }
-        }
+        return new LeafResources(
+            centroidIterator,
+            postingVisitor,
+            postListSlice,
+            entry.numCentroids,
+            numVectors,
+            maxVectorVisited,
+            visitRatio,
+            percentFiltered,
+            acceptDocsBits != null
+        );
     }
+
+    private record LeafResources(
+        CentroidIterator centroidIterator,
+        PostingVisitor postingVisitor,
+        IndexInput postingListSlice,
+        int numCentroids,
+        int numVectors,
+        long maxVectorVisited,
+        float visitRatio,
+        float percentFiltered,
+        boolean filtered
+    ) {}
 
     private static boolean hasNoVectors(FieldInfo fieldInfo, FieldEntry fieldEntry) {
         return fieldInfo.getVectorDimension() == 0
@@ -480,14 +529,61 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         IOUtils.close(closeables);
     }
 
-    public void getBatchedPostingVisitor() {
-        //      honor all existing functionality including centroid filtering etc
-        var centroidIterator = getCentroidIterator();
-        // BatchedPostingVisitor ->
-        //      the idea here is that it should prefetch expected visited ration / avg cluster size / num_segments
-        //      and then have an in-place way to load and prefetch the next batch, every time the batch we prefetch will be lower by half
-        //      until we reach a lower limit of 1 (obvs)
-        return new BatchedPostingVisitor();
+    /**
+     * Builds a per-leaf {@link BatchedPostingVisitor} for the parallel IVF search path.
+     *
+     * <p>Wires the existing {@link #getCentroidIterator} and {@link #getPostingVisitor} hooks
+     * together with the posting-list {@link IndexInput} slice used for prefetching. The initial
+     * batch size is sized to roughly the share of posting lists this leaf is expected to score
+     * ({@code visitRatio * numCentroids / numLeaves}); each subsequent batch returned by
+     * {@link BatchedPostingVisitor#nextBatch()} halves it (floor 1).
+     *
+     * <p>Returns {@code null} when the segment has no vectors to score or the field is missing /
+     * not a float32 vector field — callers should treat this as "nothing to do for this leaf".
+     */
+    public BatchedPostingVisitor getBatchedPostingVisitor(
+        FieldInfo fieldInfo,
+        float[] target,
+        AcceptDocs acceptDocs,
+        float visitRatio,
+        int numCands,
+        int k,
+        int numLeaves
+    ) throws IOException {
+        if (fieldInfo == null || fieldInfo.getVectorDimension() == 0) {
+            return null;
+        }
+        if (fieldInfo.getVectorEncoding().equals(VectorEncoding.FLOAT32) == false) {
+            // Non-float32 encodings are handled by the plain FlatVectorsReader.search() path,
+            // not the parallel posting flow.
+            return null;
+        }
+        final E entry = fields.get(fieldInfo.number);
+        if (hasNoVectors(fieldInfo, entry)) {
+            return null;
+        }
+        if (fieldInfo.getVectorDimension() != target.length) {
+            throw new IllegalArgumentException(
+                "vector query dimension: " + target.length + " differs from field dimension: " + fieldInfo.getVectorDimension()
+            );
+        }
+
+        LeafResources resources = resolveLeafResources(fieldInfo, entry, target, acceptDocs, visitRatio, numCands, k);
+        if (resources == null) {
+            return null;
+        }
+        int leaves = Math.max(1, numLeaves);
+        int initialBatch = Math.max(1, Math.round(resources.visitRatio * resources.numCentroids / (float) leaves));
+        return new BatchedPostingVisitor(
+            resources.centroidIterator,
+            resources.postingVisitor,
+            resources.postingListSlice,
+            initialBatch,
+            resources.numVectors,
+            resources.maxVectorVisited,
+            resources.filtered,
+            resources.percentFiltered
+        );
     }
 
     protected static class FieldEntry implements GenericFlatVectorReaders.Field {
