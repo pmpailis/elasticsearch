@@ -83,7 +83,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
     }
 
     @Override
-    protected int getNumberOfVectors(NextFieldEntry entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
+    public int getNumberOfVectors(NextFieldEntry entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
         throws IOException {
         int size = values.size();
         assert esAcceptDocs == null
@@ -754,6 +754,15 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
                 centroids.skipBytes(tailBulkSize * centroidQuantizeSize);
             }
         }
+    }
+
+    @Override
+    public int estimatePostingVectorCount(NextFieldEntry entry, FieldInfo fieldInfo, PostingMetadata md) {
+        // Mirrors the per-vector record size of this format: packed quantized vector + three float corrective
+        // terms + an int doc-id (see quantizedByteLength in the posting visitor). Doc-id bytes are excluded, so
+        // this slightly over-counts; that is acceptable for budgeting only.
+        final int perVector = entry.quantEncoding().getDocPackedLength(fieldInfo.getVectorDimension()) + (Float.BYTES * 3) + Integer.BYTES;
+        return Math.max(1, (int) (md.length() / perVector));
     }
 
     @Override

@@ -609,6 +609,15 @@ public class ES940DiskBBQVectorsReader extends IVFVectorsReader<ES940DiskBBQVect
     }
 
     @Override
+    public int estimatePostingVectorCount(NextFieldEntry entry, FieldInfo fieldInfo, PostingMetadata md) {
+        // Mirrors the per-vector record size of this format: packed quantized vector + three float corrective
+        // terms + an int doc-id (see quantizedByteLength in the posting visitor). Doc-id bytes are excluded, so
+        // this slightly over-counts; that is acceptable for budgeting only.
+        final int perVector = entry.quantEncoding().getDocPackedLength(fieldInfo.getVectorDimension()) + (Float.BYTES * 3) + Integer.BYTES;
+        return Math.max(1, (int) (md.length() / perVector));
+    }
+
+    @Override
     public PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         FloatVectorValues values,

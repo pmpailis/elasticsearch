@@ -59,6 +59,13 @@ public class DiversifyingChildrenIVFKnnFloatSlicedVectorQuery extends IVFKnnFloa
     }
 
     @Override
+    protected boolean requiresWholeLeafSlices() {
+        // Diversification collapses children to parents within a single collector, so each leaf must be scored by
+        // exactly one worker; splitting a leaf across workers could keep two children of the same parent.
+        return true;
+    }
+
+    @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) return false;
         if (super.equals(o) == false) return false;

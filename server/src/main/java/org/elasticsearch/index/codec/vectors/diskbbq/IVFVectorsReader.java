@@ -28,6 +28,7 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.ReadOnceHint;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
@@ -66,6 +67,14 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     private static final int CAP_REF_SIZE = 1_000_000;
     private static final double CAP_EXPONENT = 0.35;
     static final float DEFAULT_TARGET_RECALL = 0.9f;
+
+    /**
+     * Context used by {@link #openLightweightClusters()} to open a thread-confined posting-list mapping.
+     * The {@link ReadOnceHint} steers {@code MMapDirectory} onto a confined arena (no cross-thread CAS on the
+     * shared {@code MemorySegment} session). We keep {@link org.apache.lucene.store.ReadAdvice#NORMAL} — the
+     * default access advice — rather than tagging the read as random, since posting lists are scanned sequentially.
+     */
+    private static final IOContext LIGHTWEIGHT_CTX = IOContext.DEFAULT.withHints(ReadOnceHint.INSTANCE);
 
     protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
@@ -142,9 +151,64 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
 
     /** Get the number of vectors to search, which is typically the total number of vectors in the segment or the
      *  number of vectors in a slice if the segment is sliced.*/
-    protected int getNumberOfVectors(E entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
+    public int getNumberOfVectors(E entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
         throws IOException {
         return values.size();
+    }
+
+    /**
+     * Returns the {@link FieldEntry} for the given field number, or {@code null} if the field has no IVF data.
+     * Exposed so the parallel scoring path can read per-field layout (centroid/posting offsets) without
+     * re-parsing the segment metadata.
+     */
+    public final E fieldEntry(int fieldNumber) {
+        return fields.get(fieldNumber);
+    }
+
+    /**
+     * The shared, warm centroid {@link IndexInput} mapping. Callers that score concurrently must
+     * {@link IndexInput#clone() clone} this per thread rather than sharing the returned instance.
+     */
+    public final IndexInput ivfCentroids() {
+        return ivfCentroids;
+    }
+
+    /**
+     * The shared, warm posting-list (clusters) {@link IndexInput} mapping. Callers that score concurrently must
+     * {@link IndexInput#clone() clone} this per thread; a leaf that may be scored by more than one worker should
+     * instead use {@link #openLightweightClusters()} to obtain a thread-confined mapping.
+     */
+    public final IndexInput ivfClusters() {
+        return ivfClusters;
+    }
+
+    /**
+     * Opens a fresh, thread-confined {@link IndexInput} over the posting-list (clusters) file.
+     * <p>
+     * The input is opened with {@link ReadOnceHint} so that an {@code MMapDirectory} backs it with a
+     * {@link java.lang.foreign.Arena#ofConfined() confined arena}: reads avoid the cross-thread compare-and-swap
+     * on the shared {@code MemorySegment} session that a cloned shared mapping would incur when many workers
+     * score the same leaf at once. Because the arena is confined, the returned handle is bound to the thread
+     * that scores with it — it must be <em>opened, used, and closed on the same thread</em>; touching it from
+     * another thread throws {@code WrongThreadException}. Slice the returned input with
+     * {@link FieldEntry#postingListSlice(IndexInput)} before scoring.
+     */
+    public final IndexInput openLightweightClusters() throws IOException {
+        final String clustersFileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, clusterExtension);
+        return state.directory.openInput(clustersFileName, LIGHTWEIGHT_CTX);
+    }
+
+    /**
+     * Resolves the visit ratio exactly as {@link #search} does: when the caller passes the sentinel
+     * {@code dynamicVisitRatio} the ratio is derived from the Two-Signal model and capped by segment size;
+     * otherwise the explicitly provided ratio is honoured. Exposed so the parallel preparation phase can size
+     * its per-leaf vector budget identically to the serial path.
+     */
+    public final float effectiveVisitRatio(float provided, int numCands, int k, int numVectors) {
+        if (provided == dynamicVisitRatio) {
+            return Math.min(computeDynamicVisitRatio(numCands, k), computeSegmentSizeCap(numVectors));
+        }
+        return provided;
     }
 
     protected static IndexInput openDataInput(
@@ -481,7 +545,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         IOUtils.close(closeables);
     }
 
-    protected static class FieldEntry implements GenericFlatVectorReaders.Field {
+    public static class FieldEntry implements GenericFlatVectorReaders.Field {
         protected final String rawVectorFormatName;
         protected final boolean useDirectIOReads;
         protected final VectorSimilarityFunction similarityFunction;
@@ -629,6 +693,14 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         IndexInput centroidSlice,
         ESAcceptDocs acceptDocs
     ) throws IOException;
+
+    /**
+     * Estimates the number of vectors stored in the posting list described by {@code md}, from its byte length.
+     * Used by the parallel scoring path to budget posting work across slices <em>before</em> any vectors are read;
+     * the codec still reads the exact per-posting count at scoring time, so a small over-count (doc-id bytes are
+     * ignored, ~1%) is harmless and absorbed by the soar multiplier and the fill padding.
+     */
+    public abstract int estimatePostingVectorCount(E entry, FieldInfo fieldInfo, PostingMetadata md);
 
     public interface PostingVisitor {
         /** returns the number of documents in the posting list */

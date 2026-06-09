@@ -9,9 +9,14 @@
 
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.codecs.KnnVectorsReader;
+import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
+import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.internal.hppc.IntObjectHashMap;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.BooleanClause;
@@ -31,20 +36,46 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.IOUtils;
+import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
+import org.elasticsearch.index.codec.vectors.diskbbq.CentroidIterator;
+import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
+import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAccumulator;
 
 import static org.elasticsearch.search.vectors.AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE;
 
+/**
+ * Base class for the parallel IVF (DiskBBQ) kNN queries.
+ * <p>
+ * Scoring is split into three phases so that parallelism reaches posting-list granularity — a single
+ * force-merged segment is scored by many workers, not just one thread per leaf:
+ * <ol>
+ *   <li><b>Phase A</b> (one task per leaf): resolve the codec reader, materialize the filter, score the
+ *       query against centroids and statically select the closest posting lists up to a per-leaf vector
+ *       budget. No vectors are scored here.</li>
+ *   <li><b>Phase B</b> (a fixed worker pool draining a lock-free cursor over pre-sorted {@link Slice}s):
+ *       each worker scores posting lists through its own thread-confined state, sharing only the single
+ *       competitive-frontier accumulator.</li>
+ *   <li><b>Phase C</b>: merge every worker's per-leaf results, dedup globally by document, and build the
+ *       final {@link KnnScoreDocQuery}.</li>
+ * </ol>
+ */
 abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerProvider {
 
     static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
@@ -118,28 +149,66 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             filterWeight = null;
         }
 
-        // we request numCands as we are using it as an approximation measure
-        // we need to ensure we are getting at least 2*k results to ensure we cover overspill duplicates
-        // TODO move the logic for automatically adjusting percentages to the query, so we can only pass
-        // 2k to the collector.
+        // we request 2*k as we are using it as an approximation measure: we need at least 2*k results to cover
+        // overspill (soar) duplicates and so the shared competitive frontier never skips a true top-k block.
         IVFCollectorManager knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
         TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
 
-        // When providedVisitRatio is 0.0f (dynamic), the codec computes the visit ratio
-        // per-segment using the Two-Signal model with segment-size awareness.
-        final float visitRatio = providedVisitRatio;
-
-        List<Callable<TopDocs>> tasks = new ArrayList<>(leafReaderContexts.size());
-        for (LeafReaderContext context : leafReaderContexts) {
-            if (doPrecondition) {
-                preconditionQuery(context);
+        // Precondition the query vector once, on this (single) thread, before any leaf is prepared. The
+        // transform mutates shared query state and must not race with the parallel phases below.
+        if (doPrecondition) {
+            for (LeafReaderContext ctx : leafReaderContexts) {
+                preconditionQuery(ctx);
             }
-            tasks.add(() -> searchLeaf(context, filterWeight, knnCollectorManager, visitRatio));
         }
-        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
 
-        TopDocs topK = mergeLeafResults(k, perLeafResults);
+        // Phase A: prepare each leaf in parallel (centroid scoring + posting selection; no vectors scored).
+        List<Callable<LeafSearchTask>> prepTasks = new ArrayList<>(leafReaderContexts.size());
+        for (LeafReaderContext ctx : leafReaderContexts) {
+            prepTasks.add(() -> prepareLeaf(ctx, filterWeight));
+        }
+        List<LeafSearchTask> prepared = taskExecutor.invokeAll(prepTasks);
+
+        List<LeafSearchTask> ivfLeaves = new ArrayList<>(prepared.size());
+        List<LeafSearchTask> fallbackLeaves = new ArrayList<>();
+        for (LeafSearchTask task : prepared) {
+            if (task == null) {
+                continue;
+            }
+            if (task.needsFallbackSearch()) {
+                fallbackLeaves.add(task);
+            } else {
+                ivfLeaves.add(task);
+            }
+        }
+
+        // Phase B: distribute the selected postings into slices and score them with a fixed worker pool.
+        int parallelism = Math.max(1, Runtime.getRuntime().availableProcessors());
+        Slice[] slices = IVFSlicePlanner.buildSlices(ivfLeaves, parallelism, requiresWholeLeafSlices());
+        boolean[] contended = IVFSlicePlanner.markContendedLeaves(ivfLeaves, Math.max(1, Math.min(parallelism, slices.length)));
+        AtomicInteger cursor = new AtomicInteger(0);
+
+        List<Callable<List<LeafResult>>> scoreTasks = new ArrayList<>();
+        if (slices.length > 0) {
+            int workerCount = Math.min(parallelism, slices.length);
+            for (int w = 0; w < workerCount; w++) {
+                scoreTasks.add(() -> runWorker(slices, cursor, contended, ivfLeaves, knnCollectorManager));
+            }
+        }
+        for (LeafSearchTask fallback : fallbackLeaves) {
+            scoreTasks.add(() -> List.of(runFallback(fallback, knnCollectorManager)));
+        }
+
+        List<LeafResult> allResults = new ArrayList<>();
+        if (scoreTasks.isEmpty() == false) {
+            for (List<LeafResult> partial : taskExecutor.invokeAll(scoreTasks)) {
+                allResults.addAll(partial);
+            }
+        }
+
+        // Phase C: merge, dedup globally by document, and build the result query.
+        TopDocs topK = mergeResults(k, allResults);
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -147,34 +216,299 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return new KnnScoreDocQuery(topK.scoreDocs, reader);
     }
 
-    private TopDocs mergeLeafResults(int mergeK, TopDocs[] perLeafResults) {
-        // During merge across segments, always favor bulk pivot collection.
-        // Segment-level unsorted gathering avoids per-segment sorting work.
-        BulkNeighborQueue mergeQueue = BulkNeighborQueue.forMerging(mergeK);
+    /**
+     * Phase A for a single leaf: build the {@link ESAcceptDocs}, warm its lazy caches single-threaded, resolve the
+     * field's codec reader, and (for an IVF field) select the closest posting lists. Returns {@code null} when the
+     * leaf has nothing to contribute (no matching docs, no vectors, or no postings selected).
+     */
+    private LeafSearchTask prepareLeaf(LeafReaderContext ctx, Weight filterWeight) throws IOException {
+        ESAcceptDocs acceptDocs = buildLeafAcceptDocs(ctx, filterWeight);
+        if (acceptDocs == null) {
+            return null;
+        }
+        // Warm the lazy caches (filter bitset, cardinality, slice range) on this single preparing thread. Phase B
+        // workers only read them; the executor join between Phase A and Phase B provides the happens-before edge.
+        warmAcceptDocs(acceptDocs);
+
+        SegmentReader segmentReader = Lucene.tryUnwrapSegmentReader(ctx.reader());
+        if (segmentReader != null) {
+            KnnVectorsReader vectorsReader = segmentReader.getVectorReader();
+            if (vectorsReader instanceof PerFieldKnnVectorsFormat.FieldsReader fieldsReader) {
+                KnnVectorsReader fieldReader = fieldsReader.getFieldReader(field);
+                if (fieldReader instanceof IVFVectorsReader<?> ivfReader) {
+                    FieldInfo fieldInfo = segmentReader.getFieldInfos().fieldInfo(field);
+                    if (fieldInfo != null) {
+                        return prepareIvfLeaf(ivfReader, ctx, fieldInfo, acceptDocs);
+                    }
+                }
+            }
+        }
+        // Not an IVF field (e.g. an HNSW segment in a mixed index): score through the regular per-leaf path.
+        return LeafSearchTask.fallback(ctx, acceptDocs, providedVisitRatio);
+    }
+
+    private static void warmAcceptDocs(ESAcceptDocs acceptDocs) throws IOException {
+        acceptDocs.bits();
+        acceptDocs.cost();
+        acceptDocs.approximateCost();
+        if (acceptDocs.sliceOrd() >= 0) {
+            acceptDocs.sliceAcceptDocs();
+        }
+    }
+
+    /**
+     * Selects the closest posting lists for an IVF leaf up to a per-leaf vector budget that mirrors the serial
+     * codec path's two-loop selection ({@code maxVectorVisited} padded with {@code requiredToFill} so filtered
+     * leaves still gather enough candidates). The generic parameter is captured from the {@code IVFVectorsReader<?>}
+     * call site so the {@code E}-typed reader hooks ({@code getNumberOfVectors}, {@code estimatePostingVectorCount})
+     * type-check. Returns {@code null} when the leaf has no vectors or selects no postings.
+     */
+    private <E extends IVFVectorsReader.FieldEntry> LeafSearchTask prepareIvfLeaf(
+        IVFVectorsReader<E> reader,
+        LeafReaderContext ctx,
+        FieldInfo fieldInfo,
+        ESAcceptDocs acceptDocs
+    ) throws IOException {
+        E entry = reader.fieldEntry(fieldInfo.number);
+        if (entry == null) {
+            return LeafSearchTask.fallback(ctx, acceptDocs, providedVisitRatio);
+        }
+        if (fieldInfo.getVectorDimension() != getQueryVector().length) {
+            throw new IllegalArgumentException(
+                "vector query dimension: " + getQueryVector().length + " differs from field dimension: " + fieldInfo.getVectorDimension()
+            );
+        }
+        FloatVectorValues values = reader.getFloatVectorValues(field);
+        IndexInput centroids = entry.centroidSlice(reader.ivfCentroids());
+        int numVectors = reader.getNumberOfVectors(entry, values, centroids, acceptDocs);
+        if (numVectors == 0) {
+            return null;
+        }
+        final float approximateCost;
+        if (acceptDocs instanceof ESAcceptDocs.ESAcceptDocsAll) {
+            approximateCost = numVectors;
+        } else {
+            approximateCost = acceptDocs.approximateCost();
+        }
+        float percentFiltered = Math.max(0f, Math.min(1f, approximateCost / numVectors));
+        float eff = reader.effectiveVisitRatio(providedVisitRatio, numCands, strategyK(), numVectors);
+
+        // Account for soar vectors (a vector may be visited twice) with the 2x multiplier, exactly as the serial path.
+        long maxVectorVisited = Math.max(1L, (long) Math.ceil(2.0 * eff * numVectors));
+        if (percentFiltered > 0f && percentFiltered < 0.5f) {
+            double scale = 0.5 / Math.max(percentFiltered, 0.25);
+            maxVectorVisited = Math.min((long) numVectors, (long) Math.ceil(maxVectorVisited * scale));
+        }
+        int collectorK = Math.round(2f * k);
+        long requiredToFill = percentFiltered > 0f ? (long) Math.ceil(collectorK / (double) percentFiltered) : numVectors;
+        long targetVectors = Math.min((long) numVectors, Math.max(maxVectorVisited, requiredToFill));
+        targetVectors = Math.max(1L, targetVectors);
+        // When the budget reaches the whole leaf (typically a restrictive filter), select every posting. This mirrors
+        // the serial path's secondary loop, which keeps scanning postings until it has scored k filtered docs; relying
+        // on the (slightly over-counting) per-posting estimate to reach numVectors could otherwise stop a posting short.
+        boolean scanAllPostings = targetVectors >= numVectors;
+
+        IndexInput postListSlice = entry.postingListSlice(reader.ivfClusters());
+        CentroidIterator it = reader.getCentroidIterator(
+            fieldInfo,
+            entry.numCentroids(),
+            centroids,
+            getQueryVector(),
+            postListSlice,
+            acceptDocs,
+            approximateCost,
+            values,
+            eff
+        );
+        List<PostingSearchTask> postings = new ArrayList<>();
+        long expectedDocs = 0;
+        while (it.hasNext() && (scanAllPostings || expectedDocs < targetVectors)) {
+            PostingMetadata md = it.nextPosting();
+            int est = reader.estimatePostingVectorCount(entry, fieldInfo, md);
+            postings.add(new PostingSearchTask(md, est));
+            expectedDocs += est;
+        }
+        if (postings.isEmpty()) {
+            return null;
+        }
+        return LeafSearchTask.ivf(
+            ctx,
+            acceptDocs,
+            acceptDocs.bits(),
+            reader,
+            entry,
+            fieldInfo,
+            postings.toArray(new PostingSearchTask[0]),
+            eff
+        );
+    }
+
+    /**
+     * Phase B worker: drains the shared lock-free {@code cursor} over the pre-sorted {@code slices}, scoring each
+     * slice through per-leaf state that is created lazily and confined to this worker thread. Two passes per slice:
+     * first prefetch every posting, then score them so I/O overlaps. All thread-confined handles are closed in the
+     * {@code finally} on this same worker thread, as the confined-arena contract requires.
+     */
+    private List<LeafResult> runWorker(
+        Slice[] slices,
+        AtomicInteger cursor,
+        boolean[] contended,
+        List<LeafSearchTask> ivfLeaves,
+        IVFCollectorManager mgr
+    ) throws IOException {
+        Map<Integer, LeafWorkerState> states = new HashMap<>();
+        try {
+            int idx;
+            while ((idx = cursor.getAndIncrement()) < slices.length) {
+                Slice slice = slices[idx];
+                // Pass 1: ensure per-leaf state exists and prefetch every posting in the slice.
+                for (SliceEntry entry : slice.entries()) {
+                    LeafWorkerState st = ensureState(states, entry.leafIndex(), ivfLeaves, contended, mgr);
+                    if (st.collector() == null) {
+                        continue;
+                    }
+                    PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
+                    for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
+                        PostingMetadata md = postings[p].metadata();
+                        st.postListSlice().prefetch(md.offset(), md.length());
+                    }
+                }
+                // Pass 2: score every posting in the slice, tightening the shared frontier after each.
+                for (SliceEntry entry : slice.entries()) {
+                    LeafWorkerState st = states.get(entry.leafIndex());
+                    if (st == null || st.collector() == null) {
+                        continue;
+                    }
+                    PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
+                    for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
+                        PostingMetadata md = postings[p].metadata();
+                        st.visitor().resetPostingsScorer(md);
+                        st.visitor().visit(st.collector());
+                        st.strategy().nextVectorsBlock();
+                    }
+                }
+            }
+            List<LeafResult> results = new ArrayList<>();
+            for (LeafWorkerState st : states.values()) {
+                if (st.collector() == null) {
+                    continue;
+                }
+                TopDocs topDocs = st.collector() instanceof BulkKnnCollector bulk ? bulk.unsortedTopK() : st.collector().topDocs();
+                if (topDocs != null && topDocs.scoreDocs.length > 0) {
+                    results.add(new LeafResult(st.docBase(), topDocs));
+                }
+            }
+            return results;
+        } finally {
+            IOUtils.close(states.values());
+        }
+    }
+
+    private LeafWorkerState ensureState(
+        Map<Integer, LeafWorkerState> states,
+        int leafIndex,
+        List<LeafSearchTask> ivfLeaves,
+        boolean[] contended,
+        IVFCollectorManager mgr
+    ) throws IOException {
+        LeafWorkerState st = states.get(leafIndex);
+        if (st == null) {
+            st = buildLeafWorkerState(ivfLeaves.get(leafIndex), contended[leafIndex], mgr);
+            states.put(leafIndex, st);
+        }
+        return st;
+    }
+
+    /**
+     * Builds this worker's private scoring state for one leaf. A leaf that may be scored by more than one worker
+     * ({@code contended}) gets a thread-confined posting-list mapping ({@link IVFVectorsReader#openLightweightClusters()})
+     * so concurrent scoring never CASes a shared {@code MemorySegment} session; a leaf scored by at most one worker
+     * simply clones the warm shared mapping. The centroids handle is always cloned. When the collector manager
+     * yields no collector (e.g. a diversifying leaf with no parents), an empty, handle-free state is returned.
+     */
+    private LeafWorkerState buildLeafWorkerState(LeafSearchTask leaf, boolean contended, IVFCollectorManager mgr) throws IOException {
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(leaf.visitRatio(), numCands, strategyK(), mgr.longAccumulator);
+        AbstractMaxScoreKnnCollector collector = mgr.newCollector(Integer.MAX_VALUE, strategy, leaf.ctx());
+        if (collector == null) {
+            return LeafWorkerState.empty(leaf.ctx().docBase);
+        }
+        strategy.setCollector(collector);
+        IVFVectorsReader<?> reader = leaf.reader();
+        IndexInput clustersHandle = null;
+        IndexInput centroidsClone = null;
+        try {
+            clustersHandle = contended ? reader.openLightweightClusters() : reader.ivfClusters().clone();
+            IndexInput postListSlice = leaf.entry().postingListSlice(clustersHandle);
+            centroidsClone = reader.ivfCentroids().clone();
+            IndexInput centroidSlice = leaf.entry().centroidSlice(centroidsClone);
+            FloatVectorValues values = reader.getFloatVectorValues(field);
+            IVFVectorsReader.PostingVisitor visitor = reader.getPostingVisitor(
+                leaf.fieldInfo(),
+                values,
+                postListSlice,
+                getQueryVector(),
+                leaf.materializedFilter(),
+                centroidSlice,
+                leaf.acceptDocs()
+            );
+            return new LeafWorkerState(clustersHandle, centroidsClone, postListSlice, visitor, collector, strategy, leaf.ctx().docBase);
+        } catch (Throwable t) {
+            IOUtils.closeWhileHandlingException(clustersHandle, centroidsClone);
+            throw t;
+        }
+    }
+
+    /** Scores a non-IVF (fallback) leaf through the regular per-leaf approximate-search path. */
+    private LeafResult runFallback(LeafSearchTask leaf, IVFCollectorManager mgr) throws IOException {
+        TopDocs topDocs = approximateSearch(leaf.ctx(), leaf.acceptDocs(), Integer.MAX_VALUE, mgr, leaf.visitRatio());
+        return new LeafResult(leaf.ctx().docBase, topDocs);
+    }
+
+    /**
+     * Phase C: merge every worker's per-leaf results into the global top {@code mergeK}. Results are deduplicated
+     * by absolute document id keeping the highest score — a document can recur across overspill postings, and a
+     * single leaf's postings may be split across several workers, so the same document can be collected more than
+     * once. Scoring is deterministic, so the kept score is identical regardless of which worker produced it.
+     */
+    private TopDocs mergeResults(int mergeK, List<LeafResult> leafResults) {
+        IntObjectHashMap<ScoreDoc> dedupByDoc = new IntObjectHashMap<>();
         long totalHitsValue = 0;
         TotalHits.Relation relation = TotalHits.Relation.EQUAL_TO;
-        for (TopDocs topDocs : perLeafResults) {
+        for (LeafResult leafResult : leafResults) {
+            TopDocs topDocs = leafResult.topDocs();
             totalHitsValue += topDocs.totalHits.value();
             if (topDocs.totalHits.relation() == TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO) {
                 relation = TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO;
             }
-            if (topDocs.scoreDocs.length == 0) {
-                continue;
-            }
-            int count = topDocs.scoreDocs.length;
-            int[] docs = new int[count];
-            float[] scores = new float[count];
-            float bestScore = Float.NEGATIVE_INFINITY;
-            for (int i = 0; i < count; i++) {
-                ScoreDoc scoreDoc = topDocs.scoreDocs[i];
-                docs[i] = scoreDoc.doc;
-                scores[i] = scoreDoc.score;
-                if (scoreDoc.score > bestScore) {
-                    bestScore = scoreDoc.score;
+            for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
+                int globalDoc = scoreDoc.doc + leafResult.docBase();
+                ScoreDoc existing = dedupByDoc.get(globalDoc);
+                if (existing == null) {
+                    scoreDoc.doc = globalDoc;
+                    dedupByDoc.put(globalDoc, scoreDoc);
+                } else if (scoreDoc.score > existing.score) {
+                    existing.score = scoreDoc.score;
                 }
             }
-            mergeQueue.insertWithOverflowBulk(docs, scores, count, bestScore);
         }
+        if (dedupByDoc.isEmpty()) {
+            return new TopDocs(new TotalHits(totalHitsValue, relation), new ScoreDoc[0]);
+        }
+        int count = dedupByDoc.size();
+        int[] docs = new int[count];
+        float[] scores = new float[count];
+        float bestScore = Float.NEGATIVE_INFINITY;
+        int i = 0;
+        for (IntObjectHashMap.IntObjectCursor<ScoreDoc> cursor : dedupByDoc) {
+            docs[i] = cursor.value.doc;
+            scores[i] = cursor.value.score;
+            if (cursor.value.score > bestScore) {
+                bestScore = cursor.value.score;
+            }
+            i++;
+        }
+        BulkNeighborQueue mergeQueue = BulkNeighborQueue.forMerging(mergeK);
+        mergeQueue.insertWithOverflowBulk(docs, scores, count, bestScore);
         ScoreDoc[] mergedScoreDocs = new ScoreDoc[mergeQueue.size()];
         int[] index = new int[] { mergedScoreDocs.length - 1 };
         mergeQueue.drain(
@@ -183,53 +517,43 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return new TopDocs(new TotalHits(totalHitsValue, relation), mergedScoreDocs);
     }
 
-    private TopDocs searchLeaf(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
-        throws IOException {
-        TopDocs results = getLeafResults(ctx, filterWeight, knnCollectorManager, visitRatio);
-        IntObjectHashMap<ScoreDoc> dedupByDoc = new IntObjectHashMap<>(results.scoreDocs.length * 4 / 3);
-        for (ScoreDoc scoreDoc : results.scoreDocs) {
-            int globalDoc = scoreDoc.doc + ctx.docBase;
-            if (dedupByDoc.containsKey(globalDoc) == false) {
-                scoreDoc.doc = globalDoc;
-                dedupByDoc.put(globalDoc, scoreDoc);
-            }
-        }
-        ScoreDoc[] deduplicatedScoreDocs = new ScoreDoc[dedupByDoc.size()];
-        int index = 0;
-        for (IntObjectHashMap.IntObjectCursor<ScoreDoc> deduplicated : dedupByDoc) {
-            deduplicatedScoreDocs[index++] = deduplicated.value;
-        }
-        return new TopDocs(results.totalHits, deduplicatedScoreDocs);
-    }
-
-    TopDocs getLeafResults(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
-        throws IOException {
+    /**
+     * Resolves the {@link ESAcceptDocs} for a leaf from the (optional) filter weight. Returns {@code null} to skip a
+     * leaf that cannot contribute (the filter matches nothing here). Overridden by the sliced query to additionally
+     * restrict the doc-id space to a single slice.
+     */
+    protected ESAcceptDocs buildLeafAcceptDocs(LeafReaderContext ctx, Weight filterWeight) throws IOException {
         final LeafReader reader = ctx.reader();
         final Bits liveDocs = reader.getLiveDocs();
         final int maxDoc = reader.maxDoc();
-
         if (filterWeight == null) {
-            return approximateSearch(
-                ctx,
-                liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc),
-                Integer.MAX_VALUE,
-                knnCollectorManager,
-                visitRatio
-            );
+            return liveDocs == null ? new ESAcceptDocs.ESAcceptDocsAll() : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc);
         }
-
         ScorerSupplier supplier = filterWeight.scorerSupplier(ctx);
         if (supplier == null) {
-            return TopDocsCollector.EMPTY_TOPDOCS;
+            return null;
         }
+        return new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc);
+    }
 
-        return approximateSearch(
-            ctx,
-            new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc),
-            Integer.MAX_VALUE,
-            knnCollectorManager,
-            visitRatio
-        );
+    /**
+     * The k used to size the search strategy and the codec's dynamic visit ratio — the pre-oversampling k. Defaults
+     * to {@link #k}; the float query overrides it with the original (un-oversampled) k.
+     */
+    protected int strategyK() {
+        return k;
+    }
+
+    /** The (possibly preconditioned) query vector to score against. */
+    protected abstract float[] getQueryVector();
+
+    /**
+     * When {@code true}, Phase B emits exactly one slice per leaf (no banding or merging) so each leaf is scored by a
+     * single worker. Required by nested diversification, where splitting a leaf across workers would let two children
+     * of the same parent survive in different collectors.
+     */
+    protected boolean requiresWholeLeafSlices() {
+        return false;
     }
 
     abstract void preconditionQuery(LeafReaderContext context) throws IOException;
@@ -251,13 +575,43 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         queryProfiler.addVectorOpsCount(vectorOpsCount);
     }
 
+    /** A single worker's scored results for one leaf, carried to Phase C with the leaf's {@code docBase}. */
+    private record LeafResult(int docBase, TopDocs topDocs) {}
+
+    /**
+     * One worker's private, thread-confined scoring state for a single leaf. Created, used, and closed entirely on
+     * the worker thread. {@code collector} is {@code null} (and no handles are opened) when the leaf yields no
+     * collector. Closing releases the posting-list and centroid handles; the slices derived from them need no
+     * separate close.
+     */
+    private record LeafWorkerState(
+        IndexInput clustersHandle,
+        IndexInput centroidsClone,
+        IndexInput postListSlice,
+        IVFVectorsReader.PostingVisitor visitor,
+        AbstractMaxScoreKnnCollector collector,
+        IVFKnnSearchStrategy strategy,
+        int docBase
+    ) implements Closeable {
+        static LeafWorkerState empty(int docBase) {
+            return new LeafWorkerState(null, null, null, null, null, null, docBase);
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOUtils.close(clustersHandle, centroidsClone);
+        }
+    }
+
     static class IVFCollectorManager implements KnnCollectorManager {
         private final int k;
         final LongAccumulator longAccumulator;
 
         IVFCollectorManager(int k, IndexSearcher searcher) {
             this.k = k;
-            longAccumulator = searcher.getIndexReader().leaves().size() > 1 ? new LongAccumulator(Long::max, LEAST_COMPETITIVE) : null;
+            // Posting-granular parallelism creates concurrency even within a single leaf, so the competitive frontier
+            // is always shared (never null) across every (worker, leaf) strategy.
+            longAccumulator = new LongAccumulator(Long::max, LEAST_COMPETITIVE);
         }
 
         @Override
