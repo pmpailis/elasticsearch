@@ -12,14 +12,11 @@ import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SortedDocValues;
-import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
-import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.search.TopDocsCollector;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
@@ -64,11 +61,10 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
     }
 
     @Override
-    TopDocs getLeafResults(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
-        throws IOException {
+    protected ESAcceptDocs buildLeafAcceptDocs(LeafReaderContext ctx, Weight filterWeight) throws IOException {
         final LeafReader reader = ctx.reader();
         if (reader.numDocs() == 0) {
-            return TopDocsCollector.EMPTY_TOPDOCS;
+            return null;
         }
         final Bits liveDocs = reader.getLiveDocs();
         final int maxDoc = reader.maxDoc();
@@ -80,13 +76,13 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
             throw new IllegalArgumentException("sliceField must be the first field of the index sort and of type STRING");
         }
 
-        final SortedDocValues sortedDocValues = ctx.reader().getSortedDocValues(sliceField);
+        final SortedDocValues sortedDocValues = reader.getSortedDocValues(sliceField);
         assert sortedDocValues != null : "sliceField must have doc values";
         final int sliceOrd = sortedDocValues.lookupTerm(sliceId);
         if (sliceOrd < 0) {
-            return TopDocsCollector.EMPTY_TOPDOCS;
+            return null;
         }
-        var skipper = ctx.reader().getDocValuesSkipper(sliceField);
+        var skipper = reader.getDocValuesSkipper(sliceField);
         if (skipper == null) {
             throw new IllegalArgumentException("sliceField [" + sliceField + "] must be indexed as a DocValuesSkipper field");
         }
@@ -100,19 +96,16 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
             skipper,
             sliceOrd
         );
-        final AcceptDocs acceptDocs;
         if (filterWeight == null) {
-            acceptDocs = liveDocs == null
+            return liveDocs == null
                 ? new ESAcceptDocs.ESAcceptDocsAll(sliceOrd, sliceAcceptDocsSupplier)
                 : new ESAcceptDocs.BitsAcceptDocs(liveDocs, maxDoc, sliceOrd, sliceAcceptDocsSupplier);
-        } else {
-            ScorerSupplier supplier = filterWeight.scorerSupplier(ctx);
-            if (supplier == null) {
-                return TopDocsCollector.EMPTY_TOPDOCS;
-            }
-            acceptDocs = new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc, sliceOrd, sliceAcceptDocsSupplier);
         }
-        return approximateSearch(ctx, acceptDocs, Integer.MAX_VALUE, knnCollectorManager, visitRatio);
+        ScorerSupplier supplier = filterWeight.scorerSupplier(ctx);
+        if (supplier == null) {
+            return null;
+        }
+        return new ESAcceptDocs.ScorerSupplierAcceptDocs(supplier, liveDocs, maxDoc, sliceOrd, sliceAcceptDocsSupplier);
     }
 
     private static ESAcceptDocs.SliceAcceptDocs getSliceAcceptDocsSupplier(

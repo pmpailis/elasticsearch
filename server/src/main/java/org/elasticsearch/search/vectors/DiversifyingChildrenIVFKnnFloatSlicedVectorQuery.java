@@ -59,6 +59,13 @@ public class DiversifyingChildrenIVFKnnFloatSlicedVectorQuery extends IVFKnnFloa
     }
 
     @Override
+    protected boolean requiresWholeLeafSlices() {
+        // Diversification dedups children per parent within a single collector tied to a leaf context, so a
+        // leaf's postings must not be split across independent worker collectors.
+        return true;
+    }
+
+    @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) return false;
         if (super.equals(o) == false) return false;

@@ -83,7 +83,7 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
     }
 
     @Override
-    protected int getNumberOfVectors(NextFieldEntry entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
+    public int getNumberOfVectors(NextFieldEntry entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
         throws IOException {
         int size = values.size();
         assert esAcceptDocs == null
@@ -757,6 +757,20 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
     }
 
     @Override
+    public int estimatePostingVectorCount(NextFieldEntry entry, FieldInfo fieldInfo, PostingMetadata metadata) {
+        // Per-vector body bytes, mirroring MemorySegmentPostingsVisitor#quantizedByteLength:
+        // packed quantized vector + 3 corrective floats + quantized-component-sum (int).
+        final long perVectorBytes = (long) entry.quantEncoding().getDocPackedLength(fieldInfo.getVectorDimension()) + (Float.BYTES * 3)
+            + Integer.BYTES;
+        // Fixed posting header consumed by resetPostingsScorer before the body:
+        // centroidToParentSqDist (int) + docEncoding (byte). The vectors VInt is negligible and ignored.
+        // For sliced postings metadata.length() spans the whole posting, so this over-approximates the slice's
+        // share; Phase-A treats it as a budget estimate only and never changes which vectors are scored.
+        final long headerBytes = Float.BYTES + Byte.BYTES;
+        final long body = metadata.length() - headerBytes;
+        return body <= 0 ? 1 : Math.max(1, (int) (body / perVectorBytes));
+    }
+
     public PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         FloatVectorValues values,

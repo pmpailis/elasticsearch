@@ -373,6 +373,18 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader<IVFVectorsReader
     }
 
     @Override
+    public int estimatePostingVectorCount(FieldEntry entry, FieldInfo fieldInfo, PostingMetadata metadata) {
+        final int dim = fieldInfo.getVectorDimension();
+        // Per-vector body bytes, mirroring MemorySegmentPostingsVisitor#quantizedByteLength:
+        // quantized vector + 3 corrective floats + quantized-component-sum (short).
+        final long perVectorBytes = (long) (discretize(dim, 64) / 8) + (Float.BYTES * 3) + Short.BYTES;
+        // Fixed posting header consumed by resetPostingsScorer before the body:
+        // centroid floats + centroidDp (int) + docEncoding (byte). The vectors VInt is negligible and ignored.
+        final long headerBytes = (long) dim * Float.BYTES + Float.BYTES + Byte.BYTES;
+        final long body = metadata.length() - headerBytes;
+        return body <= 0 ? 1 : Math.max(1, (int) (body / perVectorBytes));
+    }
+
     public PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         FloatVectorValues values,

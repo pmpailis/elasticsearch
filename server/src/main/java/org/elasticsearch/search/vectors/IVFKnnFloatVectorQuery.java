@@ -14,9 +14,7 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentReader;
-import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.TopDocs;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
 import org.elasticsearch.index.codec.vectors.diskbbq.VectorPreconditioner;
@@ -126,24 +124,12 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
     }
 
     @Override
-    protected TopDocs approximateSearch(
-        LeafReaderContext context,
-        AcceptDocs acceptDocs,
-        int visitedLimit,
-        IVFCollectorManager knnCollectorManager,
-        float visitRatio
-    ) throws IOException {
-        LeafReader reader = context.reader();
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, numCands, originalK, knnCollectorManager.longAccumulator);
-        AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
-        if (knnCollector == null) {
-            return NO_RESULTS;
-        }
-        strategy.setCollector(knnCollector);
-        reader.searchNearestVectors(field, query, knnCollector, acceptDocs);
-        TopDocs results = knnCollector instanceof BulkKnnCollector bulkKnnCollector
-            ? bulkKnnCollector.unsortedTopK()
-            : knnCollector.topDocs();
-        return results != null ? results : NO_RESULTS;
+    protected float[] getQueryVector() {
+        return query;
+    }
+
+    @Override
+    protected int strategyK() {
+        return originalK;
     }
 }

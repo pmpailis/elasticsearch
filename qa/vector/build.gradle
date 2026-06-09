@@ -211,6 +211,20 @@ tasks.register("checkVec", JavaExec) {
   systemProperty "es.logger.out", "console"
   systemProperty "es.logger.level", "INFO"  // Change to DEBUG if needed
   systemProperty 'es.nativelibs.path', TestUtil.getTestLibraryPath(file("../../libs/native/libraries/build/platform/").toString())
+  // The IVF (DiskBBQ) SIMD scoring path goes through the native vector library; enable it so benchmarks
+  // exercise the same code as production.
+  systemProperty 'org.elasticsearch.nativeaccess.enableVectorLibrary', 'true'
+  // Pass through the shared-arena permit cap so benchmarks can tune mmap arena sharing.
+  def sharedArenaMaxPermits = System.getProperty("org.apache.lucene.store.MMapDirectory.sharedArenaMaxPermits")
+  if (sharedArenaMaxPermits != null) {
+    systemProperty 'org.apache.lucene.store.MMapDirectory.sharedArenaMaxPermits', sharedArenaMaxPermits
+  }
+  // Pass through the IVF posting-list worker count so benchmarks can pin it to search_threads on a
+  // force-merged single segment (where leaf-parallelism would otherwise give no parallelism).
+  def ivfWorkers = System.getProperty("es.knn.ivf.workers")
+  if (ivfWorkers != null) {
+    systemProperty 'es.knn.ivf.workers', ivfWorkers
+  }
   jvmArgs '-Xms16g', '-Xmx16g', '-Djava.util.concurrent.ForkJoinPool.common.parallelism=8', '-XX:+UnlockDiagnosticVMOptions', '-XX:+DebugNonSafepoints', '-XX:+HeapDumpOnOutOfMemoryError'
   if (buildParams.getRuntimeJavaVersion().map { it.majorVersion.toInteger() }.get() >= 21) {
     jvmArgs '--add-modules=jdk.incubator.vector', '--enable-native-access=ALL-UNNAMED',

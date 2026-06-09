@@ -28,6 +28,7 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.ReadOnceHint;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
@@ -66,6 +67,15 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     private static final int CAP_REF_SIZE = 1_000_000;
     private static final double CAP_EXPONENT = 0.35;
     static final float DEFAULT_TARGET_RECALL = 0.9f;
+
+    /**
+     * IOContext for the thread-confined, short-lived clusters-file handle used by parallel posting-list
+     * scoring. {@link ReadOnceHint} makes the directory back the handle with a <em>confined</em> arena
+     * (single-thread access, no cross-thread CAS on the memory-segment reference count). We deliberately do
+     * NOT add {@code DataAccessHint.RANDOM}: the posting scan reads each cluster block sequentially, so
+     * {@code ReadAdvice.NORMAL} is correct.
+     */
+    private static final IOContext LIGHTWEIGHT_CLUSTERS_CONTEXT = IOContext.DEFAULT.withHints(ReadOnceHint.INSTANCE);
 
     protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
@@ -142,9 +152,55 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
 
     /** Get the number of vectors to search, which is typically the total number of vectors in the segment or the
      *  number of vectors in a slice if the segment is sliced.*/
-    protected int getNumberOfVectors(E entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
+    public int getNumberOfVectors(E entry, FloatVectorValues values, IndexInput centroidSlice, ESAcceptDocs esAcceptDocs)
         throws IOException {
         return values.size();
+    }
+
+    /**
+     * Estimates the number of vectors stored in a posting list from its on-disk byte length, without scoring
+     * or decoding. The parallel search Phase-A selection uses this to size each leaf's centroid-selection
+     * budget (how many postings to pull from the closest-first iterator) so the parallel path visits the same
+     * volume of vectors as {@link #search}. An estimate is acceptable: it only bounds work, it does not change
+     * which vectors are scored.
+     */
+    public abstract int estimatePostingVectorCount(E entry, FieldInfo fieldInfo, PostingMetadata metadata);
+
+    /**
+     * Non-generic bridge for {@link #estimatePostingVectorCount(FieldEntry, FieldInfo, PostingMetadata)} that
+     * resolves the field entry by number, letting callers holding an {@code IVFVectorsReader<?>} (wildcard)
+     * invoke the estimate without capturing the {@code E} type parameter.
+     */
+    public final int estimatePostingVectorCount(FieldInfo fieldInfo, PostingMetadata metadata) {
+        return estimatePostingVectorCount(fields.get(fieldInfo.number), fieldInfo, metadata);
+    }
+
+    /** The shared, full-arena centroids file handle. Cheap, cold-path reads during centroid selection. */
+    public final IndexInput ivfCentroids() {
+        return ivfCentroids;
+    }
+
+    /** The shared, full-arena clusters file handle. For confined per-thread scoring use {@link #openLightweightClusters()}. */
+    public final IndexInput ivfClusters() {
+        return ivfClusters;
+    }
+
+    /** The {@link FieldEntry} for the given field number, or {@code null} if the field carries no IVF data. */
+    public final E fieldEntry(int fieldNumber) {
+        return fields.get(fieldNumber);
+    }
+
+    /**
+     * Opens a fresh, thread-confined handle to the clusters file for parallel posting-list scoring.
+     * <p>
+     * The returned {@link IndexInput} is backed by a <em>confined</em> arena (see
+     * {@link #LIGHTWEIGHT_CLUSTERS_CONTEXT}): it MUST be opened, used, and closed on the same thread; sharing
+     * it across threads is undefined. Header/checksum validation is skipped — the data file was already
+     * validated when the shared {@link #ivfClusters} handle was opened in the constructor.
+     */
+    public final IndexInput openLightweightClusters() throws IOException {
+        final String fileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, clusterExtension);
+        return state.directory.openInput(fileName, LIGHTWEIGHT_CLUSTERS_CONTEXT);
     }
 
     protected static IndexInput openDataInput(
@@ -350,9 +406,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             k = ivfSearchStrategy.getK();
         }
 
-        if (visitRatio == dynamicVisitRatio) {
-            visitRatio = Math.min(computeDynamicVisitRatio(numCands, k), computeSegmentSizeCap(numVectors));
-        }
+        visitRatio = effectiveVisitRatio(visitRatio, numCands, k, numVectors);
         // we account for soar vectors here. We can potentially visit a vector twice so we multiply by 2 here.
         long maxVectorVisited = (long) (2.0 * visitRatio * numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
@@ -412,6 +466,19 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         return fieldInfo.getVectorDimension() == 0
             || fieldEntry == null
             || (fieldEntry.numCentroids() == 0 && fieldEntry.postingListLength == 0L && fieldEntry.centroidLength == 0L);
+    }
+
+    /**
+     * Resolves the effective visit ratio for a segment. When the caller passes the dynamic sentinel (the
+     * per-reader {@code dynamicVisitRatio}), this blends the Two-Signal model estimate with the segment-size
+     * cap; otherwise the explicit ratio is returned unchanged. Extracted from {@link #search} so the parallel
+     * Phase-A selection derives the identical per-leaf budget as the non-parallel path.
+     */
+    public final float effectiveVisitRatio(float providedVisitRatio, int numCands, int k, int numVectors) {
+        if (providedVisitRatio == dynamicVisitRatio) {
+            return Math.min(computeDynamicVisitRatio(numCands, k), computeSegmentSizeCap(numVectors));
+        }
+        return providedVisitRatio;
     }
 
     /**
@@ -481,7 +548,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         IOUtils.close(closeables);
     }
 
-    protected static class FieldEntry implements GenericFlatVectorReaders.Field {
+    public static class FieldEntry implements GenericFlatVectorReaders.Field {
         protected final String rawVectorFormatName;
         protected final boolean useDirectIOReads;
         protected final VectorSimilarityFunction similarityFunction;
