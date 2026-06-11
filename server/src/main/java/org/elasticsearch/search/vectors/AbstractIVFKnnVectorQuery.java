@@ -45,6 +45,7 @@ import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.CentroidIterator;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
 import org.elasticsearch.index.codec.vectors.diskbbq.PostingMetadata;
+import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.Closeable;
@@ -183,18 +184,19 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             }
         }
 
-        // Phase B: distribute the selected postings into slices and score them with a fixed worker pool.
-        int parallelism = Math.max(1, Runtime.getRuntime().availableProcessors());
+        // Phase B: distribute the selected postings into slices and score them with a fixed worker pool. Size the pool
+        // to the search executor's parallelism (not the host CPU count) and fall back to serial scoring when the
+        // executor is already backlogged, so one query never oversubscribes the search threads or steals capacity from
+        // sibling queries under load.
+        int parallelism = scoringParallelism(indexSearcher);
         Slice[] slices = IVFSlicePlanner.buildSlices(ivfLeaves, parallelism, requiresWholeLeafSlices());
         boolean[] contended = IVFSlicePlanner.markContendedLeaves(ivfLeaves, Math.max(1, Math.min(parallelism, slices.length)));
         AtomicInteger cursor = new AtomicInteger(0);
 
+        int workerCount = slices.length > 0 ? Math.min(parallelism, slices.length) : 0;
         List<Callable<List<LeafResult>>> scoreTasks = new ArrayList<>();
-        if (slices.length > 0) {
-            int workerCount = Math.min(parallelism, slices.length);
-            for (int w = 0; w < workerCount; w++) {
-                scoreTasks.add(() -> runWorker(slices, cursor, contended, ivfLeaves, knnCollectorManager));
-            }
+        for (int w = 0; w < workerCount; w++) {
+            scoreTasks.add(() -> runWorker(slices, cursor, contended, ivfLeaves, knnCollectorManager));
         }
         for (LeafSearchTask fallback : fallbackLeaves) {
             scoreTasks.add(() -> List.of(runFallback(fallback, knnCollectorManager)));
@@ -214,6 +216,20 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             return Queries.NO_DOCS_INSTANCE;
         }
         return new KnnScoreDocQuery(topK.scoreDocs, reader);
+    }
+
+    /**
+     * The number of Phase-B scoring workers to run. Under a {@link ContextIndexSearcher} (the production search path)
+     * this is the searcher's resolved maximum slice count, which is already sized to the search thread pool and falls
+     * back to {@code 1} when the pool is saturated — so a single query never oversubscribes the search threads or
+     * steals pool capacity from concurrent queries under load. Without that context (e.g. a bare {@link IndexSearcher}
+     * in a microbenchmark) there is no pool to consult, so fall back to the host CPU count.
+     */
+    private static int scoringParallelism(IndexSearcher indexSearcher) {
+        if (indexSearcher instanceof ContextIndexSearcher contextIndexSearcher) {
+            return Math.max(1, contextIndexSearcher.getMaximumNumberOfSlices());
+        }
+        return Math.max(1, Runtime.getRuntime().availableProcessors());
     }
 
     /**
