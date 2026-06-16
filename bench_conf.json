@@ -1,0 +1,43 @@
+[
+  {
+    "dataset": {
+      "gcp": { "name": "cohere-msmarco-v2-embed-english-v3-10M" }
+    },
+    "index_type": "hnsw",
+    "num_queries": 300,
+    "k": 10,
+    "index_threads": 4,
+    "quantize_bits": 1,
+    "search_threads": 8,
+    "num_searchers": 1,
+    "reindex": true,
+    "force_merge": false,
+    "vector_space": "dot_product",
+    "filter_selectivity": [0.55, 0.70, 0.80, 0.90, 0.95, 0.99, 1.0],
+    "filter_type": ["random", "range", "term", "range_term"],
+    "filter_cache": false,
+    "post_filter": [false, true],
+    "seed": 42
+  },
+  {
+    "dataset": {
+      "gcp": { "name": "cohere-msmarco-v2-embed-english-v3-10M" }
+    },
+    "index_type": "hnsw",
+    "num_queries": 300,
+    "k": 10,
+    "index_threads": 4,
+    "quantize_bits": 1,
+    "search_threads": 8,
+    "num_searchers": 1,
+    "reindex": true,
+    "force_merge": true,
+    "vector_space": "dot_product",
+    "filter_selectivity": [0.55, 0.70, 0.80, 0.90, 0.95, 0.99, 1.0],
+    "filter_type": ["random", "range", "term", "range_term"],
+    "filter_cache": false,
+    "post_filter": [false, true],
+    "seed": 42
+  }
+]
+

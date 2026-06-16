@@ -20,12 +20,14 @@
 
 package org.elasticsearch.test.knn;
 
+import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.StoredFields;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.queries.function.FunctionQuery;
@@ -48,6 +50,7 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
@@ -526,6 +529,7 @@ public class KnnSearcher {
         finalResults.topK = searchParameters.topK();
         finalResults.earlyTermination = searchParameters.earlyTermination();
         finalResults.postFilter = searchParameters.postFilter();
+        finalResults.filterType = searchParameters.filterType();
         if (finalResults.totalIndexVectors > 0) {
             finalResults.actualVisitPercentage = (finalResults.averageVisited / finalResults.totalIndexVectors) * 100.0;
         }
@@ -593,6 +597,49 @@ public class KnnSearcher {
             }
             return new BitSetQuery(segmentDocs, filterCached);
         }
+    }
+
+    static Query generateRangeQuery(int numDocs, float selectivity) {
+        long upper = Math.max(0, (long) Math.ceil(selectivity * numDocs) - 1);
+        return LongPoint.newRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper);
+    }
+
+    static Query generateTermQuery(float selectivity) {
+        return new TermQuery(new Term(KnnIndexer.nearestTermFilterField(selectivity), "1"));
+    }
+
+    static Query generateRangeTermQuery(int numDocs, float selectivity) {
+        return new BooleanQuery.Builder().add(generateRangeQuery(numDocs, selectivity), BooleanClause.Occur.FILTER)
+            .add(generateTermQuery(selectivity), BooleanClause.Occur.FILTER)
+            .build();
+    }
+
+    static Query generateTermRandomQuery(int numDocs, float selectivity, long seed, Path indexPath, boolean filterCached)
+        throws IOException {
+        return new BooleanQuery.Builder().add(generateTermQuery(selectivity), BooleanClause.Occur.FILTER)
+            .add(generateRandomQuery(new Random(seed), indexPath, numDocs, selectivity, filterCached), BooleanClause.Occur.FILTER)
+            .build();
+    }
+
+    public static Query generateFilterQuery(
+        String filterType,
+        int numDocs,
+        float selectivity,
+        long seed,
+        Path indexPath,
+        boolean filterCached
+    ) throws IOException {
+        if (selectivity >= 1f) {
+            return null;
+        }
+        return switch (filterType) {
+            case "random" -> generateRandomQuery(new Random(seed), indexPath, numDocs, selectivity, filterCached);
+            case "range" -> generateRangeQuery(numDocs, selectivity);
+            case "term" -> generateTermQuery(selectivity);
+            case "range_term" -> generateRangeTermQuery(numDocs, selectivity);
+            case "term_random" -> generateTermRandomQuery(numDocs, selectivity, seed, indexPath, filterCached);
+            default -> throw new IllegalArgumentException("Unknown filter_type: " + filterType);
+        };
     }
 
     private int[][] getOrComputePartitionedNN(
@@ -685,7 +732,8 @@ public class KnnSearcher {
                 searchParameters.topK(),
                 similarityFunction.ordinal(),
                 normalizeVectors,
-                searchParameters.filterSelectivity()
+                searchParameters.filterSelectivity(),
+                searchParameters.filterType()
             ),
             36
         );

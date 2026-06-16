@@ -725,7 +725,8 @@ public class KnnIndexTester {
                 "oversampling_factor",
                 "num_candidates",
                 "early_termination",
-                "post_filter"
+                "post_filter",
+                "filter_type"
             );
             if (hasPartitionRecall) {
                 searchHeaderList.add("partition_recall_min");
@@ -770,7 +771,8 @@ public class KnnIndexTester {
                     String.format(Locale.ROOT, "%.2f", queryResult.overSamplingFactor),
                     String.format(Locale.ROOT, "%d", queryResult.numCandidates),
                     Boolean.toString(queryResult.earlyTermination),
-                    Boolean.toString(queryResult.postFilter)
+                    Boolean.toString(queryResult.postFilter),
+                    queryResult.filterType
                 );
                 if (hasPartitionRecall) {
                     String partitionMin = "";
@@ -869,6 +871,7 @@ public class KnnIndexTester {
         double overSamplingFactor;
         boolean earlyTermination;
         boolean postFilter;
+        String filterType;
         int numCandidates;
         int topK;
         Map<String, Float> perPartitionRecall;
@@ -1010,6 +1013,7 @@ public class KnnIndexTester {
         "over_sampling_factor",
         "early_termination",
         "post_filter",
+        "filter_type",
         "filter_selectivity",
         "filter_cached",
         "search_threads",
@@ -1122,6 +1126,7 @@ public class KnnIndexTester {
                             String.format(Locale.ROOT, "%.4f", sp.overSamplingFactor()),
                             Boolean.toString(sp.earlyTermination()),
                             Boolean.toString(sp.postFilter()),
+                            sp.filterType(),
                             String.format(Locale.ROOT, "%.4f", sp.filterSelectivity()),
                             Boolean.toString(sp.filterCached()),
                             Integer.toString(sp.searchThreads()),

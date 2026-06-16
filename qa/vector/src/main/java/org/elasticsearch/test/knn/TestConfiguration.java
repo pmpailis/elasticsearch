@@ -121,6 +121,7 @@ public record TestConfiguration(
     static final ParseField DO_PRECONDITION = new ParseField("precondition");
     static final ParseField PRECONDITIONING_BLOCK_DIMS = new ParseField("preconditioning_block_dims");
     static final ParseField FILTER_CACHED = new ParseField("filter_cache");
+    static final ParseField FILTER_TYPE_FIELD = new ParseField("filter_type");
     static final ParseField SEARCH_PARAMS = new ParseField("search_params");
     static final ParseField FLAT_VECTOR_THRESHOLD = new ParseField("flat_vector_threshold");
     static final ParseField DIRECTORY_TYPE_FIELD = new ParseField("directory_type");
@@ -191,6 +192,7 @@ public record TestConfiguration(
         PARSER.declareBoolean(Builder::setDoPrecondition, DO_PRECONDITION);
         PARSER.declareInt(Builder::setPreconditioningBlockDims, PRECONDITIONING_BLOCK_DIMS);
         PARSER.declareFieldArray(Builder::setFilterCached, (p, c) -> p.booleanValue(), FILTER_CACHED, ObjectParser.ValueType.VALUE_ARRAY);
+        PARSER.declareStringArray(Builder::setFilterType, FILTER_TYPE_FIELD);
         PARSER.declareObjectArray(Builder::setSearchParams, (p, c) -> SearchParameters.fromXContent(p), SEARCH_PARAMS);
         PARSER.declareInt(Builder::setMergeWorkers, MERGE_WORKERS_FIELD);
         PARSER.declareInt(Builder::setFlatVectorThreshold, FLAT_VECTOR_THRESHOLD);
@@ -265,6 +267,12 @@ public record TestConfiguration(
             new ParameterHelp("num_searchers", "array[int]", "Search: number of parallel searchers."),
             new ParameterHelp("filter_selectivity", "array[float]", "Search: filter selectivity (0.0-1.0)."),
             new ParameterHelp("filter_cache", "array[boolean]", "Search: whether filters are cached."),
+            new ParameterHelp(
+                "filter_type",
+                "array[string]",
+                "Search: filter query type — random (pre-computed bitset), range (LongPoint range), "
+                    + "term (indexed StringField), or range_term (combined range + term)."
+            ),
             new ParameterHelp("early_termination", "array[boolean]", "Search: allow early termination when possible."),
             new ParameterHelp("seed", "array[long]", "Search: random seed used random filters."),
             new ParameterHelp(
@@ -417,6 +425,7 @@ public record TestConfiguration(
         private boolean doPrecondition = false;
         private int preconditioningBlockDims = 64;
         private List<Boolean> filterCached = List.of(Boolean.TRUE);
+        private List<String> filterType = List.of("random");
         private List<SearchParameters.Builder> searchParams = null;
         private int numMergeWorkers = 1;
         private int flatVectorThreshold = -1; // -1 mean use default (vectorPerCluster * 3)
@@ -630,6 +639,11 @@ public record TestConfiguration(
 
         public Builder setFilterCached(List<Boolean> filterCached) {
             this.filterCached = filterCached;
+            return this;
+        }
+
+        public Builder setFilterType(List<String> filterType) {
+            this.filterType = filterType;
             return this;
         }
 
@@ -887,7 +901,8 @@ public record TestConfiguration(
                     filterCached.getFirst(),
                     earlyTermination.getFirst(),
                     postFilter.getFirst(),
-                    seed.getFirst()
+                    seed.getFirst(),
+                    filterType.getFirst()
                 );
 
                 for (var so : searchParams) {
@@ -980,6 +995,7 @@ public record TestConfiguration(
             builder.field(FORCE_MERGE_MAX_NUM_SEGMENTS_FIELD.getPreferredName(), forceMergeMaxNumSegments);
             builder.field(ON_DISK_RESCORE_FIELD.getPreferredName(), onDiskRescore);
             builder.field(FILTER_CACHED.getPreferredName(), filterCached);
+            builder.field(FILTER_TYPE_FIELD.getPreferredName(), filterType);
             if (mergePolicy != null) {
                 builder.field(MERGE_POLICY_FIELD.getPreferredName(), mergePolicy.name().toLowerCase(Locale.ROOT));
             }
@@ -1003,7 +1019,8 @@ public record TestConfiguration(
                 filterCached.size(),
                 earlyTermination.size(),
                 postFilter.size(),
-                seed.size()
+                seed.size(),
+                filterType.size()
             );
             return lengths.stream().max(Integer::compareTo).get();
         }
@@ -1021,7 +1038,8 @@ public record TestConfiguration(
                     filterCached,
                     earlyTermination,
                     postFilter,
-                    seed
+                    seed,
+                    filterType
                 )
             ).stream()
                 .map(
@@ -1036,7 +1054,8 @@ public record TestConfiguration(
                         (Boolean) params.get(7),
                         (Boolean) params.get(8),
                         (Boolean) params.get(9),
-                        (Long) params.get(10)
+                        (Long) params.get(10),
+                        (String) params.get(11)
                     )
                 )
                 .toList();

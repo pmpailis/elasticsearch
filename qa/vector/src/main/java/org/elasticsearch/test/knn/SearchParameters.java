@@ -28,7 +28,8 @@ public record SearchParameters(
     boolean filterCached,
     boolean earlyTermination,
     boolean postFilter,
-    long seed
+    long seed,
+    String filterType
 ) {
 
     static final ObjectParser<SearchParameters.Builder, Void> PARSER = new ObjectParser<>(
@@ -48,6 +49,7 @@ public record SearchParameters(
         PARSER.declareBoolean(Builder::setPostFilter, TestConfiguration.POST_FILTER_FIELD);
         PARSER.declareBoolean(Builder::setFilterCached, TestConfiguration.FILTER_CACHED);
         PARSER.declareFloat(Builder::setFilterSelectivity, TestConfiguration.FILTER_SELECTIVITY_FIELD);
+        PARSER.declareString(Builder::setFilterType, TestConfiguration.FILTER_TYPE_FIELD);
         PARSER.declareLong(Builder::setSeed, TestConfiguration.SEED_FIELD);
     }
 
@@ -71,6 +73,7 @@ public record SearchParameters(
         private Boolean earlyTermination;
         private Boolean postFilter;
         private Long seed;
+        private String filterType;
 
         public Builder setNumCandidates(int numCandidates) {
             this.numCandidates = numCandidates;
@@ -122,6 +125,11 @@ public record SearchParameters(
             return this;
         }
 
+        public Builder setFilterType(String filterType) {
+            this.filterType = filterType;
+            return this;
+        }
+
         public Builder setSeed(long seed) {
             this.seed = seed;
             return this;
@@ -140,6 +148,7 @@ public record SearchParameters(
             this.earlyTermination = Optional.ofNullable(earlyTermination).orElse(params.earlyTermination());
             this.postFilter = Optional.ofNullable(postFilter).orElse(params.postFilter());
             this.seed = Optional.ofNullable(seed).orElse(params.seed());
+            this.filterType = Optional.ofNullable(filterType).orElse(params.filterType());
             return this;
         }
 
@@ -168,7 +177,8 @@ public record SearchParameters(
                 filterCached,
                 earlyTermination,
                 postFilter,
-                seed
+                seed,
+                filterType
             );
         }
 
@@ -204,6 +214,9 @@ public record SearchParameters(
             }
             if (postFilter != null) {
                 builder.field(TestConfiguration.POST_FILTER_FIELD.getPreferredName(), postFilter);
+            }
+            if (filterType != null) {
+                builder.field(TestConfiguration.FILTER_TYPE_FIELD.getPreferredName(), filterType);
             }
             if (seed != null) {
                 builder.field(TestConfiguration.SEED_FIELD.getPreferredName(), seed);

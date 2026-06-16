@@ -19,7 +19,6 @@ import org.elasticsearch.test.knn.KnnSearcher;
 import org.elasticsearch.test.knn.SearchParameters;
 
 import java.io.IOException;
-import java.util.Random;
 
 /**
  *  Generates non-partitioned vector data for KNN benchmarking.
@@ -32,7 +31,11 @@ public final class NonPartitionDataGenerator extends DataGenerator {
 
     @Override
     public KnnIndexTester.IndexingSetup createIndexingSetup() throws IOException {
-        return new KnnIndexTester.IndexingSetup(docs(), new KnnIndexer.DefaultDocumentFactory(), numDocs());
+        return new KnnIndexTester.IndexingSetup(
+            docs(),
+            new KnnIndexer.FilterFieldDocumentFactory(new KnnIndexer.DefaultDocumentFactory()),
+            numDocs()
+        );
     }
 
     @Override
@@ -55,15 +58,14 @@ public final class NonPartitionDataGenerator extends DataGenerator {
             }
         }
 
-        Query selectivityFilter = searchParameters.filterSelectivity() < 1f
-            ? KnnSearcher.generateRandomQuery(
-                new Random(searchParameters.seed()),
-                searcher.indexPath(),
-                searcher.numDocs(),
-                searchParameters.filterSelectivity(),
-                searchParameters.filterCached()
-            )
-            : null;
+        Query selectivityFilter = KnnSearcher.generateFilterQuery(
+            searchParameters.filterType(),
+            searcher.numDocs(),
+            searchParameters.filterSelectivity(),
+            searchParameters.seed(),
+            searcher.indexPath(),
+            searchParameters.filterCached()
+        );
 
         var provider = new KnnSearcher.SimpleFilterQueryProvider(numQueries(), selectivityFilter);
         var consumer = new KnnSearcher.FileBasedResultsConsumer(searcher, this, selectivityFilter);

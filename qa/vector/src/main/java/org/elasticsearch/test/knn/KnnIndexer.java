@@ -22,11 +22,15 @@ package org.elasticsearch.test.knn;
 
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.document.LongPoint;
+import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StoredField;
+import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -68,6 +72,20 @@ public class KnnIndexer {
     public static final String ID_FIELD = "id";
     public static final String VECTOR_FIELD = "vector";
     public static final String PARTITION_ID_FIELD = "partition_id";
+    public static final String NUMERIC_FILTER_FIELD = "numeric_filter";
+    static final String TERM_FILTER_PREFIX = "term_filter_";
+    static final float[] TERM_FILTER_SELECTIVITIES = { 0.10f, 0.25f, 0.40f, 0.55f, 0.70f, 0.80f, 0.90f, 0.95f, 0.99f };
+    static final int[][] TERM_FILTER_RULES = {
+        { 10, 1 },   // 10%: docOrd % 10 < 1
+        { 4, 1 },    // 25%: docOrd % 4 < 1
+        { 5, 2 },    // 40%: docOrd % 5 < 2
+        { 20, 11 },  // 55%: docOrd % 20 < 11
+        { 10, 7 },   // 70%: docOrd % 10 < 7
+        { 5, 4 },    // 80%: docOrd % 5 < 4
+        { 10, 9 },   // 90%: docOrd % 10 < 9
+        { 20, 19 },  // 95%: docOrd % 20 < 19
+        { 100, 99 }, // 99%: docOrd % 100 < 99
+    };
 
     private final List<Path> docsPath;
     private final Path indexPath;
@@ -371,6 +389,50 @@ public class KnnIndexer {
             doc.add(SortedDocValuesField.indexedField(PARTITION_ID_FIELD, new BytesRef(docPartitionIds[docOrd])));
             return doc;
         }
+    }
+
+    /**
+     * Wraps another {@link DocumentFactory} and appends numeric and term filter fields to every document.
+     * These fields enable benchmarking with real Lucene filter queries (range, term) instead of pre-computed bitsets.
+     */
+    public static class FilterFieldDocumentFactory implements DocumentFactory {
+        private final DocumentFactory inner;
+
+        public FilterFieldDocumentFactory(DocumentFactory inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public Document createDocument(IndexableField vectorField, int docOrd) {
+            Document doc = inner.createDocument(vectorField, docOrd);
+            doc.add(new LongPoint(NUMERIC_FILTER_FIELD, docOrd));
+            doc.add(new NumericDocValuesField(NUMERIC_FILTER_FIELD, docOrd));
+            for (int i = 0; i < TERM_FILTER_SELECTIVITIES.length; i++) {
+                int modulus = TERM_FILTER_RULES[i][0];
+                int threshold = TERM_FILTER_RULES[i][1];
+                String fieldName = termFilterFieldName(TERM_FILTER_SELECTIVITIES[i]);
+                String value = (docOrd % modulus < threshold) ? "1" : "0";
+                doc.add(new StringField(fieldName, value, Field.Store.NO));
+            }
+            return doc;
+        }
+    }
+
+    static String termFilterFieldName(float selectivity) {
+        return TERM_FILTER_PREFIX + Math.round(selectivity * 100);
+    }
+
+    static String nearestTermFilterField(float selectivity) {
+        float bestDist = Float.MAX_VALUE;
+        int bestIdx = 0;
+        for (int i = 0; i < TERM_FILTER_SELECTIVITIES.length; i++) {
+            float dist = Math.abs(TERM_FILTER_SELECTIVITIES[i] - selectivity);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+        return termFilterFieldName(TERM_FILTER_SELECTIVITIES[bestIdx]);
     }
 
     static class IndexerThread implements Runnable {
