@@ -184,11 +184,11 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         final float[] queryVector = getQueryVector();
 
         TopDocs topK;
-        if (contexts.size() >= CONFIGURED_WORKERS) {
-            topK = rewritePerLeaf(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
-        } else {
+//        if (contexts.size() >= CONFIGURED_WORKERS) {
+//            topK = rewritePerLeaf(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
+//        } else {
             topK = rewriteGlobalQueue(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
-        }
+//        }
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
