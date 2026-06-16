@@ -1,0 +1,48 @@
+[
+  {
+    "dataset": {
+      "gcp": { "name": "cohere-msmarco-v2-embed-english-v3-10M" }
+    },
+    "num_docs": 10000000,
+    "num_queries": 200,
+    "visit_percentage": [0.1, 1, 5],
+    "ivf_cluster_size": 384,
+    "over_sampling_factor": 3,
+    "index_type": "ivf",
+    "k": 10,
+    "index_threads": 4,
+    "quantize_bits": 1,
+    "search_threads": [1, 4, 8],
+    "num_searchers": 1,
+    "reindex": true,
+    "force_merge": false,
+    "vector_space": "maximum_inner_product",
+    "dimensions": -1,
+    "filter_selectivity": [1.0, 0.5, 0.1],
+    "filter_cache": false,
+    "seed": 42
+  },
+  {
+    "dataset": {
+      "gcp": { "name": "cohere-msmarco-v2-embed-english-v3-10M" }
+    },
+    "num_docs": 10000000,
+    "num_queries": 200,
+    "visit_percentage": [0.1, 1, 5],
+    "ivf_cluster_size": 384,
+    "over_sampling_factor": 3,
+    "index_type": "ivf",
+    "k": 10,
+    "index_threads": 4,
+    "quantize_bits": 1,
+    "search_threads": [1, 4, 8],
+    "num_searchers": 1,
+    "reindex": true,
+    "force_merge": true,
+    "vector_space": "maximum_inner_product",
+    "dimensions": -1,
+    "filter_selectivity": [1.0, 0.5, 0.1],
+    "filter_cache": false,
+    "seed": 42
+  }
+]
