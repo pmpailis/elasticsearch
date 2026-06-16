@@ -173,12 +173,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
 
         final List<LeafReaderContext> contexts = reader.leaves();
-        // We request 2*k as we are using it as an approximation measure: the collector must gather at least
-        // 2*k results to cover oversampling duplicates produced by SOAR (a vector may live in two postings).
         final IVFCollectorManager knnCollectorManager = getKnnCollectorManager(Math.round(2f * k), indexSearcher);
         final TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
 
-        // Preconditioning mutates the shared query vector; run it sequentially before the parallel phases.
         if (doPrecondition) {
             for (LeafReaderContext context : contexts) {
                 preconditionQuery(context);
@@ -186,7 +183,95 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
         final float[] queryVector = getQueryVector();
 
-        // Phase A: per-leaf preparation (parallel, no vector scoring).
+        TopDocs topK;
+        if (contexts.size() >= CONFIGURED_WORKERS) {
+            topK = rewritePerLeaf(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
+        } else {
+            topK = rewriteGlobalQueue(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
+        }
+        vectorOpsCount = (int) topK.totalHits.value();
+        if (topK.scoreDocs.length == 0) {
+            return Queries.NO_DOCS_INSTANCE;
+        }
+        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+    }
+
+    /**
+     * Per-leaf scoring path: delegates to the codec's optimized single-pass search per leaf. Used when
+     * there are enough segments to saturate the worker pool via the {@link TaskExecutor}'s segment-level
+     * dispatch. This avoids the Phase A/B/C overhead of the global posting queue, which only helps when
+     * there are fewer segments than workers (e.g. a single force-merged segment).
+     */
+    private TopDocs rewritePerLeaf(
+        List<LeafReaderContext> contexts,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float[] queryVector,
+        TaskExecutor taskExecutor
+    ) throws IOException {
+        final List<Callable<TopDocs>> tasks = new ArrayList<>(contexts.size());
+        for (LeafReaderContext context : contexts) {
+            tasks.add(() -> searchLeafDirect(context, filterWeight, knnCollectorManager, queryVector));
+        }
+        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
+        return mergeLeafResults(k, perLeafResults);
+    }
+
+    private TopDocs searchLeafDirect(
+        LeafReaderContext ctx,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float[] queryVector
+    ) throws IOException {
+        ESAcceptDocs acceptDocs = buildLeafAcceptDocs(ctx, filterWeight);
+        if (acceptDocs == null) {
+            return NO_RESULTS;
+        }
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
+            providedVisitRatio,
+            numCands,
+            strategyK(),
+            knnCollectorManager.longAccumulator
+        );
+        AbstractMaxScoreKnnCollector collector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
+        if (collector == null) {
+            return NO_RESULTS;
+        }
+        strategy.setCollector(collector);
+        ctx.reader().searchNearestVectors(field, queryVector, collector, acceptDocs);
+        TopDocs results = drain(collector);
+        if (results.scoreDocs.length == 0) {
+            return results;
+        }
+        IntObjectHashMap<ScoreDoc> dedupByDoc = new IntObjectHashMap<>(results.scoreDocs.length * 4 / 3);
+        for (ScoreDoc scoreDoc : results.scoreDocs) {
+            int globalDoc = scoreDoc.doc + ctx.docBase;
+            ScoreDoc existing = dedupByDoc.get(globalDoc);
+            if (existing == null || scoreDoc.score > existing.score) {
+                scoreDoc.doc = globalDoc;
+                dedupByDoc.put(globalDoc, scoreDoc);
+            }
+        }
+        ScoreDoc[] deduplicatedScoreDocs = new ScoreDoc[dedupByDoc.size()];
+        int idx = 0;
+        for (IntObjectHashMap.IntObjectCursor<ScoreDoc> cursor : dedupByDoc) {
+            deduplicatedScoreDocs[idx++] = cursor.value;
+        }
+        return new TopDocs(results.totalHits, deduplicatedScoreDocs);
+    }
+
+    /**
+     * Global posting queue path: Phase A selects postings across all leaves, Phase B scores them via a
+     * shared worker pool, Phase C merges and deduplicates. Used when there are fewer segments than workers
+     * to exploit within-segment parallelism.
+     */
+    private TopDocs rewriteGlobalQueue(
+        List<LeafReaderContext> contexts,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float[] queryVector,
+        TaskExecutor taskExecutor
+    ) throws IOException {
         final List<Callable<LeafSearchTask>> prepTasks = new ArrayList<>(contexts.size());
         for (LeafReaderContext context : contexts) {
             final int leafIdx = context.ord;
@@ -207,7 +292,6 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             }
         }
 
-        // Phase B: score postings.
         final List<LeafResult> leafResults = new ArrayList<>();
         if (ivfLeaves.isEmpty() == false) {
             if (requiresWholeLeafSlices()) {
@@ -220,16 +304,10 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             leafResults.addAll(scoreFallbackLeaves(fallbackLeaves, knnCollectorManager, queryVector, taskExecutor));
         }
 
-        // Phase C: merge.
         if (leafResults.isEmpty()) {
-            return Queries.NO_DOCS_INSTANCE;
+            return NO_RESULTS;
         }
-        TopDocs topK = mergeAllResults(leafResults, contexts);
-        vectorOpsCount = (int) topK.totalHits.value();
-        if (topK.scoreDocs.length == 0) {
-            return Queries.NO_DOCS_INSTANCE;
-        }
-        return new KnnScoreDocQuery(topK.scoreDocs, reader);
+        return mergeAllResults(leafResults, contexts);
     }
 
     /**
@@ -352,6 +430,27 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             int estimated = reader.estimatePostingVectorCount(entry, fieldInfo, metadata);
             postings.add(new PostingSearchTask(metadata.queryCentroidOrdinal(), metadata.documentCentroidScore(), estimated, metadata));
             expectedDocs += estimated;
+        }
+        // Filter back-fill pre-compensation (mirrors IVFVectorsReader#search Loop 2).
+        // When a filter is present, the primary budget may yield too few post-filter vectors.
+        // Estimate actualDocs and select more postings until the expected post-filter count
+        // meets the back-fill target. Phase B's competitive frontier prunes these if the
+        // collector fills from the primary set alone.
+        if (percentFiltered < 1.0f && !visitAllPostings) {
+            float unfilteredRatioVisited = (float) expectedDocs / numVectors;
+            long filteredVectors = (long) Math.ceil(numVectors * (double) percentFiltered);
+            float expectedScored = Math.min(2.0f * filteredVectors * unfilteredRatioVisited, expectedDocs / 2.0f);
+            float estimatedActualDocs = expectedDocs * percentFiltered;
+
+            while (centroidIterator.hasNext() && (estimatedActualDocs < expectedScored || estimatedActualDocs < collectorK)) {
+                PostingMetadata metadata = centroidIterator.nextPosting();
+                int estimated = reader.estimatePostingVectorCount(entry, fieldInfo, metadata);
+                postings.add(
+                    new PostingSearchTask(metadata.queryCentroidOrdinal(), metadata.documentCentroidScore(), estimated, metadata)
+                );
+                expectedDocs += estimated;
+                estimatedActualDocs += estimated * percentFiltered;
+            }
         }
         if (postings.isEmpty()) {
             return null;

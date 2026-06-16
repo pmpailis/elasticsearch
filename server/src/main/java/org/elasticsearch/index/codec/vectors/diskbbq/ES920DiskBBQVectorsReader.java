@@ -489,6 +489,11 @@ public class ES920DiskBBQVectorsReader extends IVFVectorsReader<IVFVectorsReader
         }
 
         @Override
+        public void prefetch(PostingMetadata metadata) throws IOException {
+            indexInput.prefetch(metadata.offset(), metadata.length());
+        }
+
+        @Override
         public int resetPostingsScorer(PostingMetadata postingMetadata) throws IOException {
             indexInput.seek(postingMetadata.offset());
             indexInput.readFloats(centroid, 0, centroid.length);

@@ -703,6 +703,13 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
 
         /** returns the number of scored documents */
         int visit(KnnCollector collector) throws IOException;
+
+        /**
+         * Hints that the given posting's data should be paged into memory. Called by the parallel scoring
+         * pipeline to overlap I/O for the next posting with CPU work on the current one. Implementations
+         * backed by memory-mapped files delegate to {@link IndexInput#prefetch}; others may no-op.
+         */
+        default void prefetch(PostingMetadata metadata) throws IOException {}
     }
 
 }
