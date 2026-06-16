@@ -199,6 +199,15 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     }
 
     /**
+     * Opens a fresh, thread-confined {@link IndexInput} over the centroid file, analogous to
+     * {@link #openLightweightClusters()} for the clusters file.
+     */
+    public final IndexInput openLightweightCentroids() throws IOException {
+        final String centroidsFileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, centroidExtension);
+        return state.directory.openInput(centroidsFileName, LIGHTWEIGHT_CTX);
+    }
+
+    /**
      * Resolves the visit ratio exactly as {@link #search} does: when the caller passes the sentinel
      * {@code dynamicVisitRatio} the ratio is derived from the Two-Signal model and capped by segment size;
      * otherwise the explicitly provided ratio is honoured. Exposed so the parallel preparation phase can size

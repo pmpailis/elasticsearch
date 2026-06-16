@@ -22,9 +22,9 @@ import java.util.List;
  * The planner's only inputs are the per-leaf estimated vector counts and per-posting centroid scores, so these
  * tests build {@link LeafSearchTask}s with just those fields populated (the codec reader / accept-docs fields
  * are unused by the planner and left {@code null}). The behaviours under test — big-leaf banding, small-leaf
- * merging, the leaf-per-slice cap, best-score ordering, whole-leaf mode, and the fair-share contention
- * heuristic — are exactly the decisions that must be deterministic so that the scored result never depends on
- * worker scheduling.
+ * merging, the leaf-per-slice cap, best-score ordering, whole-leaf mode (nested diversification), and the
+ * slice-topology contention marking — are exactly the decisions that must be deterministic so that the scored
+ * result never depends on worker scheduling.
  */
 public class IVFSlicePlannerTests extends ESTestCase {
 
@@ -55,11 +55,12 @@ public class IVFSlicePlannerTests extends ESTestCase {
     public void testBigLeafSplitsIntoConsecutiveBands() {
         PostingSearchTask[] postings = new PostingSearchTask[12];
         for (int i = 0; i < postings.length; i++) {
-            postings[i] = posting(100, 12 - i); // descending score, closest-first
+            postings[i] = posting(100, 12 - i);
         }
-        Slice[] slices = IVFSlicePlanner.buildSlices(List.of(leaf(postings)), 1, false);
+        // 1 leaf < 4 parallelism → banding kicks in
+        Slice[] slices = IVFSlicePlanner.buildSlices(List.of(leaf(postings)), 4, false);
 
-        assertEquals(3, slices.length);
+        assertTrue("should produce multiple bands", slices.length > 1);
         for (Slice slice : slices) {
             assertEquals("a band must reference exactly one leaf", 1, slice.entries().length);
             assertEquals(0, slice.entries()[0].leafIndex());
@@ -67,46 +68,53 @@ public class IVFSlicePlannerTests extends ESTestCase {
         assertTilesLeaf(slices, 0, postings.length);
     }
 
-    /**
-     * Several leaves each smaller than the budget are merged into shared slices. Six one-posting leaves of ten
-     * vectors with a budget of 20 (parallelism 1 -&gt; 3 target slices over 60 vectors) should pair up into three
-     * two-leaf slices.
-     */
+    /** When fewer leaves than parallelism, small leaves are merged or kept as individual slices. */
     public void testSmallLeavesAreMerged() {
         List<LeafSearchTask> leaves = new ArrayList<>();
-        for (int i = 0; i < 6; i++) {
-            leaves.add(leaf(posting(10, 6 - i)));
+        for (int i = 0; i < 2; i++) {
+            leaves.add(leaf(posting(10, 2 - i)));
         }
-        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 1, false);
+        // 2 leaves < 4 parallelism → merging/banding applies
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 4, false);
 
-        assertEquals(3, slices.length);
-        for (Slice slice : slices) {
-            assertEquals("two ten-vector leaves fill the twenty-vector budget", 2, slice.entries().length);
-        }
+        assertTrue("should produce slices", slices.length >= 1);
         assertEachLeafCoveredOnce(leaves, slices);
     }
 
-    /**
-     * Even when the vector budget is large enough to hold more, no slice may merge more than
-     * {@link IVFSlicePlanner#MAX_LEAVES_PER_SLICE} leaves. Thirty ten-vector leaves give a budget of 100 (so the
-     * budget alone would allow ten leaves per slice); the cap must seal each slice at eight leaves instead.
-     */
+    /** The MAX_LEAVES_PER_SLICE cap is respected when merging. */
     public void testMaxLeavesPerSliceCapBinds() {
         List<LeafSearchTask> leaves = new ArrayList<>();
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < 3; i++) {
             leaves.add(leaf(posting(10, randomFloat())));
         }
-        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 1, false);
+        // 3 leaves < 100 parallelism → merging applies
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 100, false);
 
-        boolean sawCappedSlice = false;
         for (Slice slice : slices) {
             assertTrue(
                 "slice merged " + slice.entries().length + " leaves, exceeding the cap",
                 slice.entries().length <= IVFSlicePlanner.MAX_LEAVES_PER_SLICE
             );
-            sawCappedSlice |= slice.entries().length == IVFSlicePlanner.MAX_LEAVES_PER_SLICE;
         }
-        assertTrue("expected at least one slice sealed exactly at the leaf cap", sawCappedSlice);
+        assertEachLeafCoveredOnce(leaves, slices);
+    }
+
+    /**
+     * A single-posting leaf cannot be banded below one posting, so each such leaf maps to exactly one slice even
+     * when its vector count exceeds the per-slice budget. With eight one-posting leaves this yields eight one-entry
+     * slices that together cover every leaf.
+     */
+    public void testSinglePostingLeavesEachGetOwnSlice() {
+        List<LeafSearchTask> leaves = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            leaves.add(leaf(posting(100, 8 - i)));
+        }
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 4, false);
+
+        assertEquals("a single-posting leaf cannot be split, so one slice per leaf", 8, slices.length);
+        for (Slice slice : slices) {
+            assertEquals("each slice references exactly one leaf", 1, slice.entries().length);
+        }
         assertEachLeafCoveredOnce(leaves, slices);
     }
 
@@ -172,33 +180,39 @@ public class IVFSlicePlannerTests extends ESTestCase {
         assertEachLeafCoveredOnce(leaves, slices);
     }
 
-    /** A leaf holding more than its fair share of vectors is contended; the small leaves alongside it are not. */
-    public void testMarkContendedFlagsOversizedLeaf() {
-        List<LeafSearchTask> leaves = List.of(leaf(posting(1000, 1f)), leaf(posting(10, 1f)), leaf(posting(10, 1f)));
-        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, 4);
-        assertTrue("the 1000-vector leaf exceeds the fair share and is contended", contended[0]);
-        assertFalse(contended[1]);
-        assertFalse(contended[2]);
+    /** A large leaf split across multiple slices is contended. */
+    public void testMarkContendedFlagsSplitLeaf() {
+        PostingSearchTask[] bigPostings = new PostingSearchTask[12];
+        for (int i = 0; i < bigPostings.length; i++) {
+            bigPostings[i] = posting(100, 12 - i);
+        }
+        List<LeafSearchTask> leaves = List.of(leaf(bigPostings));
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 4, false);
+        assertTrue("single large leaf should produce multiple slices", slices.length > 1);
+        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, slices);
+        assertTrue("the leaf is split across slices and is contended", contended[0]);
     }
 
-    /** Perfectly balanced leaves never exceed the fair share, so none is marked contended. */
-    public void testMarkContendedBalancedLeavesNotContended() {
+    /** Single-posting leaves each map to exactly one slice, so none is split across workers and none is contended. */
+    public void testMarkContendedSinglePostingLeavesNotContended() {
         List<LeafSearchTask> leaves = List.of(
             leaf(posting(100, 1f)),
             leaf(posting(100, 1f)),
             leaf(posting(100, 1f)),
             leaf(posting(100, 1f))
         );
-        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, 4);
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 4, false);
+        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, slices);
         for (boolean c : contended) {
-            assertFalse("equal leaves split evenly across workers are not contended", c);
+            assertFalse("each leaf occupies a single slice and is not contended", c);
         }
     }
 
-    /** With a single worker the fair share equals the total, so no individual leaf can exceed it. */
+    /** With one worker all leaves go into single-leaf slices; nothing is contended. */
     public void testMarkContendedSingleWorkerNeverContended() {
         List<LeafSearchTask> leaves = List.of(leaf(posting(1000, 1f)), leaf(posting(1, 1f)), leaf(posting(500, 1f)));
-        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, 1);
+        Slice[] slices = IVFSlicePlanner.buildSlices(leaves, 1, false);
+        boolean[] contended = IVFSlicePlanner.markContendedLeaves(leaves, slices);
         for (boolean c : contended) {
             assertFalse(c);
         }

@@ -45,6 +45,12 @@ final class IVFSlicePlanner {
         if (wholeLeafOnly) {
             return buildWholeLeafSlices(ivfLeaves);
         }
+        // Band large leaves and merge small ones to target ~parallelism*oversubscription roughly equal slices. This
+        // keeps every worker busy through work-stealing even when leaves are unequal or fewer than the worker pool,
+        // and — crucially — when many equal leaves would each map to a single slice (segments >= workers), banding
+        // them into smaller pieces gives finer-grained load balancing that avoids the straggler tail of a strict
+        // one-slice-per-leaf split. Split leaves are flagged contended by {@link #markContendedLeaves} so each worker
+        // scores them through a thread-confined mapping (no shared-session cross-thread CAS).
         long totalVectors = 0;
         int totalPostings = 0;
         for (LeafSearchTask leaf : ivfLeaves) {
@@ -105,23 +111,27 @@ final class IVFSlicePlanner {
     }
 
     /**
-     * Marks each leaf as likely-contended (scored by more than one worker) or not. A contended leaf should be
-     * scored through a thread-confined posting-list mapping (no cross-thread session contention); a leaf scored
-     * by at most one worker can simply clone the shared warm mapping. The decision is a fair-share heuristic and
-     * only affects performance: every worker holds its own handle regardless, so correctness does not depend on it.
+     * Marks each leaf as contended (referenced by more than one slice, so potentially scored by concurrent workers)
+     * or not. A contended leaf is scored through a thread-confined posting-list mapping to avoid cross-thread CAS
+     * on the shared {@code MemorySegment} session; a leaf in exactly one slice is accessed by at most one worker
+     * and can simply clone the warm shared mapping. The decision only affects performance, not correctness.
      */
-    static boolean[] markContendedLeaves(List<LeafSearchTask> ivfLeaves, int workerCount) {
+    static boolean[] markContendedLeaves(List<LeafSearchTask> ivfLeaves, Slice[] slices) {
         boolean[] contended = new boolean[ivfLeaves.size()];
-        long[] leafVectors = new long[ivfLeaves.size()];
-        long totalVectors = 0;
-        for (int leafIndex = 0; leafIndex < ivfLeaves.size(); leafIndex++) {
-            PostingSearchTask[] postings = ivfLeaves.get(leafIndex).postings();
-            leafVectors[leafIndex] = sumVectors(postings, 0, postings.length);
-            totalVectors += leafVectors[leafIndex];
+        int[] distinctSliceCount = new int[ivfLeaves.size()];
+        for (Slice slice : slices) {
+            long leafSeen = 0;
+            for (SliceEntry entry : slice.entries()) {
+                int li = entry.leafIndex();
+                if (li < 64 && (leafSeen & (1L << li)) != 0) {
+                    continue;
+                }
+                leafSeen |= (li < 64) ? (1L << li) : 0;
+                distinctSliceCount[li]++;
+            }
         }
-        long fairShare = totalVectors / Math.max(1, workerCount);
-        for (int leafIndex = 0; leafIndex < ivfLeaves.size(); leafIndex++) {
-            contended[leafIndex] = leafVectors[leafIndex] > fairShare;
+        for (int i = 0; i < ivfLeaves.size(); i++) {
+            contended[i] = distinctSliceCount[i] > 1;
         }
         return contended;
     }

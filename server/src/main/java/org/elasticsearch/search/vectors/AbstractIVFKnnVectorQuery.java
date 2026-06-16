@@ -64,18 +64,26 @@ import static org.elasticsearch.search.vectors.AbstractMaxScoreKnnCollector.LEAS
 /**
  * Base class for the parallel IVF (DiskBBQ) kNN queries.
  * <p>
- * Scoring is split into three phases so that parallelism reaches posting-list granularity — a single
- * force-merged segment is scored by many workers, not just one thread per leaf:
- * <ol>
- *   <li><b>Phase A</b> (one task per leaf): resolve the codec reader, materialize the filter, score the
- *       query against centroids and statically select the closest posting lists up to a per-leaf vector
- *       budget. No vectors are scored here.</li>
- *   <li><b>Phase B</b> (a fixed worker pool draining a lock-free cursor over pre-sorted {@link Slice}s):
- *       each worker scores posting lists through its own thread-confined state, sharing only the single
- *       competitive-frontier accumulator.</li>
- *   <li><b>Phase C</b>: merge every worker's per-leaf results, dedup globally by document, and build the
- *       final {@link KnnScoreDocQuery}.</li>
- * </ol>
+ * The query picks one of two scoring strategies based on how many segments there are relative to the available
+ * worker parallelism:
+ * <ul>
+ *   <li><b>Many segments ({@code leaves >= parallelism}):</b> the segments already saturate the worker pool, so
+ *       each leaf is scored by a single worker in one fused prepare+score pass — same per-leaf parallelism as a
+ *       standard segment search, with no inter-phase barrier and no within-leaf banding. The competitive frontier
+ *       is still shared across leaves so the recall benefit is preserved.</li>
+ *   <li><b>Few segments ({@code leaves < parallelism}, e.g. a single force-merged segment):</b> scoring is split
+ *       into three phases so parallelism reaches posting-list granularity — a single segment is scored by many
+ *       workers, not just one thread per leaf:
+ *       <ol>
+ *         <li><b>Phase A</b> (one task per leaf): resolve the codec reader, materialize the filter, score the query
+ *             against centroids and statically select the closest posting lists up to a per-leaf vector budget.</li>
+ *         <li><b>Phase B</b> (a fixed worker pool draining a lock-free cursor over pre-sorted {@link Slice}s): each
+ *             worker scores posting lists through its own thread-confined state, sharing the single
+ *             competitive-frontier accumulator.</li>
+ *       </ol>
+ *   </li>
+ * </ul>
+ * Both strategies feed a final merge that dedups globally by document and builds the {@link KnnScoreDocQuery}.
  */
 abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerProvider {
 
@@ -164,48 +172,64 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             }
         }
 
-        // Phase A: prepare each leaf in parallel (centroid scoring + posting selection; no vectors scored).
-        List<Callable<LeafSearchTask>> prepTasks = new ArrayList<>(leafReaderContexts.size());
-        for (LeafReaderContext ctx : leafReaderContexts) {
-            prepTasks.add(() -> prepareLeaf(ctx, filterWeight));
-        }
-        List<LeafSearchTask> prepared = taskExecutor.invokeAll(prepTasks);
-
-        List<LeafSearchTask> ivfLeaves = new ArrayList<>(prepared.size());
-        List<LeafSearchTask> fallbackLeaves = new ArrayList<>();
-        for (LeafSearchTask task : prepared) {
-            if (task == null) {
-                continue;
-            }
-            if (task.needsFallbackSearch()) {
-                fallbackLeaves.add(task);
-            } else {
-                ivfLeaves.add(task);
-            }
-        }
-
-        // Phase B: distribute the selected postings into slices and score them with a fixed worker pool. Size the pool
-        // to the search executor's parallelism (not the host CPU count) and fall back to serial scoring when the
-        // executor is already backlogged, so one query never oversubscribes the search threads or steals capacity from
-        // sibling queries under load.
         int parallelism = scoringParallelism(indexSearcher);
-        Slice[] slices = IVFSlicePlanner.buildSlices(ivfLeaves, parallelism, requiresWholeLeafSlices());
-        boolean[] contended = IVFSlicePlanner.markContendedLeaves(ivfLeaves, Math.max(1, Math.min(parallelism, slices.length)));
-        AtomicInteger cursor = new AtomicInteger(0);
-
-        int workerCount = slices.length > 0 ? Math.min(parallelism, slices.length) : 0;
-        List<Callable<List<LeafResult>>> scoreTasks = new ArrayList<>();
-        for (int w = 0; w < workerCount; w++) {
-            scoreTasks.add(() -> runWorker(slices, cursor, contended, ivfLeaves, knnCollectorManager));
-        }
-        for (LeafSearchTask fallback : fallbackLeaves) {
-            scoreTasks.add(() -> List.of(runFallback(fallback, knnCollectorManager)));
-        }
-
         List<LeafResult> allResults = new ArrayList<>();
-        if (scoreTasks.isEmpty() == false) {
-            for (List<LeafResult> partial : taskExecutor.invokeAll(scoreTasks)) {
+
+        if (requiresWholeLeafSlices() == false && leafReaderContexts.size() >= parallelism) {
+            // Enough segments to already saturate the worker pool: score each leaf on a single worker in one fused
+            // prepare+score pass. This mirrors the per-leaf parallelism of a standard segment search — no Phase A/B
+            // barrier, no within-leaf banding, and (since each leaf is touched by exactly one thread) a plain clone
+            // instead of a thread-confined remap — while still sharing the competitive frontier across leaves so the
+            // recall benefit is preserved. Within-leaf slicing only pays off when there are fewer leaves than workers,
+            // which is handled by the banding path below.
+            List<Callable<List<LeafResult>>> leafTasks = new ArrayList<>(leafReaderContexts.size());
+            for (LeafReaderContext ctx : leafReaderContexts) {
+                leafTasks.add(() -> scoreLeafFused(ctx, filterWeight, knnCollectorManager));
+            }
+            for (List<LeafResult> partial : taskExecutor.invokeAll(leafTasks)) {
                 allResults.addAll(partial);
+            }
+        } else {
+            // Phase A: prepare each leaf in parallel (centroid scoring + posting selection; no vectors scored).
+            List<Callable<LeafSearchTask>> prepTasks = new ArrayList<>(leafReaderContexts.size());
+            for (LeafReaderContext ctx : leafReaderContexts) {
+                prepTasks.add(() -> prepareLeaf(ctx, filterWeight));
+            }
+            List<LeafSearchTask> prepared = taskExecutor.invokeAll(prepTasks);
+
+            List<LeafSearchTask> ivfLeaves = new ArrayList<>(prepared.size());
+            List<LeafSearchTask> fallbackLeaves = new ArrayList<>();
+            for (LeafSearchTask task : prepared) {
+                if (task == null) {
+                    continue;
+                }
+                if (task.needsFallbackSearch()) {
+                    fallbackLeaves.add(task);
+                } else {
+                    ivfLeaves.add(task);
+                }
+            }
+
+            // Phase B: distribute the selected postings into slices and score them with a fixed worker pool, banding
+            // large leaves so a handful of segments can still be scored by many workers (the single force-merged
+            // segment case). Split leaves are scored through thread-confined mappings (see markContendedLeaves).
+            Slice[] slices = IVFSlicePlanner.buildSlices(ivfLeaves, parallelism, requiresWholeLeafSlices());
+            boolean[] contended = IVFSlicePlanner.markContendedLeaves(ivfLeaves, slices);
+            AtomicInteger cursor = new AtomicInteger(0);
+
+            int workerCount = slices.length > 0 ? Math.min(parallelism, slices.length) : 0;
+            List<Callable<List<LeafResult>>> scoreTasks = new ArrayList<>();
+            for (int w = 0; w < workerCount; w++) {
+                scoreTasks.add(() -> runWorker(slices, cursor, contended, ivfLeaves, knnCollectorManager));
+            }
+            for (LeafSearchTask fallback : fallbackLeaves) {
+                scoreTasks.add(() -> List.of(runFallback(fallback, knnCollectorManager)));
+            }
+
+            if (scoreTasks.isEmpty() == false) {
+                for (List<LeafResult> partial : taskExecutor.invokeAll(scoreTasks)) {
+                    allResults.addAll(partial);
+                }
             }
         }
 
@@ -360,6 +384,52 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     }
 
     /**
+     * Fused single-leaf scoring (the many-segments strategy): prepare the leaf (centroid scoring + posting
+     * selection) and immediately score all of its selected postings on this one worker thread, with no inter-phase
+     * barrier. Because the leaf is touched by exactly one thread, a plain clone of the warm shared mapping is used
+     * (no thread-confined remap needed). The collector is still wired to the shared competitive frontier, so a leaf
+     * that finishes early raises the global bar for the leaves still scoring. Returns an empty list when the leaf
+     * has nothing to contribute, or a single {@link LeafResult}; falls back to the per-leaf approximate path for a
+     * non-IVF leaf.
+     */
+    private List<LeafResult> scoreLeafFused(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager mgr) throws IOException {
+        LeafSearchTask leaf = prepareLeaf(ctx, filterWeight);
+        if (leaf == null) {
+            return List.of();
+        }
+        if (leaf.needsFallbackSearch()) {
+            return List.of(runFallback(leaf, mgr));
+        }
+        // A single worker scores this leaf, so it is never contended: a plain clone avoids the per-open cost of a
+        // confined remap while still being free of cross-thread session contention.
+        LeafWorkerState st = buildLeafWorkerState(leaf, false, mgr);
+        try {
+            if (st.collector() == null) {
+                return List.of();
+            }
+            PostingSearchTask[] postings = leaf.postings();
+            // Two passes: prefetch every posting first, then score, so I/O overlaps with scoring.
+            for (PostingSearchTask posting : postings) {
+                PostingMetadata md = posting.metadata();
+                st.postListSlice().prefetch(md.offset(), md.length());
+            }
+            for (PostingSearchTask posting : postings) {
+                PostingMetadata md = posting.metadata();
+                st.visitor().resetPostingsScorer(md);
+                st.visitor().visit(st.collector());
+                st.strategy().nextVectorsBlock();
+            }
+            TopDocs topDocs = st.collector() instanceof BulkKnnCollector bulk ? bulk.unsortedTopK() : st.collector().topDocs();
+            if (topDocs != null && topDocs.scoreDocs.length > 0) {
+                return List.of(new LeafResult(st.docBase(), topDocs));
+            }
+            return List.of();
+        } finally {
+            IOUtils.close(st);
+        }
+    }
+
+    /**
      * Phase B worker: drains the shared lock-free {@code cursor} over the pre-sorted {@code slices}, scoring each
      * slice through per-leaf state that is created lazily and confined to this worker thread. Two passes per slice:
      * first prefetch every posting, then score them so I/O overlaps. All thread-confined handles are closed in the
@@ -377,19 +447,17 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             int idx;
             while ((idx = cursor.getAndIncrement()) < slices.length) {
                 Slice slice = slices[idx];
-                // Pass 1: ensure per-leaf state exists and prefetch every posting in the slice.
-                for (SliceEntry entry : slice.entries()) {
-                    LeafWorkerState st = ensureState(states, entry.leafIndex(), ivfLeaves, contended, mgr);
-                    if (st.collector() == null) {
-                        continue;
-                    }
-                    PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
-                    for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
-                        PostingMetadata md = postings[p].metadata();
-                        st.postListSlice().prefetch(md.offset(), md.length());
-                    }
+                // Prefetch the current slice (building per-leaf state as needed).
+                prefetchSlice(slice, states, ivfLeaves, contended, mgr, true);
+                // Speculatively prefetch the next slice so its I/O overlaps with scoring below, but only for leaves
+                // whose state this worker already holds (do not build state for a slice another worker will claim —
+                // with N workers the peeked slice is usually not ours). This helps the single-leaf case (consecutive
+                // same-leaf bands) without wasting handle/visitor setup in the multi-leaf case.
+                int nextPeek = cursor.get();
+                if (nextPeek < slices.length) {
+                    prefetchSlice(slices[nextPeek], states, ivfLeaves, contended, mgr, false);
                 }
-                // Pass 2: score every posting in the slice, tightening the shared frontier after each.
+                // Score every posting in the slice, tightening the shared frontier after each.
                 for (SliceEntry entry : slice.entries()) {
                     LeafWorkerState st = states.get(entry.leafIndex());
                     if (st == null || st.collector() == null) {
@@ -420,6 +488,29 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
     }
 
+    private void prefetchSlice(
+        Slice slice,
+        Map<Integer, LeafWorkerState> states,
+        List<LeafSearchTask> ivfLeaves,
+        boolean[] contended,
+        IVFCollectorManager mgr,
+        boolean buildIfMissing
+    ) throws IOException {
+        for (SliceEntry entry : slice.entries()) {
+            LeafWorkerState st = buildIfMissing
+                ? ensureState(states, entry.leafIndex(), ivfLeaves, contended, mgr)
+                : states.get(entry.leafIndex());
+            if (st == null || st.collector() == null) {
+                continue;
+            }
+            PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
+            for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
+                PostingMetadata md = postings[p].metadata();
+                st.postListSlice().prefetch(md.offset(), md.length());
+            }
+        }
+    }
+
     private LeafWorkerState ensureState(
         Map<Integer, LeafWorkerState> states,
         int leafIndex,
@@ -436,11 +527,10 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     }
 
     /**
-     * Builds this worker's private scoring state for one leaf. A leaf that may be scored by more than one worker
-     * ({@code contended}) gets a thread-confined posting-list mapping ({@link IVFVectorsReader#openLightweightClusters()})
-     * so concurrent scoring never CASes a shared {@code MemorySegment} session; a leaf scored by at most one worker
-     * simply clones the warm shared mapping. The centroids handle is always cloned. When the collector manager
-     * yields no collector (e.g. a diversifying leaf with no parents), an empty, handle-free state is returned.
+     * Builds this worker's private scoring state for one leaf. A contended leaf (scored by more than one worker)
+     * gets thread-confined mappings for both clusters and centroids to avoid cross-thread CAS on shared
+     * {@code MemorySegment} sessions; a non-contended leaf simply clones the warm shared mappings. When the
+     * collector manager yields no collector, an empty, handle-free state is returned.
      */
     private LeafWorkerState buildLeafWorkerState(LeafSearchTask leaf, boolean contended, IVFCollectorManager mgr) throws IOException {
         IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(leaf.visitRatio(), numCands, strategyK(), mgr.longAccumulator);
@@ -451,12 +541,17 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         strategy.setCollector(collector);
         IVFVectorsReader<?> reader = leaf.reader();
         IndexInput clustersHandle = null;
-        IndexInput centroidsClone = null;
+        IndexInput centroidsHandle = null;
         try {
-            clustersHandle = contended ? reader.openLightweightClusters() : reader.ivfClusters().clone();
+            if (contended) {
+                clustersHandle = reader.openLightweightClusters();
+                centroidsHandle = reader.openLightweightCentroids();
+            } else {
+                clustersHandle = reader.ivfClusters().clone();
+                centroidsHandle = reader.ivfCentroids().clone();
+            }
             IndexInput postListSlice = leaf.entry().postingListSlice(clustersHandle);
-            centroidsClone = reader.ivfCentroids().clone();
-            IndexInput centroidSlice = leaf.entry().centroidSlice(centroidsClone);
+            IndexInput centroidSlice = leaf.entry().centroidSlice(centroidsHandle);
             FloatVectorValues values = reader.getFloatVectorValues(field);
             IVFVectorsReader.PostingVisitor visitor = reader.getPostingVisitor(
                 leaf.fieldInfo(),
@@ -467,9 +562,9 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                 centroidSlice,
                 leaf.acceptDocs()
             );
-            return new LeafWorkerState(clustersHandle, centroidsClone, postListSlice, visitor, collector, strategy, leaf.ctx().docBase);
+            return new LeafWorkerState(clustersHandle, centroidsHandle, postListSlice, visitor, collector, strategy, leaf.ctx().docBase);
         } catch (Throwable t) {
-            IOUtils.closeWhileHandlingException(clustersHandle, centroidsClone);
+            IOUtils.closeWhileHandlingException(clustersHandle, centroidsHandle);
             throw t;
         }
     }
@@ -625,8 +720,8 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
         IVFCollectorManager(int k, IndexSearcher searcher) {
             this.k = k;
-            // Posting-granular parallelism creates concurrency even within a single leaf, so the competitive frontier
-            // is always shared (never null) across every (worker, leaf) strategy.
+            // The competitive frontier is shared across every (worker, leaf) strategy so that the posting-granular
+            // workers scoring a single segment in parallel prune against the global best, not just their local view.
             longAccumulator = new LongAccumulator(Long::max, LEAST_COMPETITIVE);
         }
 
