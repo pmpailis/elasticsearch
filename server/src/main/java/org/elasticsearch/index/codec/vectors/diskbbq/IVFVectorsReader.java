@@ -28,7 +28,6 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.ReadOnceHint;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
@@ -67,15 +66,6 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     private static final int CAP_REF_SIZE = 1_000_000;
     private static final double CAP_EXPONENT = 0.35;
     static final float DEFAULT_TARGET_RECALL = 0.9f;
-
-    /**
-     * IOContext for the thread-confined, short-lived clusters-file handle used by parallel posting-list
-     * scoring. {@link ReadOnceHint} makes the directory back the handle with a <em>confined</em> arena
-     * (single-thread access, no cross-thread CAS on the memory-segment reference count). We deliberately do
-     * NOT add {@code DataAccessHint.RANDOM}: the posting scan reads each cluster block sequentially, so
-     * {@code ReadAdvice.NORMAL} is correct.
-     */
-    private static final IOContext LIGHTWEIGHT_CLUSTERS_CONTEXT = IOContext.DEFAULT.withHints(ReadOnceHint.INSTANCE);
 
     protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
@@ -180,7 +170,7 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         return ivfCentroids;
     }
 
-    /** The shared, full-arena clusters file handle. For confined per-thread scoring use {@link #openLightweightClusters()}. */
+    /** The shared clusters file handle. Workers clone it to get their own seek position. */
     public final IndexInput ivfClusters() {
         return ivfClusters;
     }
@@ -188,19 +178,6 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     /** The {@link FieldEntry} for the given field number, or {@code null} if the field carries no IVF data. */
     public final E fieldEntry(int fieldNumber) {
         return fields.get(fieldNumber);
-    }
-
-    /**
-     * Opens a fresh, thread-confined handle to the clusters file for parallel posting-list scoring.
-     * <p>
-     * The returned {@link IndexInput} is backed by a <em>confined</em> arena (see
-     * {@link #LIGHTWEIGHT_CLUSTERS_CONTEXT}): it MUST be opened, used, and closed on the same thread; sharing
-     * it across threads is undefined. Header/checksum validation is skipped — the data file was already
-     * validated when the shared {@link #ivfClusters} handle was opened in the constructor.
-     */
-    public final IndexInput openLightweightClusters() throws IOException {
-        final String fileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, clusterExtension);
-        return state.directory.openInput(fileName, LIGHTWEIGHT_CLUSTERS_CONTEXT);
     }
 
     protected static IndexInput openDataInput(

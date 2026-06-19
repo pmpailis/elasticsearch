@@ -40,7 +40,6 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.Queries;
-import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.CentroidIterator;
 import org.elasticsearch.index.codec.vectors.diskbbq.IVFVectorsReader;
@@ -183,12 +182,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
         final float[] queryVector = getQueryVector();
 
-        TopDocs topK;
-//        if (contexts.size() >= CONFIGURED_WORKERS) {
-//            topK = rewritePerLeaf(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
-//        } else {
-            topK = rewriteGlobalQueue(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
-//        }
+        TopDocs topK = rewriteGlobalQueue(contexts, filterWeight, knnCollectorManager, queryVector, taskExecutor);
         vectorOpsCount = (int) topK.totalHits.value();
         if (topK.scoreDocs.length == 0) {
             return Queries.NO_DOCS_INSTANCE;
@@ -197,73 +191,8 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     }
 
     /**
-     * Per-leaf scoring path: delegates to the codec's optimized single-pass search per leaf. Used when
-     * there are enough segments to saturate the worker pool via the {@link TaskExecutor}'s segment-level
-     * dispatch. This avoids the Phase A/B/C overhead of the global posting queue, which only helps when
-     * there are fewer segments than workers (e.g. a single force-merged segment).
-     */
-    private TopDocs rewritePerLeaf(
-        List<LeafReaderContext> contexts,
-        Weight filterWeight,
-        IVFCollectorManager knnCollectorManager,
-        float[] queryVector,
-        TaskExecutor taskExecutor
-    ) throws IOException {
-        final List<Callable<TopDocs>> tasks = new ArrayList<>(contexts.size());
-        for (LeafReaderContext context : contexts) {
-            tasks.add(() -> searchLeafDirect(context, filterWeight, knnCollectorManager, queryVector));
-        }
-        TopDocs[] perLeafResults = taskExecutor.invokeAll(tasks).toArray(TopDocs[]::new);
-        return mergeLeafResults(k, perLeafResults);
-    }
-
-    private TopDocs searchLeafDirect(
-        LeafReaderContext ctx,
-        Weight filterWeight,
-        IVFCollectorManager knnCollectorManager,
-        float[] queryVector
-    ) throws IOException {
-        ESAcceptDocs acceptDocs = buildLeafAcceptDocs(ctx, filterWeight);
-        if (acceptDocs == null) {
-            return NO_RESULTS;
-        }
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
-            providedVisitRatio,
-            numCands,
-            strategyK(),
-            knnCollectorManager.longAccumulator
-        );
-        AbstractMaxScoreKnnCollector collector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
-        if (collector == null) {
-            return NO_RESULTS;
-        }
-        strategy.setCollector(collector);
-        ctx.reader().searchNearestVectors(field, queryVector, collector, acceptDocs);
-        TopDocs results = drain(collector);
-        if (results.scoreDocs.length == 0) {
-            return results;
-        }
-        IntObjectHashMap<ScoreDoc> dedupByDoc = new IntObjectHashMap<>(results.scoreDocs.length * 4 / 3);
-        for (ScoreDoc scoreDoc : results.scoreDocs) {
-            int globalDoc = scoreDoc.doc + ctx.docBase;
-            ScoreDoc existing = dedupByDoc.get(globalDoc);
-            if (existing == null || scoreDoc.score > existing.score) {
-                scoreDoc.doc = globalDoc;
-                dedupByDoc.put(globalDoc, scoreDoc);
-            }
-        }
-        ScoreDoc[] deduplicatedScoreDocs = new ScoreDoc[dedupByDoc.size()];
-        int idx = 0;
-        for (IntObjectHashMap.IntObjectCursor<ScoreDoc> cursor : dedupByDoc) {
-            deduplicatedScoreDocs[idx++] = cursor.value;
-        }
-        return new TopDocs(results.totalHits, deduplicatedScoreDocs);
-    }
-
-    /**
      * Global posting queue path: Phase A selects postings across all leaves, Phase B scores them via a
-     * shared worker pool, Phase C merges and deduplicates. Used when there are fewer segments than workers
-     * to exploit within-segment parallelism.
+     * shared worker pool, Phase C merges and deduplicates.
      */
     private TopDocs rewriteGlobalQueue(
         List<LeafReaderContext> contexts,
@@ -536,30 +465,26 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         float[] queryVector
     ) throws IOException {
         final IntObjectHashMap<LeafWorkerState> states = new IntObjectHashMap<>();
-        try {
-            int idx;
-            while ((idx = cursor.getAndIncrement()) < globalPostings.length) {
-                GlobalPosting posting = globalPostings[idx];
-                LeafWorkerState state = states.get(posting.leafIdx());
-                if (state == null) {
-                    state = buildState(leafById.get(posting.leafIdx()), knnCollectorManager, queryVector);
-                    states.put(posting.leafIdx(), state);
-                }
-                state.visitor.resetPostingsScorer(posting.metadata());
-                state.visitor.visit(state.collector);
-                state.strategy.nextVectorsBlock();
+        int idx;
+        while ((idx = cursor.getAndIncrement()) < globalPostings.length) {
+            GlobalPosting posting = globalPostings[idx];
+            LeafWorkerState state = states.get(posting.leafIdx());
+            if (state == null) {
+                state = buildState(leafById.get(posting.leafIdx()), knnCollectorManager, queryVector);
+                states.put(posting.leafIdx(), state);
             }
-            final List<LeafResult> results = new ArrayList<>(states.size());
-            for (IntObjectHashMap.IntObjectCursor<LeafWorkerState> cursor2 : states) {
-                TopDocs topDocs = drain(cursor2.value.collector);
-                if (topDocs.scoreDocs.length > 0) {
-                    results.add(new LeafResult(cursor2.key, topDocs));
-                }
-            }
-            return results;
-        } finally {
-            closeStates(states);
+            state.visitor.resetPostingsScorer(posting.metadata());
+            state.visitor.visit(state.collector);
+            state.strategy.nextVectorsBlock();
         }
+        final List<LeafResult> results = new ArrayList<>(states.size());
+        for (IntObjectHashMap.IntObjectCursor<LeafWorkerState> cursor2 : states) {
+            TopDocs topDocs = drain(cursor2.value.collector);
+            if (topDocs.scoreDocs.length > 0) {
+                results.add(new LeafResult(cursor2.key, topDocs));
+            }
+        }
+        return results;
     }
 
     /**
@@ -600,68 +525,59 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         int idx;
         while ((idx = cursor.getAndIncrement()) < ordered.length) {
             LeafSearchTask leaf = ordered[idx];
-            try (LeafWorkerState state = buildState(leaf, knnCollectorManager, queryVector)) {
-                if (state == null) {
-                    continue;
-                }
-                for (PostingSearchTask posting : leaf.postingsClosestFirst()) {
-                    state.visitor.resetPostingsScorer(posting.metadata());
-                    state.visitor.visit(state.collector);
-                    state.strategy.nextVectorsBlock();
-                }
-                TopDocs topDocs = drain(state.collector);
-                if (topDocs.scoreDocs.length > 0) {
-                    results.add(new LeafResult(leaf.leafIdx(), topDocs));
-                }
+            LeafWorkerState state = buildState(leaf, knnCollectorManager, queryVector);
+            if (state == null) {
+                continue;
+            }
+            for (PostingSearchTask posting : leaf.postingsClosestFirst()) {
+                state.visitor.resetPostingsScorer(posting.metadata());
+                state.visitor.visit(state.collector);
+                state.strategy.nextVectorsBlock();
+            }
+            TopDocs topDocs = drain(state.collector);
+            if (topDocs.scoreDocs.length > 0) {
+                results.add(new LeafResult(leaf.leafIdx(), topDocs));
             }
         }
         return results;
     }
 
     /**
-     * Builds the thread-confined scoring state for one leaf on the calling worker thread. The clusters file
-     * is opened through a confined handle (hot, SIMD-scored path) while the centroids file is read through a
-     * clone of the shared handle (cold path). Returns {@code null} when the collector manager declines the
-     * leaf (e.g. a diversifying join with no parent bitset), having released the confined handle first.
+     * Builds the per-worker scoring state for one leaf. The clusters file handle is a {@link IndexInput#clone()}
+     * of the shared handle — clones share the same {@link java.lang.foreign.MemorySegment} array (same virtual
+     * addresses, warm TLB entries) so they avoid the TLB-miss overhead of opening a fresh mmap per worker. Each
+     * clone has its own seek position so workers don't interfere. Returns {@code null} when the collector manager
+     * declines the leaf (e.g. a diversifying join with no parent bitset).
      */
     private LeafWorkerState buildState(LeafSearchTask leaf, IVFCollectorManager knnCollectorManager, float[] queryVector)
         throws IOException {
         final IVFVectorsReader<?> reader = leaf.reader();
         final IVFVectorsReader.FieldEntry entry = leaf.entry();
-        final IndexInput confinedClusters = reader.openLightweightClusters();
-        boolean success = false;
-        try {
-            IndexInput postingListSlice = entry.postingListSlice(confinedClusters);
-            FloatVectorValues values = reader.getFloatVectorValues(field);
-            IndexInput centroidSlice = entry.centroidSlice(reader.ivfCentroids().clone());
-            IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
-                leaf.effectiveVisitRatio(),
-                leaf.numCands(),
-                strategyK(),
-                knnCollectorManager.longAccumulator
-            );
-            AbstractMaxScoreKnnCollector collector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, leaf.ctx());
-            if (collector == null) {
-                return null;
-            }
-            strategy.setCollector(collector);
-            IVFVectorsReader.PostingVisitor visitor = reader.getPostingVisitor(
-                leaf.fieldInfo(),
-                values,
-                postingListSlice,
-                queryVector,
-                leaf.acceptDocs().bits(),
-                centroidSlice,
-                leaf.acceptDocs()
-            );
-            LeafWorkerState state = new LeafWorkerState(confinedClusters, visitor, collector, strategy);
-            success = true;
-            return state;
-        } finally {
-            if (success == false) {
-                confinedClusters.close();
-            }
+        IndexInput clustersClone = reader.ivfClusters().clone();
+        IndexInput postingListSlice = entry.postingListSlice(clustersClone);
+        FloatVectorValues values = reader.getFloatVectorValues(field);
+        IndexInput centroidSlice = entry.centroidSlice(reader.ivfCentroids().clone());
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
+            leaf.effectiveVisitRatio(),
+            leaf.numCands(),
+            strategyK(),
+            knnCollectorManager.longAccumulator
+        );
+        AbstractMaxScoreKnnCollector collector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, leaf.ctx());
+        if (collector == null) {
+            return null;
         }
+        strategy.setCollector(collector);
+        IVFVectorsReader.PostingVisitor visitor = reader.getPostingVisitor(
+            leaf.fieldInfo(),
+            values,
+            postingListSlice,
+            queryVector,
+            leaf.acceptDocs().bits(),
+            centroidSlice,
+            leaf.acceptDocs()
+        );
+        return new LeafWorkerState(visitor, collector, strategy);
     }
 
     /**
@@ -710,13 +626,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         return topDocs != null ? topDocs : NO_RESULTS;
     }
 
-    private static void closeStates(IntObjectHashMap<LeafWorkerState> states) throws IOException {
-        final List<LeafWorkerState> toClose = new ArrayList<>(states.size());
-        for (IntObjectHashMap.IntObjectCursor<LeafWorkerState> cursor : states) {
-            toClose.add(cursor.value);
-        }
-        IOUtils.close(toClose);
-    }
+
 
     /**
      * Phase C: group the per-(worker, leaf) results by leaf, dedup by global doc id keeping the highest
