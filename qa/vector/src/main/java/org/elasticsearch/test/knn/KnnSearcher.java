@@ -114,6 +114,11 @@ public class KnnSearcher {
 
     private static final String NN_CACHE_DIR = "target/nn_cache/";
 
+    // PostFilterKnnQuery's production default (1.0) only engages post-filtering when the filter
+    // matches everything, so it never fires across a selectivity sweep. For benchmarking we force
+    // post-filtering on for every postFilter=true run regardless of selectivity.
+    private static final float BENCHMARK_POST_FILTERING_THRESHOLD = 0f;
+
     private final List<Path> docPath;
     private final Path indexPath;
     private final Path queryPath;
@@ -798,7 +803,7 @@ public class KnnSearcher {
                 searchParameters.topK(),
                 VECTOR_FIELD,
                 null,
-                PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                BENCHMARK_POST_FILTERING_THRESHOLD
             );
         }
         QueryProfiler profiler = new QueryProfiler();
@@ -863,7 +868,7 @@ public class KnnSearcher {
                 overSampledTopK,
                 VECTOR_FIELD,
                 null,
-                PostFilterKnnQuery.DEFAULT_POST_FILTERING_THRESHOLD
+                BENCHMARK_POST_FILTERING_THRESHOLD
             );
         }
         if (searchParameters.overSamplingFactor() > 1f) {
