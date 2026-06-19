@@ -30,7 +30,7 @@
     "quantize_bits": 1,
     "search_threads": 8,
     "num_searchers": 1,
-    "reindex": true,
+    "reindex": false,
     "force_merge": true,
     "vector_space": "dot_product",
     "filter_selectivity": [0.55, 0.70, 0.80, 0.90, 0.95, 0.99, 1.0],
