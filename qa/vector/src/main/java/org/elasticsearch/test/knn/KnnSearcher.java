@@ -21,6 +21,7 @@
 package org.elasticsearch.test.knn;
 
 import org.apache.lucene.document.LongPoint;
+import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FloatVectorValues;
@@ -43,6 +44,7 @@ import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.ConstantScoreWeight;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FilterDocIdSetIterator;
+import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
@@ -606,7 +608,14 @@ public class KnnSearcher {
 
     static Query generateRangeQuery(int numDocs, float selectivity) {
         long upper = Math.max(0, (long) Math.ceil(selectivity * numDocs) - 1);
-        return LongPoint.newRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper);
+        // Mirror NumberFieldMapper: a numeric range over a points + doc-values field compiles to an
+        // IndexOrDocValuesQuery. Without it the bare points query forces every consumer to materialize
+        // the full BKD result set; the post-filter path only probes a small candidate set, so the
+        // doc-values branch (selected for the small leadCost) keeps that evaluation cheap and realistic.
+        return new IndexOrDocValuesQuery(
+            LongPoint.newRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper),
+            NumericDocValuesField.newSlowRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper)
+        );
     }
 
     static Query generateTermQuery(float selectivity) {
