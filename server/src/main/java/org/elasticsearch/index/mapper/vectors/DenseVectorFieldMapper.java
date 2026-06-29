@@ -3500,7 +3500,6 @@ public class DenseVectorFieldMapper extends FieldMapper {
                             visitRatio,
                             ivfQueryConfigResolver
                         )
-<<<<<<< HEAD
                         : new IVFKnnFloatVectorQuery(
                             name(),
                             queryVector,
@@ -3508,12 +3507,8 @@ public class DenseVectorFieldMapper extends FieldMapper {
                             numCands,
                             cachedFilter,
                             visitRatio,
-                            bbqIndexOptions.doPrecondition(),
-                            overSampleFactor
+                            ivfQueryConfigResolver
                         );
-=======
-                        : new IVFKnnFloatVectorQuery(name(), queryVector, k, numCands, filter, visitRatio, ivfQueryConfigResolver);
->>>>>>> origin/main
                 }
             } else {
                 knnQuery = parentFilter != null
