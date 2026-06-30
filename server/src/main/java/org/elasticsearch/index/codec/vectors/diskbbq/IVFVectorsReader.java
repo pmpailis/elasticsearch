@@ -28,6 +28,7 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.ReadOnceHint;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
@@ -66,6 +67,15 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     private static final int CAP_REF_SIZE = 1_000_000;
     private static final double CAP_EXPONENT = 0.35;
     static final float DEFAULT_TARGET_RECALL = 0.9f;
+
+    /**
+     * Context used by {@link #openLightweightClusters()} / {@link #openLightweightCentroids()} to open a
+     * thread-confined mapping. The {@link ReadOnceHint} steers {@code MMapDirectory} onto a confined arena (no
+     * cross-thread CAS on the shared {@code MemorySegment} session). We keep
+     * {@link org.apache.lucene.store.ReadAdvice#NORMAL} — the default access advice — rather than tagging the read
+     * as random, since posting lists are scanned sequentially.
+     */
+    private static final IOContext LIGHTWEIGHT_CTX = IOContext.DEFAULT.withHints(ReadOnceHint.INSTANCE);
 
     protected final IndexInput ivfCentroids, ivfClusters;
     private final SegmentReadState state;
@@ -170,9 +180,38 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         return ivfCentroids;
     }
 
-    /** The shared clusters file handle. Workers clone it to get their own seek position. */
+    /**
+     * The shared clusters file handle. A worker that is the only one scoring a leaf may {@link IndexInput#clone()
+     * clone} it for its own seek position; a leaf that may be scored by more than one worker should instead use
+     * {@link #openLightweightClusters()} to obtain a thread-confined mapping and avoid cross-thread session CAS.
+     */
     public final IndexInput ivfClusters() {
         return ivfClusters;
+    }
+
+    /**
+     * Opens a fresh, thread-confined {@link IndexInput} over the posting-list (clusters) file.
+     * <p>
+     * The input is opened with {@link ReadOnceHint} so that an {@code MMapDirectory} backs it with a
+     * {@link java.lang.foreign.Arena#ofConfined() confined arena}: reads avoid the cross-thread compare-and-swap
+     * on the shared {@code MemorySegment} session that a cloned shared mapping would incur when many workers
+     * score the same leaf at once. Because the arena is confined, the returned handle is bound to the thread
+     * that scores with it — it must be <em>opened, used, and closed on the same thread</em>; touching it from
+     * another thread throws {@code WrongThreadException}. Slice the returned input with
+     * {@link FieldEntry#postingListSlice(IndexInput)} before scoring.
+     */
+    public final IndexInput openLightweightClusters() throws IOException {
+        final String clustersFileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, clusterExtension);
+        return state.directory.openInput(clustersFileName, LIGHTWEIGHT_CTX);
+    }
+
+    /**
+     * Opens a fresh, thread-confined {@link IndexInput} over the centroid file, analogous to
+     * {@link #openLightweightClusters()} for the clusters file.
+     */
+    public final IndexInput openLightweightCentroids() throws IOException {
+        final String centroidsFileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, centroidExtension);
+        return state.directory.openInput(centroidsFileName, LIGHTWEIGHT_CTX);
     }
 
     /** The {@link FieldEntry} for the given field number, or {@code null} if the field carries no IVF data. */

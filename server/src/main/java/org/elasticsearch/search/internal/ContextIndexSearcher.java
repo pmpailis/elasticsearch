@@ -148,6 +148,17 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
         return hasExecutor;
     }
 
+    /**
+     * The maximum number of slices this searcher may split concurrent work into, as resolved at construction time from
+     * the search thread pool size and its current backlog (see {@code DefaultSearchContext#determineMaximumNumberOfSlices}).
+     * It is {@code 1} when no executor was provided or the pool was saturated. Operations that parallelize outside the
+     * standard leaf-slice collection path (e.g. per-posting-list vector scoring) can use this to size their own worker
+     * pool to the search threads actually available rather than the host CPU count.
+     */
+    public int getMaximumNumberOfSlices() {
+        return maximumNumberOfSlices;
+    }
+
     @Override
     protected LeafSlice[] slices(List<LeafReaderContext> leaves) {
         // we offload to the executor unconditionally, including requests that don't support concurrency
