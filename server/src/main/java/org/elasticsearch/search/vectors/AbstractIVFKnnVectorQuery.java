@@ -97,6 +97,15 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
      */
     private static final int QUEUE_CHUNK_OVERSUBSCRIPTION = 4;
 
+    /**
+     * How many postings ahead each worker keeps prefetched while scoring. This bounds the number of outstanding
+     * posting-list prefetches to a small window so a very large run (e.g. a force-merged single segment with many
+     * selected postings) does not issue the whole run's I/O at once - which would let the earliest pages be evicted
+     * before they are scored - while still keeping enough in flight to hide storage latency (relevant for
+     * higher-latency backing stores such as the stateless shared blob cache) behind CPU scoring.
+     */
+    private static final int PREFETCH_DISTANCE = 8;
+
     protected final String field;
     protected final float providedVisitRatio;
     protected final int k;
@@ -508,16 +517,19 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             int start;
             while ((start = cursor.getAndAdd(chunk)) < globalPostings.length) {
                 final int end = Math.min(start + chunk, globalPostings.length);
-                // First pass: page in every posting in the chunk so its I/O overlaps with scoring below.
-                for (int i = start; i < end; i++) {
-                    GlobalPosting posting = globalPostings[i];
-                    LeafWorkerState state = ensureState(states, posting.leafIdx(), leafById, knnCollectorManager, queryVector, workerCount);
-                    if (state != null) {
-                        state.visitor.prefetch(posting.metadata());
-                    }
+                // Sliding-window prefetch: rather than paging in the whole chunk up front (which, for a large run,
+                // lets the earliest pages be evicted before they are scored), keep a bounded window of postings in
+                // flight. Prime the window, then prefetch the posting PREFETCH_DISTANCE ahead just before scoring the
+                // current one so each posting's I/O overlaps with scoring of the ones in front of it.
+                final int distance = Math.min(PREFETCH_DISTANCE, end - start);
+                for (int i = start; i < start + distance; i++) {
+                    prefetchGlobalPosting(globalPostings[i], states, leafById, knnCollectorManager, queryVector, workerCount);
                 }
-                // Second pass: score the chunk, tightening the shared competitive frontier after each posting.
                 for (int i = start; i < end; i++) {
+                    final int ahead = i + distance;
+                    if (ahead < end) {
+                        prefetchGlobalPosting(globalPostings[ahead], states, leafById, knnCollectorManager, queryVector, workerCount);
+                    }
                     GlobalPosting posting = globalPostings[i];
                     LeafWorkerState state = states.get(posting.leafIdx());
                     if (state == null) {
@@ -525,6 +537,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                     }
                     state.visitor.resetPostingsScorer(posting.metadata());
                     state.visitor.visit(state.collector);
+                    // Publish/refresh the shared competitive frontier after each posting.
                     state.strategy.nextVectorsBlock();
                 }
             }
@@ -541,6 +554,25 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             return results;
         } finally {
             closeStates(states);
+        }
+    }
+
+    /**
+     * Ensures this worker holds state for the posting's leaf and issues a prefetch for the posting's bytes. Used to
+     * fill the sliding prefetch window in {@link #runWorker}; building state here (rather than only at scoring time)
+     * is required so the confined/cloned handle exists before its I/O is hinted.
+     */
+    private void prefetchGlobalPosting(
+        GlobalPosting posting,
+        IntObjectHashMap<LeafWorkerState> states,
+        IntObjectHashMap<LeafSearchTask> leafById,
+        IVFCollectorManager knnCollectorManager,
+        float[] queryVector,
+        int workerCount
+    ) throws IOException {
+        LeafWorkerState state = ensureState(states, posting.leafIdx(), leafById, knnCollectorManager, queryVector, workerCount);
+        if (state != null) {
+            state.visitor.prefetch(posting.metadata());
         }
     }
 
@@ -675,11 +707,19 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             if (state == null) {
                 return null;
             }
-            for (PostingSearchTask posting : leaf.postingsClosestFirst()) {
-                state.visitor.prefetch(posting.metadata());
+            // Sliding-window prefetch over the leaf's postings: keep at most PREFETCH_DISTANCE prefetches in flight
+            // instead of hinting the whole (potentially very large, on a force-merged single segment) leaf at once.
+            final PostingSearchTask[] postings = leaf.postingsClosestFirst();
+            final int distance = Math.min(PREFETCH_DISTANCE, postings.length);
+            for (int i = 0; i < distance; i++) {
+                state.visitor.prefetch(postings[i].metadata());
             }
-            for (PostingSearchTask posting : leaf.postingsClosestFirst()) {
-                state.visitor.resetPostingsScorer(posting.metadata());
+            for (int i = 0; i < postings.length; i++) {
+                final int ahead = i + distance;
+                if (ahead < postings.length) {
+                    state.visitor.prefetch(postings[ahead].metadata());
+                }
+                state.visitor.resetPostingsScorer(postings[i].metadata());
                 state.visitor.visit(state.collector);
                 state.strategy.nextVectorsBlock();
             }
