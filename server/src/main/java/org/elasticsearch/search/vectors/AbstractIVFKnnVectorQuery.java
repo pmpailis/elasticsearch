@@ -89,6 +89,15 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
 
+    /**
+     * How many postings ahead a worker keeps prefetched while scoring a slice. This bounds the number of outstanding
+     * posting-list prefetches to a small window so a large slice/band (e.g. on a force-merged single segment) does
+     * not issue its whole I/O at once - which would let the earliest pages be evicted before they are scored - while
+     * still keeping enough in flight to hide storage latency (relevant for higher-latency backing stores such as the
+     * stateless shared blob cache) behind CPU scoring.
+     */
+    private static final int PREFETCH_DISTANCE = 8;
+
     protected final String field;
     protected final float providedVisitRatio;
     protected final int k;
@@ -408,13 +417,21 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
                 return List.of();
             }
             PostingSearchTask[] postings = leaf.postings();
-            // Two passes: prefetch every posting first, then score, so I/O overlaps with scoring.
-            for (PostingSearchTask posting : postings) {
-                PostingMetadata md = posting.metadata();
+            // Bounded sliding-window prefetch: keep at most PREFETCH_DISTANCE prefetches in flight rather than
+            // hinting the whole (potentially very large) leaf at once, so I/O overlaps with scoring without letting
+            // the earliest pages be evicted before they are scored.
+            final int distance = Math.min(PREFETCH_DISTANCE, postings.length);
+            for (int i = 0; i < distance; i++) {
+                PostingMetadata md = postings[i].metadata();
                 st.postListSlice().prefetch(md.offset(), md.length());
             }
-            for (PostingSearchTask posting : postings) {
-                PostingMetadata md = posting.metadata();
+            for (int i = 0; i < postings.length; i++) {
+                final int ahead = i + distance;
+                if (ahead < postings.length) {
+                    PostingMetadata aheadMd = postings[ahead].metadata();
+                    st.postListSlice().prefetch(aheadMd.offset(), aheadMd.length());
+                }
+                PostingMetadata md = postings[i].metadata();
                 st.visitor().resetPostingsScorer(md);
                 st.visitor().visit(st.collector());
                 st.strategy().nextVectorsBlock();
@@ -447,30 +464,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
             int idx;
             while ((idx = cursor.getAndIncrement()) < slices.length) {
                 Slice slice = slices[idx];
-                // Prefetch the current slice (building per-leaf state as needed).
-                prefetchSlice(slice, states, ivfLeaves, contended, mgr, true);
-                // Speculatively prefetch the next slice so its I/O overlaps with scoring below, but only for leaves
-                // whose state this worker already holds (do not build state for a slice another worker will claim —
-                // with N workers the peeked slice is usually not ours). This helps the single-leaf case (consecutive
-                // same-leaf bands) without wasting handle/visitor setup in the multi-leaf case.
-                int nextPeek = cursor.get();
-                if (nextPeek < slices.length) {
-                    prefetchSlice(slices[nextPeek], states, ivfLeaves, contended, mgr, false);
-                }
-                // Score every posting in the slice, tightening the shared frontier after each.
+                // Build per-leaf state for every leaf referenced by this slice (lazily, confined to this worker).
                 for (SliceEntry entry : slice.entries()) {
-                    LeafWorkerState st = states.get(entry.leafIndex());
-                    if (st == null || st.collector() == null) {
-                        continue;
-                    }
-                    PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
-                    for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
-                        PostingMetadata md = postings[p].metadata();
-                        st.visitor().resetPostingsScorer(md);
-                        st.visitor().visit(st.collector());
-                        st.strategy().nextVectorsBlock();
-                    }
+                    ensureState(states, entry.leafIndex(), ivfLeaves, contended, mgr);
                 }
+                // Score the slice with a bounded sliding-window prefetch so the band's I/O overlaps with scoring
+                // without hinting the whole (possibly very large) band up front. The shared frontier is tightened
+                // after each posting.
+                scoreSliceWindowed(slice, states, ivfLeaves);
             }
             List<LeafResult> results = new ArrayList<>();
             for (LeafWorkerState st : states.values()) {
@@ -488,26 +489,53 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         }
     }
 
-    private void prefetchSlice(
-        Slice slice,
-        Map<Integer, LeafWorkerState> states,
-        List<LeafSearchTask> ivfLeaves,
-        boolean[] contended,
-        IVFCollectorManager mgr,
-        boolean buildIfMissing
-    ) throws IOException {
+    /**
+     * Scores all postings of {@code slice} on the calling worker using a bounded sliding-window prefetch. The slice's
+     * postings are flattened (with their owning per-leaf state) into closest-first order, then each posting's I/O is
+     * issued {@link #PREFETCH_DISTANCE} postings before it is scored. This overlaps I/O with scoring while keeping
+     * only a bounded number of prefetches in flight even for a large band, and tightens the shared competitive
+     * frontier after each posting. Per-leaf state must already exist in {@code states} for the slice's leaves.
+     */
+    private void scoreSliceWindowed(Slice slice, Map<Integer, LeafWorkerState> states, List<LeafSearchTask> ivfLeaves) throws IOException {
+        int total = 0;
         for (SliceEntry entry : slice.entries()) {
-            LeafWorkerState st = buildIfMissing
-                ? ensureState(states, entry.leafIndex(), ivfLeaves, contended, mgr)
-                : states.get(entry.leafIndex());
+            LeafWorkerState st = states.get(entry.leafIndex());
+            if (st == null || st.collector() == null) {
+                continue;
+            }
+            total += entry.postingEnd() - entry.postingStart();
+        }
+        if (total == 0) {
+            return;
+        }
+        final LeafWorkerState[] owners = new LeafWorkerState[total];
+        final PostingMetadata[] metadata = new PostingMetadata[total];
+        int n = 0;
+        for (SliceEntry entry : slice.entries()) {
+            LeafWorkerState st = states.get(entry.leafIndex());
             if (st == null || st.collector() == null) {
                 continue;
             }
             PostingSearchTask[] postings = ivfLeaves.get(entry.leafIndex()).postings();
             for (int p = entry.postingStart(); p < entry.postingEnd(); p++) {
-                PostingMetadata md = postings[p].metadata();
-                st.postListSlice().prefetch(md.offset(), md.length());
+                owners[n] = st;
+                metadata[n] = postings[p].metadata();
+                n++;
             }
+        }
+        final int distance = Math.min(PREFETCH_DISTANCE, total);
+        for (int i = 0; i < distance; i++) {
+            owners[i].postListSlice().prefetch(metadata[i].offset(), metadata[i].length());
+        }
+        for (int i = 0; i < total; i++) {
+            final int ahead = i + distance;
+            if (ahead < total) {
+                owners[ahead].postListSlice().prefetch(metadata[ahead].offset(), metadata[ahead].length());
+            }
+            LeafWorkerState st = owners[i];
+            st.visitor().resetPostingsScorer(metadata[i]);
+            st.visitor().visit(st.collector());
+            st.strategy().nextVectorsBlock();
         }
     }
 
