@@ -46,6 +46,8 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FilterDocIdSetIterator;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.LRUQueryCache;
+import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
@@ -55,6 +57,7 @@ import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.search.UsageTrackingQueryCachingPolicy;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -439,6 +442,22 @@ public class KnnSearcher {
                 IndexSearcher searcher = searchParameters.searchThreads() > 1
                     ? new IndexSearcher(reader, executorService)
                     : new IndexSearcher(reader);
+                // Drive query caching explicitly and consistently for every filter type from the single
+                // filter_cache flag, rather than inheriting IndexSearcher's process-wide static default.
+                if (searchParameters.filterCached()) {
+                    // Fresh per-run cache so query-based filters (range, term, range_term, phrase) cache
+                    // deterministically and don't leak across benchmark configs in the same JVM. The
+                    // random filter (BitSetQuery) opts out of query caching (isCacheable=false) and
+                    // instead reuses its prebuilt bitset directly when filterCached=true.
+                    searcher.setQueryCache(new LRUQueryCache(1000, 32L * 1024 * 1024));
+                    searcher.setQueryCachingPolicy(new UsageTrackingQueryCachingPolicy());
+                } else {
+                    // filter_cache=false disables Lucene's query cache entirely, so every filter weight
+                    // (including the post-filter's createFilterWeight) is evaluated fresh per query
+                    // instead of being materialized/cached after a couple of reuses. The random filter
+                    // (BitSetQuery) correspondingly re-materializes its iterator in this mode.
+                    searcher.setQueryCache(null);
+                }
 
                 boolean sliced = indexType == KnnIndexTester.IndexType.IVF && this.sliced;
 
@@ -635,7 +654,9 @@ public class KnnSearcher {
         // IndexOrDocValuesQuery. Without it the bare points query forces every consumer to materialize
         // the full BKD result set; the post-filter path only probes a small candidate set, so the
         // doc-values branch (selected for the small leadCost) keeps that evaluation cheap and realistic.
-        return new IndexOrDocValuesQuery(
+        return
+        // LongPoint.newRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper);
+        new IndexOrDocValuesQuery(
             LongPoint.newRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper),
             NumericDocValuesField.newSlowRangeQuery(KnnIndexer.NUMERIC_FILTER_FIELD, 0, upper)
         );
@@ -643,6 +664,10 @@ public class KnnSearcher {
 
     static Query generateTermQuery(float selectivity) {
         return new TermQuery(new Term(KnnIndexer.nearestTermFilterField(selectivity), "1"));
+    }
+
+    static Query generatePhraseQuery(float selectivity) {
+        return new PhraseQuery(KnnIndexer.nearestPhraseFilterField(selectivity), KnnIndexer.PHRASE_TERM_1, KnnIndexer.PHRASE_TERM_2);
     }
 
     static Query generateRangeTermQuery(int numDocs, float selectivity) {
@@ -675,6 +700,7 @@ public class KnnSearcher {
             case "term" -> generateTermQuery(selectivity);
             case "range_term" -> generateRangeTermQuery(numDocs, selectivity);
             case "term_random" -> generateTermRandomQuery(numDocs, selectivity, seed, indexPath, filterCached);
+            case "phrase" -> generatePhraseQuery(selectivity);
             default -> throw new IllegalArgumentException("Unknown filter_type: " + filterType);
         };
     }

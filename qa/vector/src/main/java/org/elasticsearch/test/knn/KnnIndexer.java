@@ -31,6 +31,7 @@ import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -75,6 +76,12 @@ public class KnnIndexer {
     public static final String PARTITION_ID_FIELD = "partition_id";
     public static final String NUMERIC_FILTER_FIELD = "numeric_filter";
     static final String TERM_FILTER_PREFIX = "term_filter_";
+    // Phrase filter fields reuse the term-filter selectivity buckets/rules. Matching docs store the
+    // ordered phrase "alpha bravo"; non-matching docs store "bravo alpha" (same two terms, reversed),
+    // so a PhraseQuery("alpha","bravo") isolates position matching at the configured selectivity.
+    static final String PHRASE_FILTER_PREFIX = "phrase_filter_";
+    static final String PHRASE_TERM_1 = "alpha";
+    static final String PHRASE_TERM_2 = "bravo";
     static final float[] TERM_FILTER_SELECTIVITIES = { 0.10f, 0.25f, 0.40f, 0.55f, 0.70f, 0.80f, 0.90f, 0.95f, 0.99f };
     static final int[][] TERM_FILTER_RULES = {
         { 10, 1 },   // 10%: docOrd % 10 < 1
@@ -412,9 +419,10 @@ public class KnnIndexer {
             for (int i = 0; i < TERM_FILTER_SELECTIVITIES.length; i++) {
                 int modulus = TERM_FILTER_RULES[i][0];
                 int threshold = TERM_FILTER_RULES[i][1];
-                String fieldName = termFilterFieldName(TERM_FILTER_SELECTIVITIES[i]);
-                String value = (docOrd % modulus < threshold) ? "1" : "0";
-                doc.add(new StringField(fieldName, value, Field.Store.NO));
+                boolean inSet = docOrd % modulus < threshold;
+                doc.add(new StringField(termFilterFieldName(TERM_FILTER_SELECTIVITIES[i]), inSet ? "1" : "0", Field.Store.NO));
+                String phraseValue = inSet ? PHRASE_TERM_1 + " " + PHRASE_TERM_2 : PHRASE_TERM_2 + " " + PHRASE_TERM_1;
+                doc.add(new TextField(phraseFilterFieldName(TERM_FILTER_SELECTIVITIES[i]), phraseValue, Field.Store.NO));
             }
             return doc;
         }
@@ -425,6 +433,18 @@ public class KnnIndexer {
     }
 
     static String nearestTermFilterField(float selectivity) {
+        return termFilterFieldName(TERM_FILTER_SELECTIVITIES[nearestSelectivityIndex(selectivity)]);
+    }
+
+    static String phraseFilterFieldName(float selectivity) {
+        return PHRASE_FILTER_PREFIX + Math.round(selectivity * 100);
+    }
+
+    static String nearestPhraseFilterField(float selectivity) {
+        return phraseFilterFieldName(TERM_FILTER_SELECTIVITIES[nearestSelectivityIndex(selectivity)]);
+    }
+
+    private static int nearestSelectivityIndex(float selectivity) {
         float bestDist = Float.MAX_VALUE;
         int bestIdx = 0;
         for (int i = 0; i < TERM_FILTER_SELECTIVITIES.length; i++) {
@@ -434,7 +454,7 @@ public class KnnIndexer {
                 bestIdx = i;
             }
         }
-        return termFilterFieldName(TERM_FILTER_SELECTIVITIES[bestIdx]);
+        return bestIdx;
     }
 
     static class IndexerThread implements Runnable {
