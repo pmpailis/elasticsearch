@@ -45,6 +45,11 @@ class MaxScoreTopKnnCollector extends AbstractMaxScoreKnnCollector implements Bu
     }
 
     @Override
+    AbstractMaxScoreKnnCollector newParallelWorkerCollector(int k, long visitLimit, KnnSearchStrategy workerStrategy) {
+        return new MaxScoreTopKnnCollector(k, visitLimit, workerStrategy);
+    }
+
+    @Override
     public boolean collect(int docId, float similarity) {
         docScratch[0] = docId;
         scoreScratch[0] = similarity;

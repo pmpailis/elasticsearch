@@ -31,9 +31,11 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.knn.KnnCollectorManager;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.core.Booleans;
 import org.elasticsearch.index.codec.vectors.cluster.BulkNeighborQueue;
 import org.elasticsearch.index.codec.vectors.diskbbq.IvfQueryConfigResolver;
 import org.elasticsearch.index.codec.vectors.diskbbq.IvfSegmentConfig;
+import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.profile.query.QueryProfiler;
 
 import java.io.IOException;
@@ -53,6 +55,27 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
     static final TopDocs NO_RESULTS = TopDocsCollector.EMPTY_TOPDOCS;
 
+    /**
+     * Experimental opt-in for within-segment parallel scanning of IVF posting lists. Strictly off by default (this is
+     * deliberately not a {@link org.elasticsearch.common.util.FeatureFlag}, which would auto-enable on snapshot
+     * builds) until benchmarks validate the parallel path.
+     */
+    static final boolean INTRA_SEGMENT_PARALLELISM_ENABLED = Booleans.parseBoolean(
+        System.getProperty("es.vectors.ivf_intra_segment_parallelism"),
+        false
+    );
+
+    /** Upper bound on parallel workers per segment; the effective count also divides by the number of leaves. */
+    static final int MAX_INTRA_SEGMENT_WORKERS = Integer.parseInt(System.getProperty("es.vectors.ivf_max_intra_segment_workers", "8"));
+
+    /**
+     * Benchmarking/dev escape hatch: forces this many workers per segment when the searcher is not a
+     * {@link ContextIndexSearcher} (e.g. the qa/vector {@code KnnSearcher} harness uses a plain executor-backed
+     * {@code IndexSearcher}). {@code 0} (the default) disables the fallback; production searches always go through
+     * {@link ContextIndexSearcher} and are unaffected.
+     */
+    static final int FORCE_INTRA_SEGMENT_WORKERS = Integer.parseInt(System.getProperty("es.vectors.ivf_force_intra_segment_workers", "0"));
+
     protected final String field;
     protected final float providedVisitRatio;
     protected final int k;
@@ -60,6 +83,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected final Query filter;
     protected int vectorOpsCount;
     protected final IvfQueryConfigResolver ivfQueryConfigResolver;
+    private IVFParallelismConfig intraSegmentParallelism;
 
     protected AbstractIVFKnnVectorQuery(
         String field,
@@ -131,6 +155,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
 
         TaskExecutor taskExecutor = indexSearcher.getTaskExecutor();
         List<LeafReaderContext> leafReaderContexts = reader.leaves();
+        intraSegmentParallelism = resolveIntraSegmentParallelism(indexSearcher, leafReaderContexts);
 
         // When providedVisitRatio is 0.0f (dynamic), the codec computes the visit ratio
         // per-segment using the Two-Signal model with segment-size awareness.
@@ -219,7 +244,11 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         IntObjectHashMap<ScoreDoc> dedupByDoc = new IntObjectHashMap<>(results.scoreDocs.length * 4 / 3);
         for (ScoreDoc scoreDoc : results.scoreDocs) {
             int globalDoc = scoreDoc.doc + ctx.docBase;
-            if (dedupByDoc.containsKey(globalDoc) == false) {
+            // Keep the best-scoring copy of a SOAR-duplicated doc (each posting quantizes against its own centroid,
+            // so the copies score differently). Max-wins is insertion-order independent, which keeps results
+            // deterministic when intra-segment parallel scanning changes the queue's drain order.
+            ScoreDoc existing = dedupByDoc.get(globalDoc);
+            if (existing == null || scoreDoc.score > existing.score) {
                 scoreDoc.doc = globalDoc;
                 dedupByDoc.put(globalDoc, scoreDoc);
             }
@@ -240,6 +269,64 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected IVFCollectorManager getKnnCollectorManager(int k, IndexSearcher searcher) {
         return new IVFCollectorManager(k, searcher);
     }
+
+    /** The per-query parallelism resolved by the last {@link #rewrite}, or {@code null} when disabled. */
+    IVFParallelismConfig intraSegmentParallelism() {
+        return intraSegmentParallelism;
+    }
+
+    /**
+     * Per-leaf context for within-segment parallel scanning of posting lists, or {@code null} when intra-segment
+     * parallelism is disabled for this query. Workers share the manager's accumulator when one exists (note it is
+     * per-leaf: managers are created per leaf in {@link #rewrite}), otherwise a fresh one, so workers always prune
+     * against each other's results.
+     */
+    final IVFParallelScanContext newParallelScanContext(IVFCollectorManager knnCollectorManager) {
+        IVFParallelismConfig parallelismConfig = intraSegmentParallelism();
+        if (parallelismConfig == null) {
+            return null;
+        }
+        LongAccumulator workerAccumulator = knnCollectorManager.longAccumulator != null
+            ? knnCollectorManager.longAccumulator
+            : new LongAccumulator(Long::max, LEAST_COMPETITIVE);
+        return new IVFParallelScanContext(
+            parallelismConfig.taskExecutor(),
+            parallelismConfig.maxWorkers(),
+            parallelismConfig.checkCancelled(),
+            workerAccumulator
+        );
+    }
+
+    private IVFParallelismConfig resolveIntraSegmentParallelism(IndexSearcher searcher, List<LeafReaderContext> leaves) {
+        if (INTRA_SEGMENT_PARALLELISM_ENABLED == false) {
+            return null;
+        }
+        int leavesWithField = 0;
+        for (LeafReaderContext leafContext : leaves) {
+            if (leafContext.reader().getFieldInfos().fieldInfo(field) != null) {
+                leavesWithField++;
+            }
+        }
+        if (leavesWithField == 0) {
+            return null;
+        }
+        if (searcher instanceof ContextIndexSearcher contextIndexSearcher && contextIndexSearcher.hasExecutor()) {
+            // Divide the request-level concurrency budget across leaves so leaf tasks and intra-segment workers
+            // together do not oversubscribe the search pool; multi-segment indices naturally degrade to one worker.
+            int concurrency = Math.max(1, contextIndexSearcher.getMaximumNumberOfSlices());
+            int maxWorkers = Math.min(MAX_INTRA_SEGMENT_WORKERS, Math.max(1, concurrency / leavesWithField));
+            if (maxWorkers >= 2) {
+                return new IVFParallelismConfig(searcher.getTaskExecutor(), maxWorkers, contextIndexSearcher::checkCancelled);
+            }
+        } else if (FORCE_INTRA_SEGMENT_WORKERS >= 2) {
+            // Plain IndexSearcher (Lucene-level harnesses): no cancellation hook exists, and Lucene's TaskExecutor
+            // degrades to caller-runs when the searcher has no executor, so this stays correct either way.
+            return new IVFParallelismConfig(searcher.getTaskExecutor(), FORCE_INTRA_SEGMENT_WORKERS, () -> {});
+        }
+        return null;
+    }
+
+    record IVFParallelismConfig(TaskExecutor taskExecutor, int maxWorkers, Runnable checkCancelled) {}
 
     @Override
     public final void profile(QueryProfiler queryProfiler) {

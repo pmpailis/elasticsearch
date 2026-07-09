@@ -83,7 +83,16 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
             throw new IllegalArgumentException("sliceField must be the first field of the index sort and of type STRING");
         }
 
-        final IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.longAccumulator);
+        // Slices are searched sequentially on this thread (required by the shared one-shot filter iterator below),
+        // but each slice's posting-list scan may fork intra-segment workers: everything filter- and slice-related is
+        // materialized on this thread before workers fork (see IVFVectorsReader#search).
+        final IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
+            visitRatio,
+            numCands,
+            k,
+            knnCollectorManager.longAccumulator,
+            newParallelScanContext(knnCollectorManager)
+        );
         final AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
         if (knnCollector == null) {
             return NO_RESULTS;

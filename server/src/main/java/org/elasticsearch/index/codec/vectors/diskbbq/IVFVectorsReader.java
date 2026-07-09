@@ -34,6 +34,7 @@ import org.elasticsearch.index.codec.vectors.GenericFlatVectorReaders;
 import org.elasticsearch.index.codec.vectors.cluster.ClusteringFloatVectorValues;
 import org.elasticsearch.search.vectors.ESAcceptDocs;
 import org.elasticsearch.search.vectors.IVFKnnSearchStrategy;
+import org.elasticsearch.search.vectors.IVFParallelScanContext;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -355,18 +356,62 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         }
         long maxVectorVisited = maxVectorsToVisit(entry, visitRatio, numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
-        CentroidIterator centroidPrefetchingIterator = getCentroidIterator(
-            fieldInfo,
-            entry.numCentroids,
-            centroids,
-            target,
-            postListSlice,
-            acceptDocs,
-            approximateCost,
-            values,
-            visitRatio
-        );
+        final IVFParallelScanContext parallelScanContext = knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy ivfStrategy
+            ? ivfStrategy.parallelScanContext()
+            : null;
+        final ParallelScanSupport parallelScanSupport = parallelScanContext == null
+            ? null
+            : getParallelScanSupport(fieldInfo, entry, centroids, target, postListSlice, acceptDocs, approximateCost, values, visitRatio);
+        CentroidIterator centroidPrefetchingIterator = parallelScanSupport != null
+            ? parallelScanSupport.rawIterator()
+            : getCentroidIterator(
+                fieldInfo,
+                entry.numCentroids,
+                centroids,
+                target,
+                postListSlice,
+                acceptDocs,
+                approximateCost,
+                values,
+                visitRatio
+            );
         Bits acceptDocsBits = acceptDocs.bits();
+        long expectedDocs = 0;
+        long actualDocs = 0;
+        if (parallelScanSupport != null) {
+            // Everything a worker touches is created inside this factory, on the worker's own thread: fresh
+            // posting/centroid slices, fresh vector values and a fresh visitor (with its own scorer and scratch).
+            ParallelPostingListScanner.WorkerStateFactory workerStateFactory = () -> {
+                IndexInput workerPostings = entry.postingListSlice(ivfClusters);
+                PostingVisitor workerVisitor = getPostingVisitor(
+                    fieldInfo,
+                    getFloatVectorValues(fieldInfo.name),
+                    workerPostings,
+                    target,
+                    acceptDocsBits,
+                    entry.centroidSlice(ivfCentroids),
+                    esAcceptDocs
+                );
+                return new ParallelPostingListScanner.WorkerState(workerVisitor, workerPostings);
+            };
+            ParallelPostingListScanner.Result parallelResult = ParallelPostingListScanner.scan(
+                centroidPrefetchingIterator,
+                parallelScanSupport.approxBytesPerVector(),
+                maxVectorVisited,
+                parallelScanContext,
+                (IVFKnnSearchStrategy) knnCollector.getSearchStrategy(),
+                knnCollector,
+                workerStateFactory,
+                postListSlice
+            );
+            expectedDocs = parallelResult.expectedDocs();
+            actualDocs = parallelResult.actualDocs();
+            // The serial loops below resume on the unclaimed remainder under their exact original conditions, so
+            // the visited set is a superset of the serial algorithm's (recall >= serial by construction).
+            centroidPrefetchingIterator = parallelResult.remainingIterator();
+        }
+        // Constructed after the parallel phase: on the parallel path this visitor is only needed if the serial
+        // continuation actually runs, and workers have already built their own by now.
         PostingVisitor scorer = getPostingVisitor(
             fieldInfo,
             values,
@@ -376,8 +421,6 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             entry.centroidSlice(ivfCentroids),
             esAcceptDocs
         );
-        long expectedDocs = 0;
-        long actualDocs = 0;
         // initially we visit only the "centroids to search"
         // Note, numCollected is doing the bare minimum here.
         // TODO do we need to handle nested doc counts similarly to how we handle
@@ -416,6 +459,31 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
     protected long maxVectorsToVisit(E entry, float visitRatio, int numVectors) {
         return (long) (2.0 * visitRatio * numVectors);
     }
+
+    /**
+     * Within-segment parallel scan support for this format, or {@code null} when unsupported (the default), in which
+     * case the leaf is scanned serially. Implementations must return an iterator equivalent to
+     * {@link #getCentroidIterator} but <b>without</b> prefetch wrapping: the parallel scanner prefetches per claimed
+     * chunk instead, and draining a prefetching iterator up front would issue a burst of prefetches for postings
+     * consumed much later. {@code approxBytesPerVector} sizes the drain (how many ranked postings cover the visit
+     * budget) from {@link PostingMetadata#length()} without the per-posting header read that exact counts would need.
+     */
+    protected ParallelScanSupport getParallelScanSupport(
+        FieldInfo fieldInfo,
+        E entry,
+        IndexInput centroids,
+        float[] target,
+        IndexInput postingListSlice,
+        AcceptDocs acceptDocs,
+        float approximateCost,
+        FloatVectorValues values,
+        float visitRatio
+    ) throws IOException {
+        return null;
+    }
+
+    /** See {@link #getParallelScanSupport}. */
+    public record ParallelScanSupport(CentroidIterator rawIterator, long approxBytesPerVector) {}
 
     private static boolean hasNoVectors(FieldInfo fieldInfo, FieldEntry fieldEntry) {
         return fieldInfo.getVectorDimension() == 0

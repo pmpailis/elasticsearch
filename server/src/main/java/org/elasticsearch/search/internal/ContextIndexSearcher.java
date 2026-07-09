@@ -161,6 +161,15 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
         return hasExecutor;
     }
 
+    /**
+     * The maximum number of slices this searcher may parallelize a single request into, as determined from the search
+     * worker pool at construction time, or {@code -1} for non-concurrent searchers. Used as a proxy for the amount of
+     * request-level concurrency available when sizing intra-segment parallel work (e.g. IVF vector search workers).
+     */
+    public int getMaximumNumberOfSlices() {
+        return maximumNumberOfSlices;
+    }
+
     @Override
     protected LeafSlice[] slices(List<LeafReaderContext> leaves) {
         // we offload to the executor unconditionally, including requests that don't support concurrency

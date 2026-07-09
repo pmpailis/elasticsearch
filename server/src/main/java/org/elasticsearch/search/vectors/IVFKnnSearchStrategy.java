@@ -8,6 +8,7 @@
  */
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.SetOnce;
 
@@ -20,12 +21,49 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     private final int k;
     private final SetOnce<AbstractMaxScoreKnnCollector> collector = new SetOnce<>();
     private final LongAccumulator accumulator;
+    private final IVFParallelScanContext parallelScanContext;
 
     public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, LongAccumulator accumulator) {
+        this(visitRatio, numCands, k, accumulator, null);
+    }
+
+    public IVFKnnSearchStrategy(
+        float visitRatio,
+        int numCands,
+        int k,
+        LongAccumulator accumulator,
+        IVFParallelScanContext parallelScanContext
+    ) {
         this.visitRatio = visitRatio;
         this.numCands = numCands;
         this.k = k;
         this.accumulator = accumulator;
+        this.parallelScanContext = parallelScanContext;
+    }
+
+    /**
+     * Context for within-segment parallel scanning of posting lists, or {@code null} when this leaf must be scanned
+     * serially.
+     */
+    public IVFParallelScanContext parallelScanContext() {
+        return parallelScanContext;
+    }
+
+    /**
+     * Creates a private collector of the leaf collector's shape for one intra-segment parallel worker, so workers
+     * preserve the leaf collector's semantics (e.g. per-parent diversification). The worker's strategy shares the
+     * parallel context's min-competitive accumulator so workers prune against each other's results without any shared
+     * mutable collector state on the scoring hot path. Must only be called when {@link #parallelScanContext()} is
+     * non-null and after {@link #setCollector}; safe to call on the worker's own thread.
+     */
+    public KnnCollector newParallelWorkerCollector(int collectorK, long visitLimit) {
+        assert parallelScanContext != null : "parallel worker collectors require a parallel scan context";
+        AbstractMaxScoreKnnCollector leafCollector = collector.get();
+        assert leafCollector != null : "the leaf collector must be set before creating worker collectors";
+        IVFKnnSearchStrategy workerStrategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, parallelScanContext.workerAccumulator());
+        AbstractMaxScoreKnnCollector workerCollector = leafCollector.newParallelWorkerCollector(collectorK, visitLimit, workerStrategy);
+        workerStrategy.setCollector(workerCollector);
+        return workerCollector;
     }
 
     void setCollector(AbstractMaxScoreKnnCollector collector) {

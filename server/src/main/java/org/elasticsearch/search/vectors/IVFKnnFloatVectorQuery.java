@@ -169,7 +169,13 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         float visitRatio
     ) throws IOException {
         LeafReader reader = context.reader();
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.longAccumulator);
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(
+            visitRatio,
+            numCands,
+            k,
+            knnCollectorManager.longAccumulator,
+            newParallelScanContext(knnCollectorManager)
+        );
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
         if (knnCollector == null) {
             return NO_RESULTS;

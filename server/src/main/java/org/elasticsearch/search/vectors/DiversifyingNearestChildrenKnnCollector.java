@@ -47,10 +47,16 @@ class DiversifyingNearestChildrenKnnCollector extends AbstractMaxScoreKnnCollect
      * @param searchStrategy The search strategy to use
      * @param parentBitSet The leaf parent bitset
      */
-    DiversifyingNearestChildrenKnnCollector(int k, int visitLimit, KnnSearchStrategy searchStrategy, BitSet parentBitSet) {
+    DiversifyingNearestChildrenKnnCollector(int k, long visitLimit, KnnSearchStrategy searchStrategy, BitSet parentBitSet) {
         super(k, visitLimit, searchStrategy);
         this.parentBitSet = parentBitSet;
         this.heap = new NodeIdCachingHeap(k);
+    }
+
+    @Override
+    AbstractMaxScoreKnnCollector newParallelWorkerCollector(int k, long visitLimit, KnnSearchStrategy workerStrategy) {
+        // the parent bitset is fetched once on the leaf thread and only read by workers
+        return new DiversifyingNearestChildrenKnnCollector(k, visitLimit, workerStrategy, parentBitSet);
     }
 
     /**
@@ -105,14 +111,19 @@ class DiversifyingNearestChildrenKnnCollector extends AbstractMaxScoreKnnCollect
 
     @Override
     public long getMinCompetitiveDocScore() {
-        return heap.size() > 0
+        // Only a full heap's top is a valid bound on the k-th best parent: while the heap is under-filled its top is
+        // simply the worst parent seen so far, and publishing it would over-prune other collectors sharing the
+        // accumulator (mirrors MaxScoreTopKnnCollector).
+        return heap.size() >= k()
             ? Math.max(NeighborQueue.encodeRaw(heap.topNode(), heap.topScore()), minCompetitiveDocScore)
             : minCompetitiveDocScore;
     }
 
     @Override
     void updateMinCompetitiveDocScore(long minCompetitiveDocScore) {
-        long queueMinCompetitiveDocScore = heap.size() > 0 ? NeighborQueue.encodeRaw(heap.topNode(), heap.topScore()) : LEAST_COMPETITIVE;
+        long queueMinCompetitiveDocScore = heap.size() >= k()
+            ? NeighborQueue.encodeRaw(heap.topNode(), heap.topScore())
+            : LEAST_COMPETITIVE;
         this.minCompetitiveDocScore = Math.max(this.minCompetitiveDocScore, Math.max(queueMinCompetitiveDocScore, minCompetitiveDocScore));
         this.minCompetitiveScore = NeighborQueue.decodeScoreRaw(this.minCompetitiveDocScore);
     }

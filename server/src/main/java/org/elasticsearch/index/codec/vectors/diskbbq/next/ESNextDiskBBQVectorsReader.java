@@ -377,6 +377,48 @@ public class ESNextDiskBBQVectorsReader extends IVFVectorsReader<ESNextDiskBBQVe
     }
 
     @Override
+    protected ParallelScanSupport getParallelScanSupport(
+        FieldInfo fieldInfo,
+        NextFieldEntry entry,
+        IndexInput centroids,
+        float[] target,
+        IndexInput postingListSlice,
+        AcceptDocs acceptDocs,
+        float approximateCost,
+        FloatVectorValues values,
+        float visitRatio
+    ) throws IOException {
+        if (entry.numSlices == 0) {
+            // Flush-sliced segments have exactly one centroid (see the assert in getPostingVisitor) so there is
+            // nothing to parallelize, and their SlicedMemorySegmentPostingsVisitor resolves sliceAcceptDocs() through
+            // a lazy cache that walks a shared DocValuesSkipper — that resolution must stay on the leaf thread. This
+            // must remain a hard gate. Merge-sliced segments (numSlices > 0) are safe: slice filtering happens at
+            // centroid level (FlatCentroidIndex acceptParents) on the leaf thread, and their posting visitor is the
+            // order-independent MemorySegmentPostingsVisitor.
+            return null;
+        }
+        CentroidIndex index = switch (entry.centroidIndexFormat()) {
+            case FLAT -> new FlatCentroidIndex(
+                fieldInfo,
+                entry,
+                entry.numCentroids(),
+                centroids,
+                target,
+                acceptDocs,
+                approximateCost,
+                values,
+                visitRatio
+            );
+        };
+        // Per-vector bytes in a posting list: the packed quantized vector plus three float corrections and one int
+        // component sum (see MemorySegmentPostingsVisitor#quantizedByteLength). Doc-id deltas are excluded, so this
+        // slightly under-estimates; the scanner's drain overshoot factor absorbs the difference.
+        long approxBytesPerVector = entry.quantEncoding().getDocPackedLength(fieldInfo.getVectorDimension()) + (Float.BYTES * 3)
+            + Integer.BYTES;
+        return new ParallelScanSupport(index.getIterator(), approxBytesPerVector);
+    }
+
+    @Override
     public PostingVisitor getPostingVisitor(
         FieldInfo fieldInfo,
         FloatVectorValues values,

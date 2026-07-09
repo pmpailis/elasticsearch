@@ -41,4 +41,12 @@ abstract class AbstractMaxScoreKnnCollector extends AbstractKnnCollector {
      * @param minCompetitiveDocScore the new minimum competitive document score to set
      */
     abstract void updateMinCompetitiveDocScore(long minCompetitiveDocScore);
+
+    /**
+     * Creates a private collector of the same shape as this leaf collector for one intra-segment parallel worker, so
+     * workers preserve the leaf collector's semantics (e.g. per-parent diversification). Invoked on the worker's own
+     * thread; implementations must only read immutable or safely-published state (such as a parent bitset fetched
+     * once on the leaf thread).
+     */
+    abstract AbstractMaxScoreKnnCollector newParallelWorkerCollector(int k, long visitLimit, KnnSearchStrategy workerStrategy);
 }
