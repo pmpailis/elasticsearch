@@ -14,7 +14,7 @@
     "force_merge": false,
     "vector_space": "dot_product",
     "filter_selectivity": [0.55, 0.70, 0.80, 0.90, 0.95, 0.99, 1.0],
-    "filter_type": ["phrase"],
+    "filter_type": ["random", "range", "phrase", "term", "range_term"],
     "filter_cache": false,
     "post_filter": [false, true],
     "seed": 42

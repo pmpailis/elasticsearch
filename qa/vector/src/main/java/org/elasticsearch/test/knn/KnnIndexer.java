@@ -78,27 +78,57 @@ public class KnnIndexer {
     public static final String PARTITION_ID_FIELD = "partition_id";
     public static final String NUMERIC_FILTER_FIELD = "numeric_filter";
     static final String TERM_FILTER_PREFIX = "term_filter_";
-    // Phrase filter fields reuse the term-filter selectivity buckets/rules, storing one of three token
-    // pairs per doc so PhraseQuery("alpha","bravo") is both selectivity-controlled and realistic:
-    // - matching docs (fraction p): "alpha bravo" -> matches the phrase
-    // - 1-in-PHRASE_DECOY_EVERY non-matching docs: "bravo alpha" -> terms co-occur but not as the
-    // phrase, so two-phase matches() rejects
-    // - remaining non-matching docs: "charlie delta" -> unrelated filler
-    // Only "alpha bravo" docs match, so selectivity stays exactly p. Keeping the phrase terms out of most
-    // non-matching docs makes alpha/bravo postings cover ~p of the index, so the pre-filter scales with
-    // selectivity like term/range instead of degenerating into a full-corpus position scan (the earlier
-    // "bravo alpha"-everywhere design put both terms in every doc, giving a flat ~380ms pre-filter). The
-    // reversed-phrase decoys keep the two-phase position-rejection path exercised. Mirrors how the pmc
-    // rally track's match_phrase("body","newspaper coverage") rides on sub-ubiquitous term frequencies.
+    // Phrase filter fields reuse the term-filter selectivity buckets/rules so PhraseQuery("alpha","bravo")
+    // is selectivity-controlled while the field content stays noisy enough to exercise real phrase-matching
+    // work. Each doc stores one variant (rotated deterministically by docOrd) from one of three classes:
+    // - matching docs (fraction p): variants that all contain "alpha bravo" adjacent and in order, at
+    // varying positions, surrounded by noise tokens; one variant repeats "alpha" earlier in the doc
+    // (tf>1) so matches() must iterate past a non-adjacent position before accepting.
+    // - 1-in-PHRASE_DECOY_EVERY non-matching docs: both terms co-occur but never adjacently-in-order —
+    // reversed ("bravo .. alpha") and gapped ("alpha <noise> bravo") variants, so the two-phase
+    // matches() rejects via both failure modes (wrong order and wrong distance).
+    // - remaining non-matching docs: noise-only filler; a slice carries "alpha" alone and a disjoint
+    // slice "bravo" alone, inflating each term's postings independently of the other without ever
+    // entering the conjunction approximation (a doc needs both terms to be approximated).
+    // Only the matching class contains an adjacent in-order "alpha bravo", so selectivity stays exactly p
+    // (any change to the variants must preserve that invariant — beware repeats: an "alpha" immediately
+    // before a "bravo" anywhere in a non-matching variant would corrupt selectivity). Keeping both terms
+    // out of most non-matching docs keeps the conjunction approximation ~p-sized, so the pre-filter scales
+    // with selectivity instead of degenerating into a full-corpus position scan (an earlier design put
+    // both terms in every doc, giving a flat ~380ms pre-filter). Mirrors how the pmc rally track's
+    // match_phrase("body","newspaper coverage") rides on sub-ubiquitous, asymmetric term frequencies.
     // PHRASE_DECOY_EVERY must be coprime to every TERM_FILTER_RULES modulus (all products of 2 and 5) so
     // the decoy stride lands on non-matching residues; a factor-sharing stride (e.g. 10) only ever hits
     // residue 0, which is always in the matching set, yielding zero decoys.
     static final String PHRASE_FILTER_PREFIX = "phrase_filter_";
     static final String PHRASE_TERM_1 = "alpha";
     static final String PHRASE_TERM_2 = "bravo";
-    static final String PHRASE_FILLER_1 = "charlie";
-    static final String PHRASE_FILLER_2 = "delta";
     static final int PHRASE_DECOY_EVERY = 7;
+    // Matching variants: every one contains adjacent, in-order "alpha bravo".
+    static final String[] PHRASE_MATCH_VARIANTS = {
+        "alpha bravo charlie echo",
+        "charlie alpha bravo echo foxtrot",
+        "echo charlie delta alpha bravo",
+        "alpha charlie alpha bravo echo", // tf(alpha)=2: first position is a non-match, second is
+    };
+    // Decoy variants: both terms present, never adjacent-in-order.
+    static final String[] PHRASE_DECOY_VARIANTS = {
+        "bravo charlie alpha echo",   // reversed with a gap
+        "alpha charlie bravo echo",   // in order but gapped -> distance check rejects
+        "bravo alpha delta foxtrot",  // adjacent but reversed -> order check rejects
+    };
+    // Filler variants: at most one of the two phrase terms per doc, so none enters the conjunction.
+    // Exactly PHRASE_DECOY_EVERY-1 entries: filler docs have docOrd % PHRASE_DECOY_EVERY in [1,6]
+    // (0 is the decoy slot), which indexes this array directly. Because PHRASE_DECOY_EVERY is coprime
+    // to every term-rule modulus, the rotation stays even within every selectivity bucket — a modulus
+    // sharing factors with the rules (e.g. % 5) would pin whole buckets to a single variant.
+    static final String[] PHRASE_FILLER_VARIANTS = {
+        "charlie delta echo",
+        "delta foxtrot charlie golf",
+        "alpha charlie delta",         // alpha only: inflates DF(alpha), can never match
+        "echo delta charlie",
+        "delta bravo charlie foxtrot", // bravo only: inflates DF(bravo), can never match
+        "foxtrot echo delta golf", };
     static final float[] TERM_FILTER_SELECTIVITIES = { 0.10f, 0.25f, 0.40f, 0.55f, 0.70f, 0.80f, 0.90f, 0.95f, 0.99f };
     static final int[][] TERM_FILTER_RULES = {
         { 10, 1 },   // 10%: docOrd % 10 < 1
@@ -469,15 +499,9 @@ public class KnnIndexer {
                 int threshold = TERM_FILTER_RULES[i][1];
                 boolean inSet = docOrd % modulus < threshold;
                 doc.add(new StringField(termFilterFieldName(TERM_FILTER_SELECTIVITIES[i]), inSet ? "1" : "0", Field.Store.NO));
-                final String phraseValue;
-                if (inSet) {
-                    phraseValue = PHRASE_TERM_1 + " " + PHRASE_TERM_2; // matches the phrase
-                } else if (docOrd % PHRASE_DECOY_EVERY == 0) {
-                    phraseValue = PHRASE_TERM_2 + " " + PHRASE_TERM_1; // reversed: co-occurs, rejected by matches()
-                } else {
-                    phraseValue = PHRASE_FILLER_1 + " " + PHRASE_FILLER_2; // unrelated filler
-                }
-                doc.add(new TextField(phraseFilterFieldName(TERM_FILTER_SELECTIVITIES[i]), phraseValue, Field.Store.NO));
+                doc.add(
+                    new TextField(phraseFilterFieldName(TERM_FILTER_SELECTIVITIES[i]), phraseFieldValue(docOrd, inSet), Field.Store.NO)
+                );
             }
             return doc;
         }
@@ -497,6 +521,23 @@ public class KnnIndexer {
 
     static String nearestPhraseFilterField(float selectivity) {
         return phraseFilterFieldName(TERM_FILTER_SELECTIVITIES[nearestSelectivityIndex(selectivity)]);
+    }
+
+    /**
+     * Picks the phrase-field content for a doc: a matching variant when {@code inSet}, otherwise a decoy
+     * for every {@code PHRASE_DECOY_EVERY}-th doc and noise filler for the rest. Variant rotation is
+     * deterministic on {@code docOrd} so the corpus is reproducible; the modulus constants are
+     * independent of the term-filter rule moduli so variants spread evenly within each class.
+     */
+    static String phraseFieldValue(int docOrd, boolean inSet) {
+        if (inSet) {
+            return PHRASE_MATCH_VARIANTS[docOrd % PHRASE_MATCH_VARIANTS.length];
+        }
+        int decoySlot = docOrd % PHRASE_DECOY_EVERY;
+        if (decoySlot == 0) {
+            return PHRASE_DECOY_VARIANTS[(docOrd / PHRASE_DECOY_EVERY) % PHRASE_DECOY_VARIANTS.length];
+        }
+        return PHRASE_FILLER_VARIANTS[decoySlot - 1];
     }
 
     private static int nearestSelectivityIndex(float selectivity) {
