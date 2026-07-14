@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intra-Segment Parallel IVF Scoring — PR Explainer</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #11151d; --panel2: #161b26; --border: #232b3b;
+    --text: #d6dce6; --muted: #8b96a8; --faint: #5b6577;
+    --query: #4f9cf9; --strat: #b07cf7; --codec: #f2a052;
+    --w1: #46c28e; --w2: #e5c558; --w3: #ef7fb1;
+    --ok: #3fb970; --warn: #e0b341; --bad: #e5534b;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.86em; color: #cdd9e5; white-space: nowrap; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+  pre code { background: none; border: none; padding: 0; white-space: pre; }
+  a { color: var(--query); text-decoration: none; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.5px; }
+  h2 { font-size: 21px; margin: 0 0 14px; letter-spacing: -0.3px; }
+  h3 { font-size: 16.5px; margin: 26px 0 10px; }
+  h4 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+  header {
+    padding: 26px 32px 0; max-width: 1180px; margin: 0 auto;
+  }
+  header .sub { color: var(--muted); max-width: 860px; }
+  .chips { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+  .chip b { color: var(--text); font-weight: 600; }
+  nav.tabs {
+    position: sticky; top: 0; z-index: 50; background: rgba(11,14,20,0.92); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border); margin-top: 20px;
+  }
+  nav.tabs .inner { max-width: 1180px; margin: 0 auto; padding: 0 32px; display: flex; gap: 4px; overflow-x: auto; }
+  nav.tabs button {
+    appearance: none; background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); font: 600 13.5px system-ui, sans-serif; padding: 13px 14px; cursor: pointer; white-space: nowrap;
+  }
+  nav.tabs button:hover { color: var(--text); }
+  nav.tabs button.active { color: var(--text); border-bottom-color: var(--query); }
+  main { max-width: 1180px; margin: 0 auto; padding: 30px 32px 80px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; animation: fadein .25s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 22px; margin: 0 0 18px;
+  }
+  .card.tight { padding: 14px 18px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .layer-q { color: var(--query); } .layer-s { color: var(--strat); } .layer-c { color: var(--codec); }
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .5px; padding: 2px 8px; border-radius: 4px; vertical-align: 1px; }
+  .pill.new { background: rgba(63,185,112,.15); color: var(--ok); border: 1px solid rgba(63,185,112,.4); }
+  .pill.mod { background: rgba(79,156,249,.13); color: var(--query); border: 1px solid rgba(79,156,249,.4); }
+  .pill.fix { background: rgba(229,83,75,.13); color: var(--bad); border: 1px solid rgba(229,83,75,.4); }
+  .pill.test { background: rgba(176,124,247,.13); color: var(--strat); border: 1px solid rgba(176,124,247,.4); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .callout { border-left: 3px solid var(--query); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 14px 0; }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.ok { border-left-color: var(--ok); }
+  .callout.bad { border-left-color: var(--bad); }
+  .kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; background: var(--panel2); font-size: 12px; }
+  /* step cards for the deep dive */
+  .step { display: flex; gap: 16px; margin-bottom: 4px; }
+  .step .rail { display: flex; flex-direction: column; align-items: center; width: 34px; flex-shrink: 0; }
+  .step .dot {
+    width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font: 700 13px ui-monospace, monospace; flex-shrink: 0; border: 2px solid var(--border); background: var(--panel2);
+  }
+  .step .line { width: 2px; flex: 1; background: var(--border); margin: 4px 0; min-height: 18px; }
+  .step:last-child .line { display: none; }
+  .step .body { padding-bottom: 22px; min-width: 0; flex: 1; }
+  .step .who { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; margin-bottom: 3px; }
+  .step h3 { margin: 0 0 6px; font-size: 15.5px; }
+  .step.q .dot { border-color: var(--query); color: var(--query); } .step.q .who { color: var(--query); }
+  .step.s .dot { border-color: var(--strat); color: var(--strat); } .step.s .who { color: var(--strat); }
+  .step.c .dot { border-color: var(--codec); color: var(--codec); } .step.c .who { color: var(--codec); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin: 8px 0 16px; }
+  .legend span::before { content: "●"; margin-right: 6px; }
+  .legend .lq::before { color: var(--query); } .legend .ls::before { color: var(--strat); } .legend .lc::before { color: var(--codec); }
+  .btn {
+    appearance: none; border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+    font: 600 13px system-ui, sans-serif; padding: 8px 16px; border-radius: 7px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--faint); }
+  .btn.primary { background: var(--query); border-color: var(--query); color: #061120; }
+  .diff-del { color: #f89aa2; } .diff-add { color: #7ee2a8; }
+  .flowrow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .flowbox {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px;
+    font-size: 13px; text-align: center; flex: 1; min-width: 130px;
+  }
+  .flowbox b { display: block; font-size: 13.5px; }
+  .flowbox .small { color: var(--muted); }
+  .flowarrow { display: flex; align-items: center; padding: 0 8px; color: var(--faint); font-size: 18px; flex-shrink: 0; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 0 32px 44px; color: var(--faint); font-size: 12.5px; }
+  svg text { font-family: system-ui, sans-serif; }
+  svg .mono { font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Intra-Segment Parallel IVF Scoring</h1>
+  <div class="sub">
+    This PR lets <b>multiple worker threads scan one segment's IVF posting lists in parallel</b> — for
+    <b>every</b> IVF query variant (plain, sliced, diversified, diversified+sliced) and for merge-sliced segments —
+    while guaranteeing recall is <i>at least</i> what the serial scan produces. It also fixes a pre-existing
+    recall bug in the diversified collector's score-floor publishing.
+  </div>
+  <div class="chips">
+    <span class="chip">branch <b>parallel-ivf-scoring-poc</b></span>
+    <span class="chip"><b>on by default</b> — sysprops are runtime kill switches</span>
+    <span class="chip">no format change · no API change</span>
+  </div>
+</header>
+
+<nav class="tabs"><div class="inner">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="ivf101">IVF in 60 seconds</button>
+  <button data-tab="highlevel">High-level flow</button>
+  <button data-tab="anim">The claim loop ▶</button>
+  <button data-tab="deepdive">Low-level deep dive</button>
+  <button data-tab="variants">Query variants</button>
+  <button data-tab="correctness">Correctness &amp; tests</button>
+</div></nav>
+
+<main>
+
+<!-- ============================ OVERVIEW ============================ -->
+<section class="tab active" id="tab-overview">
+  <div class="card">
+    <h2>Why this PR exists</h2>
+    <p>
+      Vector search in Elasticsearch runs <b>one task per segment</b>. That parallelizes nicely across segments —
+      but after a <code>force_merge</code> (the recommended setup for vector-heavy indices) there is exactly
+      <b>one segment</b>, so a kNN query uses exactly <b>one thread</b> no matter how large the search pool is.
+      Inside that segment, the IVF scan visits ranked posting lists <i>strictly one after another</i>.
+    </p>
+    <p>
+      The fix: split the <i>within-segment</i> scan across workers. Prior measurements on single-segment indices
+      showed roughly <b>2× lower latency</b> from this kind of parallelism, and a JMH benchmark in this PR
+      (<code>IndexInputCloneScanBenchmark</code>) proves the foundation is sound: per-worker
+      <code>IndexInput</code> slices off one shared mmap arena scale identically to independently opened files.
+    </p>
+    <div class="callout ok">
+      <b>The one-line mental model:</b> rank all posting lists by how promising their centroid is (unchanged),
+      then let W workers <b>claim chunks of that ranked list from a shared atomic cursor</b> and score them with
+      <b>completely private state</b> — merging results at the end, and handing anything unclaimed back to the
+      original serial loop so nothing that would have been visited is ever skipped.
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>What changed, at a glance</h2>
+      <table>
+        <tr><th>Area</th><th>Change</th></tr>
+        <tr>
+          <td class="mono small">ParallelPostingListScanner <span class="pill new">NEW</span></td>
+          <td>The engine: drain → atomic claim → thread-confined workers → merge → serial continuation.</td>
+        </tr>
+        <tr>
+          <td class="mono small">IVFParallelScanContext <span class="pill new">NEW</span></td>
+          <td>Per-leaf carrier (executor, worker cap, cancellation hook, shared score floor).</td>
+        </tr>
+        <tr>
+          <td class="mono small">IVFVectorsReader <span class="pill mod">MOD</span></td>
+          <td>Hooks the parallel phase in front of the two serial loops; new <code>getParallelScanSupport()</code> extension point.</td>
+        </tr>
+        <tr>
+          <td class="mono small">ESNextDiskBBQVectorsReader <span class="pill mod">MOD</span></td>
+          <td>Implements the hook: raw (non-prefetching) centroid iterator + per-vector byte estimate. Merge-sliced segments allowed.</td>
+        </tr>
+        <tr>
+          <td class="mono small">AbstractMaxScoreKnnCollector<br>MaxScoreTopKnnCollector<br>DiversifyingNearestChildrenKnnCollector <span class="pill mod">MOD</span></td>
+          <td>Worker-collector <b>factory</b>: every leaf collector can mint a private worker twin of its own shape
+              (plain top-k, or per-parent diversifying).</td>
+        </tr>
+        <tr>
+          <td class="mono small">DiversifyingNearestChildrenKnnCollector <span class="pill fix">BUGFIX</span></td>
+          <td>Missing <code>heap.size() &gt;= k()</code> guard on min-competitive publishing — a pre-existing
+              multi-segment recall bug, fixed here (see <a href="#" data-goto="correctness">Correctness</a>).</td>
+        </tr>
+        <tr>
+          <td class="mono small">AbstractIVFKnnVectorQuery / IVFKnnFloatVectorQuery / IVFKnnFloatSlicedVectorQuery <span class="pill mod">MOD</span></td>
+          <td>Parallel context plumbed into <b>all four query variants</b>; SOAR dedup made order-independent (max-wins);
+              per-query worker sizing from the search pool.</td>
+        </tr>
+        <tr>
+          <td class="mono small">ContextIndexSearcher <span class="pill mod">MOD</span></td>
+          <td>Exposes <code>getMaximumNumberOfSlices()</code> so worker counts respect the request-level concurrency budget.</td>
+        </tr>
+        <tr>
+          <td class="mono small">IVFIntraSegmentParallelScanTests <span class="pill test">TESTS</span></td>
+          <td>11 scenarios: parity/dominance for plain, filtered, deletes, diversified, sliced, combined; cancellation; guard-fix regression.</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Runtime switches (all ON by default)</h2>
+      <table>
+        <tr><th>System property</th><th>Meaning</th></tr>
+        <tr><td class="mono small">es.vectors.ivf_intra_segment_parallelism</td>
+            <td>Master switch for parallel scanning. <b>Default <code>true</code></b>; set to <code>false</code> to
+                force the serial per-segment scan.</td></tr>
+        <tr><td class="mono small">es.vectors.ivf_cross_leaf_floor_sharing</td>
+            <td>Segments share one min-competitive score floor (SOAR-safe publish gate), so an unproductive segment
+                stops collecting early. Independent of the master switch — also active for serial scans.
+                <b>Default <code>true</code></b>.</td></tr>
+        <tr><td class="mono small">es.vectors.ivf_cross_segment_scheduling</td>
+            <td>Cross-segment best-first scheduling: eligible segments register their ranked postings with a
+                query-level scheduler that spends the summed visit budget on the globally most promising chunks.
+                Requires the master switch. <b>Default <code>true</code></b>.</td></tr>
+        <tr><td class="mono small">es.vectors.ivf_max_intra_segment_workers</td>
+            <td>Worker cap per segment (default 8). Effective count also divides the pool's slice budget by the
+                number of leaves, so multi-segment indices naturally degrade toward one worker per leaf.</td></tr>
+        <tr><td class="mono small">es.vectors.ivf_force_intra_segment_workers</td>
+            <td>Benchmark escape hatch: forces N workers when the searcher is a plain <code>IndexSearcher</code>
+                (e.g. the checkVec harness). Default 0 = off. Production traffic always uses
+                <code>ContextIndexSearcher</code> and ignores this.</td></tr>
+      </table>
+      <h3>Where it kicks in</h3>
+      <p class="small muted">
+        All conditions must hold, otherwise the scan is <i>bit-for-bit the serial path</i>:
+      </p>
+      <div class="flowrow small">
+        <div class="flowbox"><b>sysprop on</b><span class="small">master switch</span></div>
+        <div class="flowarrow">→</div>
+        <div class="flowbox"><b>≥ 2 workers resolved</b><span class="small">pool budget ÷ leaves</span></div>
+        <div class="flowarrow">→</div>
+        <div class="flowbox"><b>codec supports it</b><span class="small">ESNext, numSlices ≠ 0</span></div>
+        <div class="flowarrow">→</div>
+        <div class="flowbox"><b>enough work</b><span class="small">≥ 4 postings per worker</span></div>
+      </div>
+      <h3>What you get</h3>
+      <ul class="small">
+        <li><b>Latency</b>, not throughput: the same total scoring work finishes on W threads. Worker count is a latency↔CPU dial.</li>
+        <li><b>Recall ≥ serial, by construction</b>: the parallel run visits a <i>superset</i> of the serial run's postings.</li>
+        <li>At <code>visit_ratio = 1.0</code> results are <b>identical</b> to serial (up to reordering of exactly tied scores).</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>The three-phase design in one picture</h2>
+    <div class="flowrow">
+      <div class="flowbox" style="border-color: rgba(79,156,249,.5)">
+        <b>1 · DRAIN <span class="muted">(leaf thread)</span></b>
+        <span class="small">Pull the visit budget's worth of ranked postings (×1.25 overshoot) out of the centroid
+        iterator into a plain array. Prefetch the head.</span>
+      </div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(70,194,142,.5)">
+        <b>2 · CLAIM &amp; SCORE <span class="muted">(W workers)</span></b>
+        <span class="small">Workers grab shrinking chunks off one atomic cursor, score them with private
+        visitors/collectors, share only a score floor. Stop when the budget is covered.</span>
+      </div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(242,160,82,.5)">
+        <b>3 · CONTINUE <span class="muted">(leaf thread)</span></b>
+        <span class="small">Merge worker results into the leaf collector; hand unclaimed postings back to the
+        <i>unmodified</i> serial loops, which resume under their exact original conditions.</span>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:12px">
+      Phase 3 is the correctness anchor: because claimed chunks are always scanned to completion and everything
+      unclaimed remains visible to the serial continuation, the set of visited postings is a superset of what the
+      serial algorithm would have visited. See the <a href="#" data-goto="anim">interactive walkthrough</a>.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Also in this PR (found while making workers safe)</h2>
+    <table>
+      <tr>
+        <td style="width:30%"><span class="pill fix">BUGFIX</span> <b>Diversified over-pruning</b></td>
+        <td>The diversified (nested/parent-child) collector published its heap top as a "min competitive score" even
+            while the heap wasn't full yet — a bound that certifies nothing. On multi-segment indices this poisons the
+            pruning floor and silently drops valid parents. Fixed with the same
+            <code>heap.size() &gt;= k()</code> guard the plain collector always had. Details + regression tests in
+            <a href="#" data-goto="correctness">Correctness</a>.</td>
+      </tr>
+      <tr>
+        <td><span class="pill mod">HARDENING</span> <b>SOAR dedup → max-wins</b></td>
+        <td>SOAR stores each vector in up to two posting lists (each copy quantized against its own centroid, so the
+            copies score differently). The per-leaf dedup used to keep the <i>first</i> copy seen — order-dependent.
+            It now keeps the <i>best-scoring</i> copy, which is insertion-order independent, so results don't change
+            when workers alter the drain order.</td>
+      </tr>
+      <tr>
+        <td><span class="pill new">BENCH</span> <b>IndexInputCloneScanBenchmark</b></td>
+        <td>JMH proof that W threads scanning byte ranges through per-thread <code>slice()</code> handles of one
+            shared-arena mmap input scale identically to W independently-opened inputs — i.e. no refcount contention
+            on the hot path. This validated the "clone per worker" foundation before any of the search code was built.</td>
+      </tr>
+    </table>
+  </div>
+</section>
+
+<!-- ============================ IVF 101 ============================ -->
+<section class="tab" id="tab-ivf101">
+  <div class="card">
+    <h2>IVF in 60 seconds — just enough to read this PR</h2>
+    <div class="grid2">
+      <div>
+        <p><b>IVF (inverted file) vector search</b> clusters the segment's vectors at index time. Each cluster has a
+        <b>centroid</b> (its mean vector) and a <b>posting list</b> (the quantized vectors of its members, stored
+        contiguously on disk).</p>
+        <p>A query then does two things:</p>
+        <ol>
+          <li><b>Rank centroids</b> — score the query against every centroid (cheap: int7-quantized, SIMD) and sort
+              posting lists from most to least promising.</li>
+          <li><b>Scan posting lists in that order</b> — score the query against each member vector (1-bit quantized +
+              corrections, SIMD bulk kernels), feeding a <b>top-k collector</b>, until a <b>visit budget</b> is spent:
+              <code>maxVectorsVisited = 2 × visitRatio × numVectors</code>.</li>
+        </ol>
+        <p class="small muted">The ×2 exists because of SOAR: each vector may appear in up to two posting lists
+        (its closest centroid plus one "spilled" assignment), improving recall at the cluster boundary.</p>
+      </div>
+      <div>
+        <svg viewBox="0 0 520 300" style="width:100%; max-width:520px">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#5b6577"/>
+            </marker>
+          </defs>
+          <!-- clusters -->
+          <g opacity="0.9">
+            <circle cx="120" cy="80" r="46" fill="rgba(79,156,249,.08)" stroke="rgba(79,156,249,.5)"/>
+            <circle cx="300" cy="60" r="38" fill="rgba(70,194,142,.08)" stroke="rgba(70,194,142,.5)"/>
+            <circle cx="430" cy="120" r="42" fill="rgba(229,197,88,.07)" stroke="rgba(229,197,88,.45)"/>
+            <circle cx="210" cy="190" r="40" fill="rgba(239,127,177,.07)" stroke="rgba(239,127,177,.45)"/>
+            <!-- centroids -->
+            <circle cx="120" cy="80" r="5" fill="#4f9cf9"/>
+            <circle cx="300" cy="60" r="5" fill="#46c28e"/>
+            <circle cx="430" cy="120" r="5" fill="#e5c558"/>
+            <circle cx="210" cy="190" r="5" fill="#ef7fb1"/>
+            <!-- member dots -->
+            <g fill="#8b96a8" opacity="0.75">
+              <circle cx="100" cy="60" r="2.5"/><circle cx="140" cy="95" r="2.5"/><circle cx="112" cy="105" r="2.5"/><circle cx="135" cy="62" r="2.5"/>
+              <circle cx="288" cy="45" r="2.5"/><circle cx="315" cy="75" r="2.5"/><circle cx="308" cy="42" r="2.5"/>
+              <circle cx="415" cy="100" r="2.5"/><circle cx="448" cy="135" r="2.5"/><circle cx="422" cy="140" r="2.5"/>
+              <circle cx="195" cy="175" r="2.5"/><circle cx="228" cy="205" r="2.5"/><circle cx="220" cy="172" r="2.5"/>
+            </g>
+          </g>
+          <!-- query -->
+          <path d="M255,135 l0,0" />
+          <text x="248" y="128" font-size="20">★</text>
+          <text x="268" y="132" font-size="12" fill="#d6dce6">query</text>
+          <!-- ranked lists -->
+          <text x="18" y="262" font-size="12" fill="#8b96a8">ranked posting lists →</text>
+          <g transform="translate(160,246)">
+            <rect x="0"   y="0" width="76" height="22" rx="4" fill="rgba(70,194,142,.25)" stroke="#46c28e"/>
+            <rect x="84"  y="0" width="76" height="22" rx="4" fill="rgba(79,156,249,.25)" stroke="#4f9cf9"/>
+            <rect x="168" y="0" width="76" height="22" rx="4" fill="rgba(239,127,177,.22)" stroke="#ef7fb1"/>
+            <rect x="252" y="0" width="76" height="22" rx="4" fill="rgba(229,197,88,.2)" stroke="#e5c558"/>
+            <text x="38"  y="15" font-size="11" fill="#d6dce6" text-anchor="middle">P₁ best</text>
+            <text x="122" y="15" font-size="11" fill="#d6dce6" text-anchor="middle">P₂</text>
+            <text x="206" y="15" font-size="11" fill="#d6dce6" text-anchor="middle">P₃</text>
+            <text x="290" y="15" font-size="11" fill="#d6dce6" text-anchor="middle">P₄ …</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <h3>Four terms you'll see everywhere</h3>
+    <table>
+      <tr><th style="width:26%">Term</th><th>What it is</th></tr>
+      <tr><td><b>PostingMetadata</b></td>
+          <td>A self-describing handle to one posting list: file <code>offset</code>, <code>length</code>, which parent
+              centroid to quantize the query against, and the centroid's score. Everything a scorer needs to visit that
+              list, independent of any other list — <i>this independence is what makes parallelism possible</i>.</td></tr>
+      <tr><td><b>CentroidIterator</b></td>
+          <td>Streams <code>PostingMetadata</code> in descending centroid-score order (best cluster first). Normally
+              wrapped in a <code>PrefetchingCentroidIterator</code> that hints the OS to read ahead.</td></tr>
+      <tr><td><b>PostingVisitor</b></td>
+          <td>The codec's scoring machine: <code>resetPostingsScorer(metadata)</code> seeks to a posting list, then
+              <code>visit(collector)</code> bulk-scores members into a collector using SIMD kernels, block-level filter
+              skipping and adaptive pruning. Holds mutable scratch — <b>never shareable between threads</b>.</td></tr>
+      <tr><td><b>Min-competitive floor</b></td>
+          <td>Once a top-k collector is full, its worst kept score is a <i>floor</i>: candidates below it can't matter.
+              The codec prunes whole blocks against this floor. Collectors exchange floors through a
+              <code>LongAccumulator</code> (an atomic max), publishing once per posting list via
+              <code>nextVectorsBlock()</code>.</td></tr>
+    </table>
+
+    <div class="callout">
+      <b>Why the serial scan is safe to split:</b> per-document scores are deterministic and every posting list is
+      independently addressable via its <code>PostingMetadata</code>. The <i>only</i> cross-posting state in the serial
+      loop is (a) the visit-budget counter and (b) the collector + its score floor. The scanner makes (a) an atomic
+      total and (b) private per-worker collectors coupled only through the atomic floor — everything else is
+      thread-confined by construction.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ HIGH LEVEL ============================ -->
+<section class="tab" id="tab-highlevel">
+  <div class="card">
+    <h2>Request lifecycle — where the new code sits</h2>
+    <div class="legend">
+      <span class="lq">query layer (org.elasticsearch.search.vectors)</span>
+      <span class="ls">strategy &amp; collectors (same package)</span>
+      <span class="lc">codec layer (index.codec.vectors.diskbbq)</span>
+    </div>
+    <h4>Shard level (unchanged shape)</h4>
+    <div class="flowrow small">
+      <div class="flowbox" style="border-color: rgba(79,156,249,.45)"><b>rewrite()</b><span class="small">AbstractIVFKnnVectorQuery: resolve worker budget, build filter weight</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(79,156,249,.45)"><b>one task per segment</b><span class="small">taskExecutor.invokeAll(leafTasks)</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(79,156,249,.45)"><b>SOAR dedup per leaf</b><span class="small">max-wins, order-independent</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(79,156,249,.45)"><b>global top-mergeK merge</b><span class="small">→ KnnScoreDocQuery</span></div>
+    </div>
+    <h4>Inside one leaf task (this is where the PR lives)</h4>
+    <div class="flowrow small">
+      <div class="flowbox" style="border-color: rgba(176,124,247,.5)"><b>strategy + context</b><span class="small">IVFKnnSearchStrategy carries IVFParallelScanContext; collector created &amp; registered</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(242,160,82,.5)"><b>rank centroids</b><span class="small">FlatCentroidIndex scores all centroids (SIMD int7) → ranked iterator</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(242,160,82,.5)"><b>materialize filter bits</b><span class="small">acceptDocs.bits() — consumes any one-shot iterator <i>before</i> forking</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(70,194,142,.55)"><b>DRAIN → CLAIM → SCORE</b><span class="small">ParallelPostingListScanner, W workers</span></div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(242,160,82,.5)"><b>serial continuation</b><span class="small">unclaimed remainder, original loop conditions</span></div>
+    </div>
+    <div class="callout">
+      Everything to the left of <b>DRAIN</b> runs on the leaf-task thread exactly as before. The parallel phase is a
+      pure insertion between "centroids ranked" and "serial loop" — when any gate fails, the drain is skipped and the
+      serial loop consumes the same iterator it always did.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Class map — who talks to whom</h2>
+    <p class="small muted">Solid arrows = calls / creates. Dashed = "travels inside" (the context rides on the strategy,
+    the strategy rides on the collector). The strategy is the <b>only bridge</b> the codec sees — codec code never
+    imports query classes, and query code never sees codec scoring types.</p>
+    <svg viewBox="0 0 1160 610" style="width:100%">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b96a8"/>
+        </marker>
+      </defs>
+      <!-- column headers -->
+      <text x="175" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#4f9cf9">QUERY LAYER</text>
+      <text x="580" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#b07cf7">STRATEGY &amp; COLLECTORS</text>
+      <text x="975" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#f2a052">CODEC (diskbbq)</text>
+
+      <!-- QUERY column -->
+      <g>
+        <rect x="20" y="44" width="310" height="92" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="66" font-size="13" font-weight="700" fill="#d6dce6">AbstractIVFKnnVectorQuery</text>
+        <text x="34" y="84" font-size="11" fill="#8b96a8">rewrite(): 1 task/segment · worker budget</text>
+        <text x="34" y="100" font-size="11" fill="#8b96a8">newParallelScanContext() · SOAR dedup</text>
+        <text x="34" y="116" font-size="11" fill="#8b96a8">IVFCollectorManager (per leaf)</text>
+
+        <rect x="20" y="162" width="310" height="58" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="184" font-size="13" font-weight="700" fill="#d6dce6">IVFKnnFloatVectorQuery</text>
+        <text x="34" y="202" font-size="11" fill="#8b96a8">approximateSearch(): strategy+context → codec</text>
+
+        <rect x="20" y="244" width="310" height="58" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="266" font-size="13" font-weight="700" fill="#d6dce6">IVFKnnFloatSlicedVectorQuery</text>
+        <text x="34" y="284" font-size="11" fill="#8b96a8">sequential slice loop · parallel inside each slice</text>
+
+        <rect x="20" y="326" width="310" height="46" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="346" font-size="12.5" font-weight="700" fill="#d6dce6">DiversifyingChildren…VectorQuery</text>
+        <text x="34" y="362" font-size="11" fill="#8b96a8">swaps in the diversified collector manager</text>
+
+        <rect x="20" y="396" width="310" height="46" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="416" font-size="12.5" font-weight="700" fill="#d6dce6">DiversifyingChildren…SlicedVectorQuery</text>
+        <text x="34" y="432" font-size="11" fill="#8b96a8">sliced + diversified combined</text>
+
+        <rect x="20" y="486" width="310" height="52" rx="8" fill="#11151d" stroke="#4f9cf9"/>
+        <text x="34" y="507" font-size="12.5" font-weight="700" fill="#d6dce6">DiversifiedIVFKnnCollectorManager</text>
+        <text x="34" y="524" font-size="11" fill="#8b96a8">fetches parentBitSet once, on the leaf thread</text>
+
+        <!-- inheritance ticks -->
+        <line x1="175" y1="136" x2="175" y2="162" stroke="#31405c" stroke-width="2"/>
+        <line x1="175" y1="220" x2="175" y2="244" stroke="#31405c" stroke-width="2"/>
+        <line x1="175" y1="302" x2="175" y2="326" stroke="#31405c" stroke-width="2"/>
+        <line x1="175" y1="372" x2="175" y2="396" stroke="#31405c" stroke-width="2"/>
+      </g>
+
+      <!-- STRATEGY column -->
+      <g>
+        <rect x="430" y="44" width="300" height="92" rx="8" fill="#11151d" stroke="#b07cf7"/>
+        <text x="444" y="66" font-size="13" font-weight="700" fill="#d6dce6">IVFKnnSearchStrategy</text>
+        <text x="444" y="84" font-size="11" fill="#8b96a8">carries the parallel context into the codec</text>
+        <text x="444" y="100" font-size="11" fill="#8b96a8">nextVectorsBlock(): publish/pull score floor</text>
+        <text x="444" y="116" font-size="11" fill="#8b96a8">newParallelWorkerCollector(k, limit)</text>
+
+        <rect x="430" y="164" width="300" height="66" rx="8" fill="#11151d" stroke="#b07cf7" stroke-dasharray="5 4"/>
+        <text x="444" y="186" font-size="13" font-weight="700" fill="#d6dce6">IVFParallelScanContext</text>
+        <text x="444" y="204" font-size="11" fill="#8b96a8">taskExecutor · maxWorkers · checkCancelled</text>
+        <text x="444" y="220" font-size="11" fill="#8b96a8">workerAccumulator (shared score floor)</text>
+
+        <rect x="430" y="272" width="300" height="64" rx="8" fill="#11151d" stroke="#b07cf7"/>
+        <text x="444" y="294" font-size="13" font-weight="700" fill="#d6dce6">AbstractMaxScoreKnnCollector</text>
+        <text x="444" y="312" font-size="11" fill="#8b96a8">NEW: abstract newParallelWorkerCollector(…)</text>
+        <text x="444" y="328" font-size="11" fill="#8b96a8">— every leaf collector mints its own twin</text>
+
+        <rect x="430" y="372" width="300" height="46" rx="8" fill="#11151d" stroke="#b07cf7"/>
+        <text x="444" y="392" font-size="12.5" font-weight="700" fill="#d6dce6">MaxScoreTopKnnCollector</text>
+        <text x="444" y="408" font-size="11" fill="#8b96a8">plain top-k heap · BulkKnnCollector</text>
+
+        <rect x="430" y="452" width="300" height="66" rx="8" fill="#11151d" stroke="#b07cf7"/>
+        <text x="444" y="472" font-size="12.5" font-weight="700" fill="#d6dce6">DiversifyingNearestChildrenKnnCollector</text>
+        <text x="444" y="489" font-size="11" fill="#8b96a8">best child per parent (k = parents)</text>
+        <text x="444" y="505" font-size="11" fill="#e5534b">guard fix: only full heaps publish floors</text>
+
+        <line x1="580" y1="336" x2="580" y2="372" stroke="#31405c" stroke-width="2"/>
+        <line x1="580" y1="336" x2="580" y2="452" stroke="#31405c" stroke-width="2" opacity="0.45"/>
+      </g>
+
+      <!-- CODEC column -->
+      <g>
+        <rect x="820" y="44" width="320" height="92" rx="8" fill="#11151d" stroke="#f2a052"/>
+        <text x="834" y="66" font-size="13" font-weight="700" fill="#d6dce6">IVFVectorsReader.search()</text>
+        <text x="834" y="84" font-size="11" fill="#8b96a8">visit budget · acceptDocs.bits() · gate checks</text>
+        <text x="834" y="100" font-size="11" fill="#8b96a8">parallel branch, then the two serial loops</text>
+        <text x="834" y="116" font-size="11" fill="#8b96a8">getParallelScanSupport() extension point</text>
+
+        <rect x="820" y="164" width="320" height="88" rx="8" fill="#11151d" stroke="#46c28e"/>
+        <text x="834" y="186" font-size="13" font-weight="700" fill="#d6dce6">ParallelPostingListScanner</text>
+        <text x="834" y="204" font-size="11" fill="#8b96a8">drain ×1.25 budget · AtomicInteger cursor</text>
+        <text x="834" y="220" font-size="11" fill="#8b96a8">WorkerState(visitor, input) — per-thread factory</text>
+        <text x="834" y="236" font-size="11" fill="#8b96a8">chunk prefetch · merge · remainder hand-back</text>
+
+        <rect x="820" y="286" width="320" height="64" rx="8" fill="#11151d" stroke="#f2a052"/>
+        <text x="834" y="308" font-size="13" font-weight="700" fill="#d6dce6">ESNextDiskBBQVectorsReader</text>
+        <text x="834" y="326" font-size="11" fill="#8b96a8">implements the hook (raw iterator + bytes/vector)</text>
+        <text x="834" y="342" font-size="11" fill="#8b96a8">gate: numSlices == 0 → serial (flush-sliced)</text>
+
+        <rect x="820" y="384" width="320" height="48" rx="8" fill="#11151d" stroke="#f2a052"/>
+        <text x="834" y="404" font-size="12.5" font-weight="700" fill="#d6dce6">FlatCentroidIndex</text>
+        <text x="834" y="421" font-size="11" fill="#8b96a8">scores all centroids → ranked PostingMetadata</text>
+
+        <rect x="820" y="466" width="320" height="48" rx="8" fill="#11151d" stroke="#f2a052"/>
+        <text x="834" y="486" font-size="12.5" font-weight="700" fill="#d6dce6">PostingMetadata · PrefetchingCentroidIterator</text>
+        <text x="834" y="503" font-size="11" fill="#8b96a8">self-describing posting handles · OS read-ahead</text>
+      </g>
+
+      <!-- cross arrows -->
+      <path d="M330,90 L430,90" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="380" y="82" text-anchor="middle" font-size="10.5" fill="#8b96a8">builds</text>
+
+      <path d="M730,90 L820,90" stroke="#8b96a8" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar2)"/>
+      <text x="775" y="82" text-anchor="middle" font-size="10.5" fill="#8b96a8">rides on collector</text>
+
+      <path d="M580,136 L580,164" stroke="#8b96a8" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar2)"/>
+
+      <path d="M880,136 L880,164" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="893" y="154" font-size="10.5" fill="#8b96a8">scan(…)</text>
+
+      <path d="M820,208 C 770,208 760,118 732,112" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="762" y="170" font-size="10.5" fill="#8b96a8" text-anchor="middle">per worker:</text>
+      <text x="762" y="183" font-size="10.5" fill="#8b96a8" text-anchor="middle">newParallelWorkerCollector</text>
+
+      <path d="M580,148 L580,148 M574,148 C 560,200 560,240 574,272" stroke="#8b96a8" stroke-width="1.6" fill="none" marker-end="url(#ar2)" opacity="0"/>
+      <path d="M448,136 C 440,200 440,230 448,272" stroke="#8b96a8" stroke-width="1.6" fill="none" marker-end="url(#ar2)"/>
+      <text x="424" y="212" font-size="10.5" fill="#8b96a8" transform="rotate(-90 424 212)" text-anchor="middle">delegates to leaf collector</text>
+
+      <path d="M980,286 L980,252" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)" opacity="0"/>
+      <path d="M900,286 L900,252" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)" opacity="0"/>
+      <path d="M880,384 L880,350" stroke="#8b96a8" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="893" y="372" font-size="10.5" fill="#8b96a8">raw iterator</text>
+      <path d="M1050,286 C 1080,270 1080,152 1140,140 " stroke="#8b96a8" stroke-width="1.6" fill="none" opacity="0"/>
+      <path d="M1000,286 L1000,136" stroke="#31405c" stroke-width="2"/>
+      <text x="1012" y="215" font-size="10.5" fill="#5b6577">extends</text>
+
+      <path d="M330,512 C 390,512 400,495 430,490" stroke="#8b96a8" stroke-width="1.6" fill="none" marker-end="url(#ar2)"/>
+      <text x="380" y="530" font-size="10.5" fill="#8b96a8" text-anchor="middle">creates (leaf + workers)</text>
+
+      <!-- merge arrow scanner -> collectors -->
+      <path d="M820,240 C 700,258 700,300 730,388 " stroke="#46c28e" stroke-width="1.6" fill="none" marker-end="url(#ar2)" opacity="0.8"/>
+      <text x="742" y="262" font-size="10.5" fill="#46c28e">merge worker results → leaf collector</text>
+    </svg>
+    <div class="callout" style="margin-top:6px">
+      <b>The factory pattern is the key extensibility move of this PR.</b> Before, the scanner hardcoded a plain
+      top-k collector for every worker — which is <i>wrong</i> for diversified queries (workers would keep k children
+      of one parent and starve other parents, and publish inflated score floors). Now
+      <code>IVFKnnSearchStrategy.newParallelWorkerCollector</code> asks the <b>leaf collector</b> to mint the worker,
+      so a diversifying leaf gets diversifying workers (sharing its read-only parent bitset) and a plain leaf gets
+      plain workers. The codec never knows the difference.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ANIMATION ============================ -->
+<section class="tab" id="tab-anim">
+  <div class="card">
+    <h2>The claim loop, step by step</h2>
+    <p class="small muted">A scaled-down segment: 22 ranked posting lists (greener = higher centroid score), 3 workers,
+      and a visit budget that covers roughly the best 16 lists. Press <b>Step</b> to advance, or <b>Auto</b> to play.</p>
+    <div style="display:flex; gap:10px; margin: 10px 0 14px; align-items:center">
+      <button class="btn" id="animReset">⏮ Reset</button>
+      <button class="btn primary" id="animStep">Step ▶</button>
+      <button class="btn" id="animAuto">Auto ⏵</button>
+      <span class="small muted" id="animCounter"></span>
+    </div>
+    <svg viewBox="0 0 1100 430" style="width:100%" id="animSvg">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b96a8"/>
+        </marker>
+      </defs>
+      <text x="12" y="30" font-size="12.5" fill="#8b96a8">ranked posting lists (best → worst)</text>
+      <g id="postings"></g>
+      <g id="cursorG" opacity="0">
+        <path id="cursorPath" d="M0,0 l6,-12 l-12,0 z" fill="#d6dce6"/>
+        <text id="cursorText" x="0" y="0" font-size="10" fill="#8b96a8" text-anchor="middle">cursor</text>
+      </g>
+      <!-- workers -->
+      <g id="workers"></g>
+      <!-- budget bar -->
+      <text x="12" y="330" font-size="12.5" fill="#8b96a8">visit budget (expectedDocs / maxVectorsVisited)</text>
+      <rect x="12" y="340" width="700" height="16" rx="6" fill="#161b26" stroke="#232b3b"/>
+      <rect x="12" y="340" width="0" height="16" rx="6" fill="rgba(70,194,142,.55)" id="budgetFill"/>
+      <text x="722" y="353" font-size="11" fill="#8b96a8" id="budgetLabel">0%</text>
+      <!-- floor -->
+      <text x="12" y="386" font-size="12.5" fill="#8b96a8">shared min-competitive floor (LongAccumulator, atomic max):</text>
+      <text x="392" y="386" font-size="13" class="mono" fill="#b07cf7" id="floorVal">−∞</text>
+      <!-- narration -->
+      <rect x="770" y="330" width="318" height="86" rx="8" fill="#161b26" stroke="#232b3b"/>
+      <foreignObject x="782" y="336" width="296" height="76">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font: 12px system-ui; color:#d6dce6; line-height:1.45" id="narration"></div>
+      </foreignObject>
+    </svg>
+    <div class="grid3 small" style="margin-top:14px">
+      <div class="card tight">
+        <b>Chunk size formula</b><br>
+        <code>min(8, budgetLeft/avgDocs, remaining/(4·W))</code><br>
+        <span class="muted">Chunks shrink as the array drains (stragglers bounded by one posting) and as the budget
+        nears (overshoot stays small).</span>
+      </div>
+      <div class="card tight">
+        <b>Double-buffered prefetch</b><br>
+        <span class="muted">A worker claims (and OS-prefetches) its <i>next</i> chunk before scoring the current one,
+        so disk read-ahead overlaps scoring.</span>
+      </div>
+      <div class="card tight">
+        <b>Why overshoot is fine</b><br>
+        <span class="muted">A claimed chunk is always scanned to completion — visiting <i>more</i> than serial can
+        only help recall. The budget check stops new claims, not in-flight ones.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ DEEP DIVE ============================ -->
+<section class="tab" id="tab-deepdive">
+  <div class="card">
+    <h2>Low-level walkthrough — one leaf, gate to merge</h2>
+    <div class="legend">
+      <span class="lq">query layer</span><span class="ls">strategy / collectors</span><span class="lc">codec</span>
+    </div>
+
+    <div class="step q"><div class="rail"><div class="dot">1</div><div class="line"></div></div><div class="body">
+      <div class="who">AbstractIVFKnnVectorQuery · once per query</div>
+      <h3>Resolve the worker budget</h3>
+      <p class="small"><code>resolveIntraSegmentParallelism()</code> runs in <code>rewrite()</code>:
+      master sysprop on → count leaves that contain the field → if the searcher is a
+      <code>ContextIndexSearcher</code> with an executor, <code>maxWorkers = min(8, max(1, maxSlices / leavesWithField))</code>
+      — dividing the request-level concurrency budget across leaves so leaf tasks plus intra-segment workers never
+      oversubscribe the search pool. Needs ≥ 2 to proceed. Plain <code>IndexSearcher</code> harnesses (checkVec) use the
+      force property instead. Result: an <code>IVFParallelismConfig(taskExecutor, maxWorkers, checkCancelled)</code>,
+      where <code>checkCancelled</code> is the searcher's timeout/cancellation hook.</p>
+    </div></div>
+
+    <div class="step q"><div class="rail"><div class="dot">2</div><div class="line"></div></div><div class="body">
+      <div class="who">IVFKnnFloatVectorQuery · per leaf</div>
+      <h3>Build acceptDocs, strategy, context, collector</h3>
+      <p class="small"><code>getLeafResults()</code> wraps live docs / the filter scorer into an
+      <code>ESAcceptDocs</code>. <code>approximateSearch()</code> then builds the
+      <code>IVFKnnSearchStrategy(visitRatio, numCands, k, accumulator, <b>newParallelScanContext(manager)</b>)</code>.
+      The context's <code>workerAccumulator</code> is the collector manager's accumulator when one exists, else a fresh
+      one — so workers always prune against each other. The manager creates the leaf collector
+      (<code>MaxScoreTopKnnCollector</code>, or <code>DiversifyingNearestChildrenKnnCollector</code> with the parent
+      bitset fetched <b>here, on the leaf thread</b>) and <code>strategy.setCollector()</code> registers it — the
+      strategy is now the bridge that carries everything into the codec.</p>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">3</div><div class="line"></div></div><div class="body">
+      <div class="who">IVFVectorsReader.search · leaf thread</div>
+      <h3>Gate checks + filter materialization — all before any fork</h3>
+      <p class="small">Compute the visit ratio (the dynamic Two-Signal model if unset) and the budget
+      <code>maxVectorsVisited = 2 · visitRatio · numVectors</code>. If the strategy carries a parallel context, ask the
+      format: <code>getParallelScanSupport(...)</code>. Base returns <code>null</code> (serial); ESNext returns a
+      <b>raw, non-prefetching</b> centroid iterator (a <code>FlatCentroidIndex</code> that scored every centroid with
+      SIMD int7 kernels) plus <code>approxBytesPerVector</code> to size the drain. Crucially,
+      <code>acceptDocs.bits()</code> is called <b>now</b> — fully consuming any one-shot filter iterator on this thread
+      and materializing a read-only bitset that workers can share safely.</p>
+      <div class="callout warn small" style="margin:10px 0 0">Why a <i>raw</i> iterator? The normal prefetch wrapper
+      reads ahead as you consume. Draining hundreds of postings through it would fire a burst of prefetches for data
+      consumed much later. The scanner prefetches per claimed chunk instead — right before scoring.</div>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">4</div><div class="line"></div></div><div class="body">
+      <div class="who">ParallelPostingListScanner.scan · leaf thread</div>
+      <h3>DRAIN — turn the iterator into a claimable array</h3>
+      <p class="small">Pop ranked <code>PostingMetadata</code> until <code>drainedBytes ≥ 1.25 × budget ×
+      bytesPerVector</code> (the 1.25 overshoot means the serial continuation rarely needs the live iterator again).
+      The first <code>W × 8</code> postings get an eager prefetch so the earliest chunks are already being read while
+      workers spin up. Then decide: <code>workers = min(maxWorkers, drained / 4)</code>. Fewer than 2 → no worker state
+      is ever created; everything drained is handed back, prefetch-wrapped, to the serial loop. This is the
+      "not enough work" bail-out.</p>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">5</div><div class="line"></div></div><div class="body">
+      <div class="who">Lucene TaskExecutor</div>
+      <h3>Fork W workers — deadlock-free by design</h3>
+      <p class="small"><code>invokeAll(tasks)</code> submits W callables to the search pool. Lucene's
+      <code>TaskExecutor</code> also runs queued tasks <b>on the calling thread</b>, so a saturated pool degrades to
+      caller-runs instead of deadlocking — the query thread always contributes to its own scan. Worker count is purely
+      a latency ↔ CPU dial; total work is unchanged.</p>
+    </div></div>
+
+    <div class="step s"><div class="rail"><div class="dot">6</div><div class="line"></div></div><div class="body">
+      <div class="who">worker thread · startup</div>
+      <h3>Thread-confined state, minted where it's used</h3>
+      <p class="small">Each worker first calls the <code>WorkerStateFactory</code> — <b>on its own thread</b> — creating
+      a fresh postings <code>IndexInput</code> slice and a fresh <code>PostingVisitor</code> (its own query quantizer,
+      scorer, scratch buffers). Then <code>strategy.newParallelWorkerCollector(k, visitLimit)</code>: builds a worker
+      strategy sharing the context's <code>workerAccumulator</code>, and asks the <b>leaf collector</b> to mint a
+      private twin of its own shape (<code>AbstractMaxScoreKnnCollector.newParallelWorkerCollector</code> — the new
+      polymorphic factory). Nothing mutable is shared on the scoring path; the JMH benchmark in this PR verified the
+      slice-per-worker pattern has zero arena contention.</p>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">7</div><div class="line"></div></div><div class="body">
+      <div class="who">worker thread · steady state</div>
+      <h3>The claim loop</h3>
+      <pre><code>int[] current = claimAndPrefetch(input);          // cursor.getAndAdd(size) + OS prefetch
+while (current != null) {
+    checkCancelled.run();                          // timeout/cancel observed between chunks
+    int[] next = claimAndPrefetch(input);          // double-buffer: prefetch NEXT before scoring CURRENT
+    score(visitor, collector, current);            // per posting: resetPostingsScorer → visit → nextVectorsBlock
+    current = next;
+}</code></pre>
+      <p class="small">Chunk size = <code>min(8, budgetLeft/avgDocsPerPosting, remaining/(4·W))</code> — shrinking so
+      stragglers are bounded by a single posting and budget overshoot stays small. Per-chunk, expected/actual doc
+      counts are accumulated <i>locally</i> and flushed with one atomic add — one shared RMW per chunk, not per
+      posting. <code>claimAndPrefetch</code> returns <code>null</code> once <code>expectedDocsTotal ≥ budget</code>:
+      no new claims, but in-flight chunks always finish.</p>
+    </div></div>
+
+    <div class="step s"><div class="rail"><div class="dot">8</div><div class="line"></div></div><div class="body">
+      <div class="who">IVFKnnSearchStrategy.nextVectorsBlock · once per posting list</div>
+      <h3>Score-floor gossip</h3>
+      <p class="small">Each collector's guarded floor (<b>only full heaps publish</b> — the bug fix) goes into the
+      shared <code>LongAccumulator</code> via atomic max; the encoding is score-major with a doc-id tiebreak, so
+      <code>Long::max</code> orders correctly. The worker then pulls the accumulator back and raises its own floor if
+      someone else's is higher. The codec's bulk kernels prune whole blocks against
+      <code>minCompetitiveSimilarity()</code> — this is how one worker's good results speed up the others.</p>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">9</div><div class="line"></div></div><div class="body">
+      <div class="who">ParallelPostingListScanner · leaf thread, after invokeAll joins</div>
+      <h3>MERGE — private results into the leaf collector</h3>
+      <p class="small">For each worker: fold its visited count, then drain its top-k —
+      <code>unsortedTopK()</code> + <code>bulkCollect()</code> for plain (bulk heap insert), or
+      <code>topDocs()</code> + per-doc <code>collect()</code> for diversifying workers, which <i>re-runs the per-parent
+      max-wins dedup</i> in the leaf collector. Merging after <code>invokeAll</code> gives the happens-before edge;
+      order can't matter because every merge op is max-wins.</p>
+    </div></div>
+
+    <div class="step c"><div class="rail"><div class="dot">10</div><div class="line"></div></div><div class="body">
+      <div class="who">IVFVectorsReader.search · leaf thread</div>
+      <h3>CONTINUE — the original serial loops, untouched</h3>
+      <p class="small">The scanner hands back <code>remainingIterator</code> = unclaimed drained postings ⧺ the live
+      iterator, wrapped in a <i>lazy</i> prefetcher (no wasted I/O on the common path where the budget is already
+      covered). The two pre-existing loops then run verbatim: the unfiltered loop
+      (<code>while budget not covered || collector not full</code>) and the filtered adaptive loop
+      (<code>while actualDocs &lt; expectedScored || actualDocs &lt; k</code>) — seeded with the workers' aggregated
+      expected/actual counts. <b>This is the superset guarantee</b>: every posting the serial algorithm would have
+      visited is either fully scored by a worker or still visible here.</p>
+    </div></div>
+
+    <div class="step q"><div class="rail"><div class="dot">11</div><div class="line"></div></div><div class="body">
+      <div class="who">AbstractIVFKnnVectorQuery · back at the query layer</div>
+      <h3>Dedup and merge as always</h3>
+      <p class="small"><code>searchLeaf()</code> maps doc ids to global space and dedups SOAR copies keeping the
+      <b>best-scoring</b> copy (changed from first-wins so drain order can't affect results), then all leaves merge
+      into the shard's top-<code>mergeK</code>. Nothing downstream knows workers existed.</p>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================ VARIANTS ============================ -->
+<section class="tab" id="tab-variants">
+  <div class="card">
+    <h2>All four query variants now parallelize</h2>
+    <p class="small muted">Before this PR the gate was an exact-class check: only plain
+    <code>IVFKnnFloatVectorQuery</code> qualified. That check is now <b>deleted</b> — the codec's
+    <code>getParallelScanSupport()</code> is the only per-segment gate — because each variant's blocking invariant got
+    a real solution:</p>
+    <table>
+      <tr><th style="width:24%">Variant</th><th>What made it tricky</th><th>How this PR handles it</th></tr>
+      <tr>
+        <td><b>Plain</b><br><span class="mono small muted">IVFKnnFloatVectorQuery</span></td>
+        <td>—</td>
+        <td>The baseline path described in the deep dive.</td>
+      </tr>
+      <tr>
+        <td><b>Sliced</b><br><span class="mono small muted">IVFKnnFloatSlicedVectorQuery</span></td>
+        <td>Tenant slicing searches slice-ordinals one at a time, sharing a single <b>one-shot filter iterator</b>
+            that must be consumed in increasing doc order across slices. Parallelizing <i>across slices</i> would
+            corrupt it.</td>
+        <td>The slice loop <b>stays sequential</b>; parallelism happens <i>inside</i> each slice's scan. Safe because
+            <code>acceptDocs.bits()</code> materializes the slice's <code>[startDoc, endDoc)</code> window on the leaf
+            thread <i>before</i> workers fork — workers only ever see the finished bitset. One shared leaf collector
+            carries competitive scores across slices.</td>
+      </tr>
+      <tr>
+        <td><b>Diversified</b><br><span class="mono small muted">DiversifyingChildren…VectorQuery</span></td>
+        <td>Nested / parent-child: the collector keeps the <b>best child per parent</b> (k = parents). Plain top-k
+            workers would (a) fill up with k children of one parent, starving other parents, and (b) publish
+            "k-th child" floors that over-prune (k-th child ≥ k-th parent).</td>
+        <td>The worker-collector <b>factory</b>: the diversifying leaf collector mints diversifying workers sharing its
+            read-only parent bitset. Merging via plain <code>collect()</code> re-runs the per-parent max-wins dedup in
+            the leaf collector — provably order-independent.</td>
+      </tr>
+      <tr>
+        <td><b>Diversified + sliced</b><br><span class="mono small muted">…SlicedVectorQuery</span></td>
+        <td>Both of the above.</td>
+        <td>Falls out of the two mechanisms — no extra code. Covered by a dedicated query-level test.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Sliced: two different "slice" concepts</h2>
+      <p class="small">Don't confuse the query-level slicing above with the <b>codec-level</b> <code>numSlices</code>
+      in the ESNext format — the PR touches both:</p>
+      <table class="small">
+        <tr><th>numSlices</th><th>Meaning</th><th>Parallel?</th></tr>
+        <tr><td class="mono">-1</td><td>Not sliced (no slice field configured)</td>
+            <td style="color:var(--ok)">✔ (was already)</td></tr>
+        <tr><td class="mono">0</td><td><b>Flush-sliced</b>: written at flush with a slice field — has exactly
+            <b>one centroid</b> (asserted), and its visitor resolves slice doc-ranges through a lazily-cached walk of a
+            <i>shared</i> DocValuesSkipper</td>
+            <td style="color:var(--bad)">✘ hard-gated: nothing to parallelize (one posting list) and the lazy cache
+            must stay on the leaf thread</td></tr>
+        <tr><td class="mono">&gt;0</td><td><b>Merge-sliced</b>: produced by merging — slice filtering happens at
+            <i>centroid level</i> (per-slice centroid ranges applied while ranking, on the leaf thread), and members
+            use the standard order-independent visitor</td>
+            <td style="color:var(--ok)">✔ <b>newly enabled by this PR</b></td></tr>
+      </table>
+      <p class="small muted">Since a slicing-enabled index writes <i>every</i> segment sliced, query-level slice
+      support without the merge-sliced codec gate would have been a no-op — they ship together.</p>
+    </div>
+    <div class="card">
+      <h2>Sliced timeline — sequential outside, parallel inside</h2>
+      <svg viewBox="0 0 520 210" style="width:100%">
+        <defs>
+          <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#5b6577"/>
+          </marker>
+        </defs>
+        <text x="10" y="20" font-size="12" fill="#8b96a8">leaf thread ─────────────────────────────────▶</text>
+        <!-- slice 1 -->
+        <rect x="10" y="34" width="150" height="112" rx="8" fill="rgba(79,156,249,.07)" stroke="rgba(79,156,249,.45)"/>
+        <text x="85" y="52" font-size="11.5" fill="#4f9cf9" text-anchor="middle">slice ord 0</text>
+        <text x="85" y="68" font-size="10" fill="#8b96a8" text-anchor="middle">bits() [start,end) · rank</text>
+        <rect x="22" y="78" width="126" height="14" rx="3" fill="rgba(70,194,142,.5)"/>
+        <rect x="22" y="96" width="126" height="14" rx="3" fill="rgba(229,197,88,.45)"/>
+        <rect x="22" y="114" width="126" height="14" rx="3" fill="rgba(239,127,177,.45)"/>
+        <text x="85" y="142" font-size="10" fill="#8b96a8" text-anchor="middle">W workers</text>
+        <!-- slice 2 -->
+        <rect x="185" y="34" width="150" height="112" rx="8" fill="rgba(79,156,249,.07)" stroke="rgba(79,156,249,.45)"/>
+        <text x="260" y="52" font-size="11.5" fill="#4f9cf9" text-anchor="middle">slice ord 3</text>
+        <text x="260" y="68" font-size="10" fill="#8b96a8" text-anchor="middle">bits() [start,end) · rank</text>
+        <rect x="197" y="78" width="126" height="14" rx="3" fill="rgba(70,194,142,.5)"/>
+        <rect x="197" y="96" width="126" height="14" rx="3" fill="rgba(229,197,88,.45)"/>
+        <rect x="197" y="114" width="126" height="14" rx="3" fill="rgba(239,127,177,.45)"/>
+        <text x="260" y="142" font-size="10" fill="#8b96a8" text-anchor="middle">W workers</text>
+        <!-- slice 3 -->
+        <rect x="360" y="34" width="150" height="112" rx="8" fill="rgba(79,156,249,.07)" stroke="rgba(79,156,249,.45)"/>
+        <text x="435" y="52" font-size="11.5" fill="#4f9cf9" text-anchor="middle">slice ord 7</text>
+        <text x="435" y="68" font-size="10" fill="#8b96a8" text-anchor="middle">bits() [start,end) · rank</text>
+        <rect x="372" y="78" width="126" height="14" rx="3" fill="rgba(70,194,142,.5)"/>
+        <rect x="372" y="96" width="126" height="14" rx="3" fill="rgba(229,197,88,.45)"/>
+        <rect x="372" y="114" width="126" height="14" rx="3" fill="rgba(239,127,177,.45)"/>
+        <text x="435" y="142" font-size="10" fill="#8b96a8" text-anchor="middle">W workers</text>
+        <path d="M160,90 L185,90" stroke="#5b6577" stroke-width="1.5" marker-end="url(#ar4)"/>
+        <path d="M335,90 L360,90" stroke="#5b6577" stroke-width="1.5" marker-end="url(#ar4)"/>
+        <text x="260" y="176" font-size="11" fill="#8b96a8" text-anchor="middle">shared one-shot filter iterator consumed strictly left→right, on the leaf thread only;</text>
+        <text x="260" y="192" font-size="11" fill="#8b96a8" text-anchor="middle">one leaf collector carries the score floor across slices</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Diversified: why the factory matters</h2>
+    <div class="grid2">
+      <div>
+        <h4>Before — hardcoded plain workers (broken for diversified)</h4>
+        <ul class="small">
+          <li>A worker's plain top-k can hold <b>k children of one parent</b>; children of other parents that would
+              survive the per-parent dedup are evicted and lost forever → recall loss.</li>
+          <li>A plain worker's floor is its k-th <b>child</b> score — always ≥ the k-th <b>parent</b> score. Published
+              into the shared accumulator it over-prunes every other worker.</li>
+        </ul>
+        <h4>After — leaf collector mints the worker</h4>
+        <ul class="small">
+          <li><code>DiversifyingNearestChildrenKnnCollector.newParallelWorkerCollector()</code> returns another
+              diversifying collector sharing the <b>same parent bitset</b> (fetched once on the leaf thread; workers
+              only read it; <code>invokeAll</code> publishes it safely).</li>
+          <li>Worker floors are k-th <b>parent</b> floors — valid by the same argument as the leaf's.</li>
+          <li>Merge: each worker's per-parent bests are <code>collect()</code>-ed into the leaf collector, whose heap
+              keeps the max per parent — insertion order provably irrelevant.</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Why the merge is exact (the eviction argument)</h4>
+        <p class="small">Could a worker evict a parent that belongs in the final top-k? No: the per-parent heap's
+        minimum is <b>monotonically non-decreasing once full</b> — an entry is only ever replaced by something strictly
+        better. So if worker <i>w</i> evicted parent X at score s, then <i>w</i> ends holding k parents all scoring
+        ≥ s, and all k reach the merge. X (best child ≤ s) can therefore never be in the merged top-k anyway. The same
+        argument covers plain top-k workers — it's the standard "merge of local top-k's" proof, applied per parent.</p>
+        <div class="callout small">
+          <b>k means parents here.</b> For diversified queries the collector budget counts parents, not children —
+          worker collectors inherit the same k from the leaf collector, so the shapes line up by construction.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ CORRECTNESS ============================ -->
+<section class="tab" id="tab-correctness">
+  <div class="card">
+    <h2>The correctness contract</h2>
+    <table>
+      <tr><th style="width:30%">Invariant</th><th>Why it holds</th></tr>
+      <tr><td><b>Visited set ⊇ serial's visited set</b></td>
+          <td>Workers only consume ranked postings from the front (the exact prefix serial would take); claimed chunks
+              always finish; everything unclaimed is re-fed to the <i>unmodified</i> serial loops with the workers'
+              counts pre-seeded. Extra visits (budget overshoot) can only add candidates.</td></tr>
+      <tr><td><b>Per-doc scores are bit-identical</b></td>
+          <td>Scoring math has no cross-posting state; each worker's visitor/quantizer produces the same score for the
+              same (doc, posting) pair as the serial visitor would.</td></tr>
+      <tr><td><b>Result set at visit_ratio 1.0 ≡ serial</b></td>
+          <td>Both visit everything; scores identical; top-k of the same multiset. Only runs of <i>exactly tied</i>
+              scores may permute (block pruning compares scores only; heap ordering tiebreaks on doc id — floor
+              propagation timing can reorder ties). The tests compare rank-for-rank scores and tie-run doc <i>sets</i>.</td></tr>
+      <tr><td><b>Partial budget: parallel k-th score ≥ serial k-th score</b></td>
+          <td>Direct consequence of superset visiting + identical per-doc scores.</td></tr>
+      <tr><td><b>Floors never over-prune</b></td>
+          <td>Only <i>full</i> heaps publish (see bug fix below); a full heap's floor certifies k collected results ≥ s,
+              which is a valid lower bound wherever it travels. Atomic max keeps the accumulator monotone.</td></tr>
+      <tr><td><b>Order independence of merges</b></td>
+          <td>Every merge op is max-wins: SOAR dedup keeps the best copy, the diversified heap keeps the best child per
+              parent, top-k heaps keep the best k. No first-wins step survives in the pipeline.</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2><span class="pill fix">BUGFIX</span> The diversified min-competitive guard</h2>
+    <div class="grid2">
+      <div>
+        <p class="small">The diversified collector published its heap top as a pruning floor <b>whenever the heap was
+        non-empty</b> — but an under-filled heap's top is just "the worst parent seen so far", not a bound on the k-th
+        best. The plain collector always had the guard; the diversified one didn't:</p>
+<pre><code><span class="diff-del">- return heap.size() &gt; 0
+-     ? max(encodeRaw(heap.topNode(), heap.topScore()), minCompetitiveDocScore)
+-     : minCompetitiveDocScore;</span>
+<span class="diff-add">+ // Only a full heap's top is a valid bound on the k-th best parent
++ return heap.size() &gt;= k()
++     ? max(encodeRaw(heap.topNode(), heap.topScore()), minCompetitiveDocScore)
++     : minCompetitiveDocScore;</span></code></pre>
+        <p class="small">(Same guard added to the fold-back side, <code>updateMinCompetitiveDocScore</code>.)</p>
+      </div>
+      <div>
+        <h4>The poisoning mechanism (pre-fix)</h4>
+        <ol class="small">
+          <li>Early posting collects one great child (score <b>0.9</b>); heap has 1 of k parents → publishes
+              <code>0.9</code> as a "floor" into the accumulator.</li>
+          <li>More parents arrive, heap top drops to 0.5 → the accumulator (still 0.9) is folded <i>back</i> into the
+              collector — and the fold is max-monotonic, so it <b>sticks forever</b>.</li>
+          <li>Heap finally fills at k parents, true floor 0.2 — but <code>minCompetitiveSimilarity()</code> now
+              returns max(0.9, 0.2) = <b>0.9</b>.</li>
+          <li>The codec skips every block whose best possible score &lt; 0.9 → parents that should replace heap
+              entries (scores 0.2–0.9) are silently never scored. Recall loss with no error signal.</li>
+        </ol>
+        <p class="small muted">Reachable today on any <b>multi-segment</b> diversified query (the accumulator only
+        exists with &gt; 1 leaves) — and parallel workers would have amplified it badly, since every worker starts
+        with an empty heap. The deterministic regression test was verified to <b>fail before the fix</b> by temporarily
+        reverting it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Test coverage</h2>
+    <p class="small muted">All in <code>IVFIntraSegmentParallelScanTests</code> (plus the strategy unit test). The
+    parallel path is forced by injecting <code>IVFParallelScanContext</code> directly (leaf level) or overriding
+    <code>intraSegmentParallelism()</code> in anonymous query subclasses (query level) — the sysprops are static
+    finals and unreliable in a shared test JVM.</p>
+    <table class="small">
+      <tr><th>Test</th><th>What it proves</th></tr>
+      <tr><td class="mono">testExhaustiveVisitParity</td><td>visit_ratio 1.0 → identical results to serial (up to tie permutations).</td></tr>
+      <tr><td class="mono">testPartialVisitSupersetDominance</td><td>Partial budget → parallel k-th score ≥ serial's; visits ≥ serial's.</td></tr>
+      <tr><td class="mono">testFilteredParity / testFilteredPartialVisitDominance</td><td>Same guarantees with a pre-filter (exercises the filtered adaptive continuation with worker-seeded counts).</td></tr>
+      <tr><td class="mono">testDeletesParity / testFilteredWithDeletesParityAndDominance</td><td>Live-docs masking, alone and combined with a filter.</td></tr>
+      <tr><td class="mono">testDiversifiedParityAndDominance</td><td>Parent/child leaf search: parity + dominance + <b>every result maps to a distinct parent</b> (merge re-enforces dedup).</td></tr>
+      <tr><td class="mono">testSlicedQueryOnMergeSlicedSegmentParity</td><td>Query-level sliced search on a real merge-sliced segment (built via two commits + forceMerge). Includes a <b>cancellation probe</b> proving workers actually fork there (the test would otherwise pass vacuously).</td></tr>
+      <tr><td class="mono">testDiversifiedSlicedQueryParity</td><td>The combined variant end-to-end, parents per slice.</td></tr>
+      <tr><td class="mono">testDiversifiedMultiSegmentDoesNotOverPrune</td><td>Serial + parallel multi-segment diversified results == accumulator-free per-leaf ground truth (guard-fix net, full query-level wiring check).</td></tr>
+      <tr><td class="mono">testCancellationIsObserved</td><td>A cancelling context aborts the scan from a worker chunk.</td></tr>
+      <tr><td class="mono">IVFKnnSearchStrategyTests.testDiversifiedMaxScorePropagationRequiresFullHeap</td><td>The deterministic guard-fix regression: non-full heap publishes nothing; the early high score must not poison the floor. <b>Fails on pre-fix code.</b></td></tr>
+    </table>
+    <h3>Benchmarking it (defaults are ON, so baselines use the kill switches)</h3>
+    <pre><code># one-time index build; then run ALL multi-segment legs BEFORE the merged config (the merge is in-place!)
+./gradlew ":qa:vector:checkVec" --args="$PWD/config_parallel_ivf_build.json"
+
+# multi-segment geometry — the ladder isolates each feature:
+CV='./gradlew :qa:vector:checkVec --args='$PWD'/config_parallel_ivf_multi.json'
+$CV -Des.vectors.ivf_intra_segment_parallelism=false -Des.vectors.ivf_cross_leaf_floor_sharing=false  # 1. serial baseline
+$CV -Des.vectors.ivf_intra_segment_parallelism=false                                                  # 2. + floor sharing (needs no workers)
+$CV -Des.vectors.ivf_force_intra_segment_workers=8 -Des.vectors.ivf_cross_segment_scheduling=false    # 3. + per-leaf workers
+$CV -Des.vectors.ivf_force_intra_segment_workers=8                                                    # 4. full stack (prod-default equivalent)
+
+# merged (single-segment) geometry — floors/scheduler are inert with one leaf:
+CVM='./gradlew :qa:vector:checkVec --args='$PWD'/config_parallel_ivf_merged.json'
+$CVM -Des.vectors.ivf_intra_segment_parallelism=false     # 5. serial baseline (force-merges in place first)
+$CVM -Des.vectors.ivf_force_intra_segment_workers=8       # 6. intra-segment workers</code></pre>
+    <p class="small muted">checkVec's plain IndexSearcher cannot derive worker counts from a search pool, so
+    <code>ivf_force_intra_segment_workers</code> is still required for any parallel leg. Recall must be equal-or-better
+    in every cell except leg 4, where cross-segment budget reallocation may legitimately shift recall — that
+    comparison at equal total budget is the decisive measurement for the scheduler.</p>
+  </div>
+</section>
+</main>
+<footer></footer>
+<script>
+/* ---------- tabs ---------- */
+const tabs = document.querySelectorAll('nav.tabs button');
+function activate(name) {
+  tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('section.tab').forEach(s => s.classList.toggle('active', s.id === 'tab-' + name));
+  window.scrollTo({ top: 0 });
+}
+tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+document.querySelectorAll('[data-goto]').forEach(a =>
+  a.addEventListener('click', e => { e.preventDefault(); activate(a.dataset.goto); }));
+
+/* ---------- claim-loop animation ---------- */
+const NP = 22, CELL_W = 44, CELL_GAP = 5, CELL_X = 12, CELL_Y = 42, CELL_H = 34;
+const WCOL = { 1: 'var(--w1)', 2: 'var(--w2)', 3: 'var(--w3)' };
+const WHEX = { 1: '#46c28e', 2: '#e5c558', 3: '#ef7fb1' };
+const svgNS = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+
+function el(tag, attrs, parent, text) {
+  const n = document.createElementNS(svgNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  parent.appendChild(n);
+  return n;
+}
+function cellX(i) { return CELL_X + i * (CELL_W + CELL_GAP); }
+
+function renderBase() {
+  const posts = $('postings'); posts.innerHTML = '';
+  for (let i = 0; i < NP; i++) {
+    const sat = Math.max(12, 58 - i * 2.6), lig = Math.max(19, 33 - i * 0.55);
+    el('rect', { id: 'c' + i, x: cellX(i), y: CELL_Y, width: CELL_W, height: CELL_H, rx: 5,
+                 fill: `hsl(152 ${sat}% ${lig}%)`, stroke: '#232b3b', 'stroke-width': 1.5 }, posts);
+    el('text', { id: 'ct' + i, x: cellX(i) + CELL_W / 2, y: CELL_Y + 21, 'text-anchor': 'middle',
+                 'font-size': 10, fill: '#c8d2e0' }, posts, 'P' + i);
+  }
+  const ws = $('workers'); ws.innerHTML = '';
+  const rows = [126, 186, 246];
+  for (let w = 1; w <= 3; w++) {
+    const y = rows[w - 1];
+    el('circle', { cx: 28, cy: y, r: 13, fill: 'none', stroke: WHEX[w], 'stroke-width': 2 }, ws);
+    el('text', { x: 28, y: y + 4, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 700, fill: WHEX[w] }, ws, 'W' + w);
+    el('text', { id: 'st' + w, x: 52, y: y + 4, 'font-size': 11.5, fill: '#8b96a8' }, ws,
+       'idle — private visitor + private collector, created on this thread');
+    el('rect', { id: 'hp' + w, x: 560, y: y - 13, width: 168, height: 26, rx: 6, fill: '#161b26', stroke: '#232b3b' }, ws);
+    el('text', { id: 'hpt' + w, x: 644, y: y + 4, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#8b96a8' }, ws, 'private top-k: empty');
+    el('path', { id: 'mArr' + w, d: `M730,${y} C 800,${y} 820,${186} 872,196`, fill: 'none',
+                 stroke: WHEX[w], 'stroke-width': 1.8, opacity: 0, 'marker-end': 'url(#ar3)' }, ws);
+  }
+  el('rect', { id: 'leafBox', x: 874, y: 140, width: 214, height: 110, rx: 8, fill: '#161b26', stroke: '#232b3b', 'stroke-width': 1.5 }, ws);
+  el('text', { x: 981, y: 165, 'text-anchor': 'middle', 'font-size': 12.5, 'font-weight': 700, fill: '#d6dce6' }, ws, 'leaf collector');
+  el('text', { id: 'leafTxt', x: 981, y: 186, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#8b96a8' }, ws, 'waiting for merge…');
+  el('text', { id: 'leafTxt2', x: 981, y: 204, 'text-anchor': 'middle', 'font-size': 10.5, fill: '#8b96a8' }, ws, '');
+  $('budgetFill').setAttribute('width', 0);
+  $('budgetLabel').textContent = '0%';
+  $('floorVal').textContent = '−∞';
+  $('cursorG').setAttribute('opacity', 0);
+}
+function claim(w, a, b, dashed) {
+  for (let i = a; i <= b; i++) {
+    const c = $('c' + i);
+    c.setAttribute('stroke', WHEX[w]);
+    c.setAttribute('stroke-width', 2.6);
+    c.setAttribute('stroke-dasharray', dashed ? '5 4' : 'none');
+  }
+}
+function scored(a, b) {
+  for (let i = a; i <= b; i++) {
+    $('c' + i).setAttribute('opacity', 0.5);
+    $('c' + i).setAttribute('stroke-dasharray', 'none');
+    $('ct' + i).textContent = '✓';
+  }
+}
+function remainder(a, b) {
+  for (let i = a; i <= b; i++) {
+    const c = $('c' + i);
+    c.setAttribute('stroke', '#f2a052');
+    c.setAttribute('stroke-width', 2.2);
+    c.setAttribute('stroke-dasharray', '5 4');
+  }
+}
+function cursor(idx) {
+  const g = $('cursorG');
+  if (idx === null) { g.setAttribute('opacity', 0); return; }
+  g.setAttribute('opacity', 1);
+  const x = cellX(idx) - 2;
+  $('cursorPath').setAttribute('transform', `translate(${x},${CELL_Y - 8})`);
+  const t = $('cursorText'); t.setAttribute('x', x); t.setAttribute('y', CELL_Y - 22); t.textContent = 'cursor=' + idx;
+}
+function budget(pct) {
+  $('budgetFill').setAttribute('width', Math.min(700, 700 * pct / 100));
+  $('budgetFill').setAttribute('fill', pct >= 100 ? 'rgba(224,179,65,.6)' : 'rgba(70,194,142,.55)');
+  $('budgetLabel').textContent = pct + '%' + (pct >= 100 ? ' — covered' : '');
+}
+function st(w, text) { $('st' + w).textContent = text; }
+function heap(w, text) { $('hpt' + w).textContent = text; $('hpt' + w).setAttribute('fill', '#d6dce6'); }
+function floorv(v) { $('floorVal').textContent = v; }
+function say(html) { $('narration').innerHTML = html; }
+
+const steps = [
+  () => { say('<b>Setup.</b> The leaf thread <b>drained</b> the 22 best-ranked postings into a plain array (1.25× the visit budget) and prefetched the head. Three workers fork via <code style="background:none;border:none">invokeAll</code>. Everything a worker touches — visitor, quantizer, collector, IndexInput slice — is created on its own thread.'); },
+  () => { claim(1, 0, 3); cursor(4); st(1, 'claimed P0–P3 · one cursor.getAndAdd(4) · prefetch issued');
+          say('<b>W1 claims a chunk.</b> One atomic <b>getAndAdd</b> on the shared cursor reserves P0–P3, then W1 asks the OS to prefetch exactly those byte ranges. The cursor is the only coordination word.'); },
+  () => { claim(2, 4, 7); claim(3, 8, 11); cursor(12);
+          st(2, 'claimed P4–P7 · prefetching'); st(3, 'claimed P8–P11 · prefetching');
+          say('<b>W2 and W3 claim theirs.</b> No locks, no queue: whoever advances the cursor owns that range. Ranked order is preserved — the best postings are always consumed first.'); },
+  () => { claim(1, 12, 13, true); cursor(14); scored(0, 3); budget(28); heap(1, 'private top-k: FULL'); floorv('0.64  (published by W1)');
+          st(1, 'scored P0–P3 ✓ · next chunk (P12–P13) already prefetching');
+          say('<b>Double buffering.</b> W1 claimed its <i>next</i> chunk (dashed) before scoring the current one, so read-ahead overlaps compute. Its heap is now full → it may publish its floor (0.64) to the shared accumulator. <b>Under-filled heaps never publish</b> — that guard is the bug fix.'); },
+  () => { scored(4, 7); claim(2, 14, 15, true); cursor(16); budget(52); heap(2, 'private top-k: FULL'); floorv('0.68  (atomic max)');
+          st(2, 'scored P4–P7 ✓ · next chunk (P14–P15) prefetching');
+          say('<b>Floors travel.</b> W2 publishes 0.68; the accumulator keeps the max. Each worker pulls it back once per posting list and prunes whole blocks below it — one worker’s good results speed everyone up.'); },
+  () => { scored(8, 11); claim(3, 16, 17, true); cursor(18); budget(74); heap(3, 'private top-k: FULL'); floorv('0.71');
+          st(3, 'scored P8–P11 ✓ · next chunk (P16–P17) prefetching');
+          say('<b>Chunks shrink.</b> The claim size is min(8, budgetLeft/avgDocs, remaining/(4·W)) — as the array drains and the budget nears, chunks get smaller so stragglers are bounded by a single posting list.'); },
+  () => { scored(12, 13); claim(1, 18, 18, true); cursor(19); budget(85);
+          st(1, 'scored P12–P13 ✓ · claimed P18 (chunk size now 1)');
+          say('W1 finishes its second chunk and claims just <b>one</b> posting — the budget is nearly covered, so overshoot is kept tiny.'); },
+  () => { scored(14, 15); budget(96); floorv('0.74'); st(2, 'scored P14–P15 ✓ · claimAndPrefetch → null');
+          say('W2 asks for more work, but the expected-docs total says the budget is about to be covered → <code style="background:none;border:none">claimAndPrefetch</code> starts returning null. Workers drain out naturally.'); },
+  () => { scored(16, 17); budget(101); st(3, 'scored P16–P17 ✓ · no more claims');
+          say('<b>Budget covered.</b> The shared expected-docs counter crossed maxVectorsVisited. No new claims are handed out — but anything already claimed will still be finished.'); },
+  () => { scored(18, 18); budget(104); st(1, 'scored P18 ✓ (in-flight chunk always completes)');
+          say('<b>Bounded overshoot.</b> W1’s in-flight P18 is scanned to completion anyway — visiting <i>more</i> than serial can only add candidates, never lose them. This is why recall ≥ serial needs no fine print.'); },
+  () => { remainder(19, 21); cursor(null);
+          say('<b>Hand-back.</b> P19–P21 were drained but never claimed (orange). They’re concatenated with the live iterator and returned to the <b>original serial loops</b> on the leaf thread, seeded with the workers’ counts. Here the budget is covered, so the serial loop exits immediately — the common case.'); },
+  () => { for (let w = 1; w <= 3; w++) { $('mArr' + w).setAttribute('opacity', 0.85); st(w, 'private top-k drained into leaf collector'); }
+          $('leafBox').setAttribute('stroke', '#46c28e'); $('leafTxt').textContent = 'merged: 3 worker top-k sets';
+          $('leafTxt2').textContent = 'bulk insert · max-wins per doc/parent';
+          say('<b>Merge.</b> After invokeAll joins, each worker’s private top-k drains into the leaf collector — bulk heap insert for plain collectors, per-doc collect() for diversifying ones (which re-runs the best-child-per-parent dedup). Merge order provably cannot matter.'); },
+  () => { say('<b>Done.</b> The leaf returns its topDocs; SOAR duplicates dedup max-wins; leaves merge into the shard top-k. Total: one atomic per chunk, one accumulator op per posting list, zero shared mutable scoring state — and a visited set that is a strict superset of the serial scan’s.'); },
+];
+
+let stepIdx = 0, autoTimer = null;
+function doStep() {
+  if (stepIdx < steps.length) { steps[stepIdx++](); $('animCounter').textContent = 'step ' + stepIdx + ' / ' + steps.length; }
+  if (stepIdx >= steps.length && autoTimer) { clearInterval(autoTimer); autoTimer = null; $('animAuto').textContent = 'Auto ⏵'; }
+}
+function resetAnim() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $('animAuto').textContent = 'Auto ⏵'; }
+  stepIdx = 0; renderBase(); doStep();
+}
+$('animStep').addEventListener('click', doStep);
+$('animReset').addEventListener('click', resetAnim);
+$('animAuto').addEventListener('click', () => {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $('animAuto').textContent = 'Auto ⏵'; return; }
+  if (stepIdx >= steps.length) resetAnim();
+  $('animAuto').textContent = 'Pause ⏸';
+  autoTimer = setInterval(doStep, 2100);
+});
+resetAnim();
+</script>
+</body>
+</html>

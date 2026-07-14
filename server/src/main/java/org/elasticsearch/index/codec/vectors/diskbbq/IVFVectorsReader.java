@@ -356,10 +356,13 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
         }
         long maxVectorVisited = maxVectorsToVisit(entry, visitRatio, numVectors);
         IndexInput postListSlice = entry.postingListSlice(ivfClusters);
-        final IVFParallelScanContext parallelScanContext = knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy ivfStrategy
-            ? ivfStrategy.parallelScanContext()
+        final IVFKnnSearchStrategy ivfStrategy = knnCollector.getSearchStrategy() instanceof IVFKnnSearchStrategy strategy
+            ? strategy
             : null;
-        final ParallelScanSupport parallelScanSupport = parallelScanContext == null
+        final IVFParallelScanContext parallelScanContext = ivfStrategy != null ? ivfStrategy.parallelScanContext() : null;
+        final CrossSegmentPostingScheduler crossSegmentScheduler = ivfStrategy != null
+            && ivfStrategy.crossSegmentRegistrar() instanceof CrossSegmentPostingScheduler scheduler ? scheduler : null;
+        final ParallelScanSupport parallelScanSupport = (parallelScanContext == null && crossSegmentScheduler == null)
             ? null
             : getParallelScanSupport(fieldInfo, entry, centroids, target, postListSlice, acceptDocs, approximateCost, values, visitRatio);
         CentroidIterator centroidPrefetchingIterator = parallelScanSupport != null
@@ -394,12 +397,64 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
                 );
                 return new ParallelPostingListScanner.WorkerState(workerVisitor, workerPostings);
             };
+            if (crossSegmentScheduler != null) {
+                // Cross-segment mode: perform the drain here on the leaf-confined thread, then hand everything to
+                // the query-level scheduler and return with an empty collector — the scheduler scans all registered
+                // leaves best-first and resumes this leaf's serial loops (below, via the continuation closure) on
+                // whatever it did not claim.
+                ParallelPostingListScanner.DrainedPostings drained = ParallelPostingListScanner.drain(
+                    centroidPrefetchingIterator,
+                    maxVectorVisited,
+                    parallelScanSupport.approxBytesPerVector(),
+                    crossSegmentScheduler.maxWorkers() * ParallelPostingListScanner.MAX_CHUNK_SIZE,
+                    postListSlice
+                );
+                final int leafNumVectors = numVectors;
+                final float leafPercentFiltered = percentFiltered;
+                LeafScanRegistration.SerialContinuation continuation = (remaining, budget, seedExpected, seedActual) -> {
+                    PostingVisitor continuationScorer = getPostingVisitor(
+                        fieldInfo,
+                        values,
+                        postListSlice,
+                        target,
+                        acceptDocsBits,
+                        entry.centroidSlice(ivfCentroids),
+                        esAcceptDocs
+                    );
+                    scanSerially(
+                        continuationScorer,
+                        knnCollector,
+                        remaining,
+                        budget,
+                        seedExpected,
+                        seedActual,
+                        acceptDocsBits,
+                        leafNumVectors,
+                        leafPercentFiltered
+                    );
+                };
+                crossSegmentScheduler.register(
+                    ivfStrategy.crossSegmentLeafOrd(),
+                    new LeafScanRegistration(
+                        drained.ranked(),
+                        centroidPrefetchingIterator,
+                        postListSlice,
+                        workerStateFactory,
+                        ivfStrategy,
+                        knnCollector,
+                        maxVectorVisited,
+                        continuation
+                    )
+                );
+                ivfStrategy.markCrossSegmentRegistered();
+                return;
+            }
             ParallelPostingListScanner.Result parallelResult = ParallelPostingListScanner.scan(
                 centroidPrefetchingIterator,
                 parallelScanSupport.approxBytesPerVector(),
                 maxVectorVisited,
                 parallelScanContext,
-                (IVFKnnSearchStrategy) knnCollector.getSearchStrategy(),
+                ivfStrategy,
                 knnCollector,
                 workerStateFactory,
                 postListSlice
@@ -421,14 +476,70 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             entry.centroidSlice(ivfCentroids),
             esAcceptDocs
         );
+        final long leafBudget = maxVectorVisited;
+        final long seedExpected = expectedDocs;
+        VisitBudget budget = new VisitBudget() {
+            private long expected = seedExpected;
+
+            @Override
+            public boolean hasRemaining() {
+                return leafBudget > expected;
+            }
+
+            @Override
+            public void addExpected(long count) {
+                expected += count;
+            }
+        };
+        scanSerially(
+            scorer,
+            knnCollector,
+            centroidPrefetchingIterator,
+            budget,
+            expectedDocs,
+            actualDocs,
+            acceptDocsBits,
+            numVectors,
+            percentFiltered
+        );
+    }
+
+    /**
+     * The visit budget consulted by {@link #scanSerially}'s first loop: leaf-local on the normal path, the
+     * query-global remainder when driven by the {@link CrossSegmentPostingScheduler}'s continuation phase.
+     */
+    interface VisitBudget {
+        boolean hasRemaining();
+
+        void addExpected(long count);
+    }
+
+    /**
+     * The two original serial loops, shared verbatim by the normal path and the cross-segment continuation. The
+     * first loop scans ranked postings until the visit budget is covered (and the collector has filled at least
+     * once); the second, filter-adaptive loop is a per-leaf recall guarantee and always runs against leaf-local
+     * counters, never the global budget.
+     */
+    void scanSerially(
+        PostingVisitor scorer,
+        KnnCollector knnCollector,
+        CentroidIterator iterator,
+        VisitBudget budget,
+        long expectedDocs,
+        long actualDocs,
+        Bits acceptDocsBits,
+        int numVectors,
+        float percentFiltered
+    ) throws IOException {
         // initially we visit only the "centroids to search"
         // Note, numCollected is doing the bare minimum here.
         // TODO do we need to handle nested doc counts similarly to how we handle
         // filtering? E.g. keep exploring until we hit an expected number of parent documents vs. child vectors?
-        while (centroidPrefetchingIterator.hasNext()
-            && (maxVectorVisited > expectedDocs || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
-            PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
-            expectedDocs += scorer.resetPostingsScorer(postingMetadata);
+        while (iterator.hasNext() && (budget.hasRemaining() || knnCollector.minCompetitiveSimilarity() == Float.NEGATIVE_INFINITY)) {
+            PostingMetadata postingMetadata = iterator.nextPosting();
+            long expected = scorer.resetPostingsScorer(postingMetadata);
+            expectedDocs += expected;
+            budget.addExpected(expected);
             actualDocs += scorer.visit(knnCollector);
             if (knnCollector.getSearchStrategy() != null) {
                 knnCollector.getSearchStrategy().nextVectorsBlock();
@@ -439,8 +550,8 @@ public abstract class IVFVectorsReader<E extends IVFVectorsReader.FieldEntry> ex
             float unfilteredRatioVisited = (float) expectedDocs / numVectors;
             int filteredVectors = (int) Math.ceil(numVectors * percentFiltered);
             float expectedScored = Math.min(2 * filteredVectors * unfilteredRatioVisited, expectedDocs / 2f);
-            while (centroidPrefetchingIterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
-                PostingMetadata postingMetadata = centroidPrefetchingIterator.nextPosting();
+            while (iterator.hasNext() && (actualDocs < expectedScored || actualDocs < knnCollector.k())) {
+                PostingMetadata postingMetadata = iterator.nextPosting();
                 scorer.resetPostingsScorer(postingMetadata);
                 actualDocs += scorer.visit(knnCollector);
                 if (knnCollector.getSearchStrategy() != null) {

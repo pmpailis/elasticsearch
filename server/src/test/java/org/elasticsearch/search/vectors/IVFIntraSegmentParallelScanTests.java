@@ -54,7 +54,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.LongAccumulator;
 
 import static com.carrotsearch.randomizedtesting.RandomizedTest.randomBoolean;
 import static com.carrotsearch.randomizedtesting.RandomizedTest.randomFloat;
@@ -479,7 +478,7 @@ public class IVFIntraSegmentParallelScanTests extends LuceneTestCase {
             taskExecutor,
             workers,
             checkCancelled == null ? () -> {} : checkCancelled,
-            new LongAccumulator(Long::max, AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE)
+            new ScoreFloors(null, false)
         );
     }
 
@@ -495,9 +494,9 @@ public class IVFIntraSegmentParallelScanTests extends LuceneTestCase {
         IVFParallelScanContext parallelScanContext,
         FixedBitSet filter
     ) throws IOException {
-        // sometimes mirror the multi-leaf production wiring, where the leaf strategy shares the workers' accumulator
-        LongAccumulator leafAccumulator = parallelScanContext != null && randomBoolean() ? parallelScanContext.workerAccumulator() : null;
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, k, k, leafAccumulator, parallelScanContext);
+        // sometimes mirror the production wiring, where the leaf strategy shares the workers' score floors
+        ScoreFloors leafFloors = parallelScanContext != null && randomBoolean() ? parallelScanContext.floors() : null;
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, k, k, leafFloors, parallelScanContext);
         MaxScoreTopKnnCollector collector = new MaxScoreTopKnnCollector(k, Integer.MAX_VALUE, strategy);
         strategy.setCollector(collector);
         Bits liveDocs = leaf.reader().getLiveDocs();
@@ -557,8 +556,8 @@ public class IVFIntraSegmentParallelScanTests extends LuceneTestCase {
         IVFParallelScanContext parallelScanContext,
         BitSet parentBitSet
     ) throws IOException {
-        LongAccumulator leafAccumulator = parallelScanContext != null && randomBoolean() ? parallelScanContext.workerAccumulator() : null;
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, k, k, leafAccumulator, parallelScanContext);
+        ScoreFloors leafFloors = parallelScanContext != null && randomBoolean() ? parallelScanContext.floors() : null;
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(visitRatio, k, k, leafFloors, parallelScanContext);
         DiversifyingNearestChildrenKnnCollector collector = new DiversifyingNearestChildrenKnnCollector(
             k,
             Integer.MAX_VALUE,
@@ -784,7 +783,7 @@ public class IVFIntraSegmentParallelScanTests extends LuceneTestCase {
      * run's floor-propagation timing may legitimately reorder (or, at the k boundary, swap) exactly tied docs; the
      * final tied run is therefore compared by score only.
      */
-    private void assertSameTopDocs(TopDocs serial, TopDocs parallel) {
+    static void assertSameTopDocs(TopDocs serial, TopDocs parallel) {
         assertEquals(serial.scoreDocs.length, parallel.scoreDocs.length);
         int count = serial.scoreDocs.length;
         for (int d = 0; d < count; d++) {

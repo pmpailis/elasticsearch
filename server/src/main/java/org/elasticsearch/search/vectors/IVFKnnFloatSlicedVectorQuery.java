@@ -67,12 +67,18 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
     }
 
     @Override
-    TopDocs getLeafResults(LeafReaderContext ctx, Weight filterWeight, IVFCollectorManager knnCollectorManager, float visitRatio)
-        throws IOException {
+    TopDocs getLeafResults(
+        LeafReaderContext ctx,
+        Weight filterWeight,
+        IVFCollectorManager knnCollectorManager,
+        float visitRatio,
+        boolean usePrecondition
+    ) throws IOException {
         final LeafReader reader = ctx.reader();
         if (reader.numDocs() == 0) {
             return TopDocsCollector.EMPTY_TOPDOCS;
         }
+        final float[] leafQuery = leafQuery(ctx, usePrecondition);
         final Bits liveDocs = reader.getLiveDocs();
         final int maxDoc = reader.maxDoc();
         final Sort sort = reader.getMetaData().sort();
@@ -90,7 +96,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
             visitRatio,
             numCands,
             k,
-            knnCollectorManager.longAccumulator,
+            knnCollectorManager.floors,
             newParallelScanContext(knnCollectorManager)
         );
         final AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
@@ -154,6 +160,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
                     sortedDocValues,
                     skipper,
                     ords[i],
+                    leafQuery,
                     knnCollector,
                     docIdIteratorSupplier,
                     costSupplier,
@@ -169,6 +176,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
                     sortedDocValues,
                     skipper,
                     i,
+                    leafQuery,
                     knnCollector,
                     docIdIteratorSupplier,
                     costSupplier,
@@ -188,6 +196,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
         SortedDocValues sortedDocValues,
         DocValuesSkipper skipper,
         int sliceOrd,
+        float[] leafQuery,
         KnnCollector knnCollector,
         IOSupplier<DocIdSetIterator> docIdIteratorSupplier,
         LongSupplier costSupplier,
@@ -215,7 +224,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
                 sliceAcceptDocsSupplier
             );
         }
-        context.reader().searchNearestVectors(field, query, knnCollector, acceptDocs);
+        context.reader().searchNearestVectors(field, leafQuery, knnCollector, acceptDocs);
     }
 
     private int[] sliceToSortedOrds(SortedDocValues sortedDocValues, BytesRef[] sliceIds) throws IOException {

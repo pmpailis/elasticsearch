@@ -107,6 +107,35 @@ public final class ParallelPostingListScanner {
         this.workerStateFactory = workerStateFactory;
     }
 
+    /** Outcome of {@link #drain}: the ranked postings pulled out of the iterator and their total byte length. */
+    record DrainedPostings(PostingMetadata[] ranked, long drainedBytes) {}
+
+    /**
+     * Drains the visit budget's worth (x{@link #DRAIN_OVERSHOOT}) of ranked postings out of {@code rawIterator} into
+     * a plain array, prefetching the first {@code eagerPrefetch} so the earliest postings consumed are already being
+     * read ahead while the rest of the drain and the worker setup happen. Must run on the thread owning both inputs.
+     */
+    static DrainedPostings drain(
+        CentroidIterator rawIterator,
+        long maxVectorsVisited,
+        long approxBytesPerVector,
+        int eagerPrefetch,
+        IndexInput postingsInput
+    ) throws IOException {
+        long targetBytes = (long) (DRAIN_OVERSHOOT * maxVectorsVisited * approxBytesPerVector);
+        List<PostingMetadata> drainedList = new ArrayList<>();
+        long drainedBytes = 0;
+        while (drainedBytes < targetBytes && rawIterator.hasNext()) {
+            PostingMetadata metadata = rawIterator.nextPosting();
+            if (drainedList.size() < eagerPrefetch) {
+                postingsInput.prefetch(metadata.offset(), metadata.length());
+            }
+            drainedList.add(metadata);
+            drainedBytes += metadata.length();
+        }
+        return new DrainedPostings(drainedList.toArray(PostingMetadata[]::new), drainedBytes);
+    }
+
     /**
      * Drains the visit budget's worth of ranked postings from {@code rawIterator}, scans them with up to
      * {@link IVFParallelScanContext#maxWorkers()} workers and merges the worker results into {@code leafCollector}.
@@ -123,26 +152,19 @@ public final class ParallelPostingListScanner {
         WorkerStateFactory workerStateFactory,
         IndexInput callerPostingsInput
     ) throws IOException {
-        long targetBytes = (long) (DRAIN_OVERSHOOT * maxVectorsVisited * approxBytesPerVector);
-        List<PostingMetadata> drainedList = new ArrayList<>();
-        long drainedBytes = 0;
-        // Prefetch the head of the drain so the first postings consumed (by workers or by the serial fallback) are
-        // already being read ahead while the rest of the drain and the worker setup happen.
-        int eagerPrefetch = context.maxWorkers() * MAX_CHUNK_SIZE;
-        while (drainedBytes < targetBytes && rawIterator.hasNext()) {
-            PostingMetadata metadata = rawIterator.nextPosting();
-            if (drainedList.size() < eagerPrefetch) {
-                callerPostingsInput.prefetch(metadata.offset(), metadata.length());
-            }
-            drainedList.add(metadata);
-            drainedBytes += metadata.length();
-        }
-        PostingMetadata[] ranked = drainedList.toArray(PostingMetadata[]::new);
+        DrainedPostings drained = drain(
+            rawIterator,
+            maxVectorsVisited,
+            approxBytesPerVector,
+            context.maxWorkers() * MAX_CHUNK_SIZE,
+            callerPostingsInput
+        );
+        PostingMetadata[] ranked = drained.ranked();
         int workers = Math.min(context.maxWorkers(), ranked.length / MIN_POSTINGS_PER_WORKER);
         if (workers < 2) {
             return new Result(0, 0, prefetching(concat(ranked, 0, rawIterator), callerPostingsInput));
         }
-        long avgVectorsPerPosting = Math.max(1, drainedBytes / approxBytesPerVector / ranked.length);
+        long avgVectorsPerPosting = Math.max(1, drained.drainedBytes() / approxBytesPerVector / ranked.length);
         ParallelPostingListScanner scanner = new ParallelPostingListScanner(
             ranked,
             maxVectorsVisited,
@@ -227,6 +249,15 @@ public final class ParallelPostingListScanner {
     }
 
     private void mergeWorkerResults(List<KnnCollector> workerCollectors) {
+        mergeWorkerResults(workerCollectors, leafCollector);
+    }
+
+    /**
+     * Drains every worker collector's private results into the leaf collector. Bulk collectors merge via a bulk heap
+     * insert; others (e.g. diversifying collectors) drain through {@code topDocs()} and merge one doc at a time,
+     * which re-runs the leaf collector's own dedup semantics. Every merge op is max-wins, so order cannot matter.
+     */
+    static void mergeWorkerResults(List<KnnCollector> workerCollectors, KnnCollector leafCollector) {
         for (KnnCollector worker : workerCollectors) {
             if (worker.visitedCount() > 0) {
                 leafCollector.incVisitedCount((int) worker.visitedCount());
@@ -258,7 +289,7 @@ public final class ParallelPostingListScanner {
         }
     }
 
-    private static CentroidIterator concat(PostingMetadata[] ranked, int from, CentroidIterator rest) {
+    static CentroidIterator concat(PostingMetadata[] ranked, int from, CentroidIterator rest) {
         return new CentroidIterator() {
             private int next = from;
 
@@ -274,7 +305,7 @@ public final class ParallelPostingListScanner {
         };
     }
 
-    private static CentroidIterator prefetching(CentroidIterator iterator, IndexInput postingsInput) throws IOException {
+    static CentroidIterator prefetching(CentroidIterator iterator, IndexInput postingsInput) throws IOException {
         return new PrefetchingCentroidIterator(iterator, postingsInput);
     }
 
@@ -284,7 +315,7 @@ public final class ParallelPostingListScanner {
      * continuation never runs. {@code hasNext()} must stay side-effect free because the serial loop evaluates it
      * before its termination clauses.
      */
-    private static CentroidIterator lazyPrefetching(CentroidIterator iterator, IndexInput postingsInput) {
+    static CentroidIterator lazyPrefetching(CentroidIterator iterator, IndexInput postingsInput) {
         return new CentroidIterator() {
             private CentroidIterator prefetching;
 

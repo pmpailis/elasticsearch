@@ -16,13 +16,22 @@ import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.BitSet;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.LongAccumulator;
 
 public class DiversifiedIVFKnnCollectorManager extends AbstractIVFKnnVectorQuery.IVFCollectorManager {
     private final int k;
     private final BitSetProducer parentsFilter;
 
-    DiversifiedIVFKnnCollectorManager(int k, IndexSearcher searcher, BitSetProducer parentsFilter) {
-        super(k, searcher);
+    DiversifiedIVFKnnCollectorManager(
+        int k,
+        IndexSearcher searcher,
+        LongAccumulator globalFloor,
+        int mergeK,
+        BitSetProducer parentsFilter
+    ) {
+        // a diversifying heap holds one entry per distinct parent, so k entries certify k distinct docs and the
+        // floor is globally valid as soon as the collector budget covers the shard merge cut
+        super(k, searcher, globalFloor, k >= mergeK);
         this.k = k;
         this.parentsFilter = parentsFilter;
     }

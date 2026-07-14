@@ -13,32 +13,42 @@ import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.util.SetOnce;
 
 import java.util.Objects;
-import java.util.concurrent.atomic.LongAccumulator;
 
 public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     private final float visitRatio;
     private final int numCands;
     private final int k;
     private final SetOnce<AbstractMaxScoreKnnCollector> collector = new SetOnce<>();
-    private final LongAccumulator accumulator;
+    private final ScoreFloors floors;
     private final IVFParallelScanContext parallelScanContext;
+    private final IVFCrossSegmentRegistrar crossSegmentRegistrar;
+    private final int crossSegmentLeafOrd;
+    private boolean crossSegmentRegistered;
 
-    public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, LongAccumulator accumulator) {
-        this(visitRatio, numCands, k, accumulator, null);
+    public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, ScoreFloors floors) {
+        this(visitRatio, numCands, k, floors, null);
+    }
+
+    public IVFKnnSearchStrategy(float visitRatio, int numCands, int k, ScoreFloors floors, IVFParallelScanContext parallelScanContext) {
+        this(visitRatio, numCands, k, floors, parallelScanContext, null, -1);
     }
 
     public IVFKnnSearchStrategy(
         float visitRatio,
         int numCands,
         int k,
-        LongAccumulator accumulator,
-        IVFParallelScanContext parallelScanContext
+        ScoreFloors floors,
+        IVFParallelScanContext parallelScanContext,
+        IVFCrossSegmentRegistrar crossSegmentRegistrar,
+        int crossSegmentLeafOrd
     ) {
         this.visitRatio = visitRatio;
         this.numCands = numCands;
         this.k = k;
-        this.accumulator = accumulator;
+        this.floors = floors;
         this.parallelScanContext = parallelScanContext;
+        this.crossSegmentRegistrar = crossSegmentRegistrar;
+        this.crossSegmentLeafOrd = crossSegmentLeafOrd;
     }
 
     /**
@@ -50,17 +60,40 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     }
 
     /**
-     * Creates a private collector of the leaf collector's shape for one intra-segment parallel worker, so workers
-     * preserve the leaf collector's semantics (e.g. per-parent diversification). The worker's strategy shares the
-     * parallel context's min-competitive accumulator so workers prune against each other's results without any shared
-     * mutable collector state on the scoring hot path. Must only be called when {@link #parallelScanContext()} is
-     * non-null and after {@link #setCollector}; safe to call on the worker's own thread.
+     * The query-level cross-segment scheduler this leaf should register with instead of scanning, or {@code null}.
+     */
+    public IVFCrossSegmentRegistrar crossSegmentRegistrar() {
+        return crossSegmentRegistrar;
+    }
+
+    /** The ordinal of this leaf within the query's reader, valid when {@link #crossSegmentRegistrar()} is non-null. */
+    public int crossSegmentLeafOrd() {
+        return crossSegmentLeafOrd;
+    }
+
+    /** Set by the codec reader when it registered the leaf with the cross-segment scheduler instead of scanning. */
+    public void markCrossSegmentRegistered() {
+        this.crossSegmentRegistered = true;
+    }
+
+    /** Only meaningful on the thread that ran the search — the reader marks it before returning. */
+    public boolean crossSegmentRegistered() {
+        return crossSegmentRegistered;
+    }
+
+    /**
+     * Creates a private collector of the leaf collector's shape for one parallel worker, so workers preserve the
+     * leaf collector's semantics (e.g. per-parent diversification). The worker's strategy shares this leaf's
+     * {@link ScoreFloors} so workers prune against each other's results (and, under cross-leaf sharing, against the
+     * other leaves') without any shared mutable collector state on the scoring hot path. Must only be called after
+     * {@link #setCollector}; safe to call on the worker's own thread.
      */
     public KnnCollector newParallelWorkerCollector(int collectorK, long visitLimit) {
-        assert parallelScanContext != null : "parallel worker collectors require a parallel scan context";
+        ScoreFloors workerFloors = parallelScanContext != null ? parallelScanContext.floors() : floors;
+        assert workerFloors != null : "parallel worker collectors require shared score floors";
         AbstractMaxScoreKnnCollector leafCollector = collector.get();
         assert leafCollector != null : "the leaf collector must be set before creating worker collectors";
-        IVFKnnSearchStrategy workerStrategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, parallelScanContext.workerAccumulator());
+        IVFKnnSearchStrategy workerStrategy = new IVFKnnSearchStrategy(visitRatio, numCands, k, workerFloors);
         AbstractMaxScoreKnnCollector workerCollector = leafCollector.newParallelWorkerCollector(collectorK, visitLimit, workerStrategy);
         workerStrategy.setCollector(workerCollector);
         return workerCollector;
@@ -68,8 +101,8 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
 
     void setCollector(AbstractMaxScoreKnnCollector collector) {
         this.collector.set(collector);
-        if (accumulator != null) {
-            collector.updateMinCompetitiveDocScore(accumulator.get());
+        if (floors != null) {
+            collector.updateMinCompetitiveDocScore(floors.floor());
         }
     }
 
@@ -99,22 +132,20 @@ public class IVFKnnSearchStrategy extends KnnSearchStrategy {
     }
 
     /**
-     * This method is called when the next block of vectors is processed.
-     * It accumulates the minimum competitive document score from the collector
-     * and updates the accumulator with the most competitive score.
-     * If the current score in the accumulator is greater than the minimum competitive
-     * document score in the collector, it updates the collector's minimum competitive document score.
+     * Called once per posting list: publishes the collector's guarded min-competitive floor to the shared
+     * {@link ScoreFloors} (leaf-local always; query-global when this leaf's publish gate allows it) and pulls the
+     * best visible floor back into the collector so it prunes against the other collectors' results.
      */
     @Override
     public void nextVectorsBlock() {
-        if (accumulator == null) {
+        if (floors == null) {
             return;
         }
         assert this.collector.get() != null : "Collector must be set before nextVectorsBlock is called";
         AbstractMaxScoreKnnCollector knnCollector = this.collector.get();
         long collectorScore = knnCollector.getMinCompetitiveDocScore();
-        accumulator.accumulate(collectorScore);
-        long currentScore = accumulator.get();
+        floors.publish(collectorScore);
+        long currentScore = floors.floor();
         if (currentScore > collectorScore) {
             knnCollector.updateMinCompetitiveDocScore(currentScore);
         }

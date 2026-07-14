@@ -13,13 +13,11 @@ import org.apache.lucene.util.FixedBitSet;
 import org.elasticsearch.index.codec.vectors.cluster.NeighborQueue;
 import org.elasticsearch.test.ESTestCase;
 
-import java.util.concurrent.atomic.LongAccumulator;
-
 public class IVFKnnSearchStrategyTests extends ESTestCase {
 
     public void testMaxScorePropagation() {
-        LongAccumulator accumulator = new LongAccumulator(Long::max, AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE);
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(0.5f, 100, 10, accumulator);
+        ScoreFloors floors = new ScoreFloors(null, false);
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(0.5f, 100, 10, floors);
         MaxScoreTopKnnCollector collector = new MaxScoreTopKnnCollector(2, 1000, strategy);
         strategy.setCollector(collector);
 
@@ -27,34 +25,34 @@ public class IVFKnnSearchStrategyTests extends ESTestCase {
 
         // queue is not saturated, it should not be updated
         strategy.nextVectorsBlock();
-        assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, accumulator.get());
+        assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, floors.floor());
         assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, collector.getMinCompetitiveDocScore());
 
-        // accumulator should now be updated
+        // the shared floor should now be updated
         collector.collect(2, 0.9f);
         long competitiveScore = NeighborQueue.encodeRaw(2, 0.9f);
         strategy.nextVectorsBlock();
-        assertEquals(competitiveScore, accumulator.get());
+        assertEquals(competitiveScore, floors.floor());
         assertEquals(competitiveScore, collector.getMinCompetitiveDocScore());
 
-        // updated accumulator directly with more competitive score
+        // another collector publishes a more competitive floor directly
         competitiveScore = NeighborQueue.encodeRaw(3, 1.5f);
-        accumulator.accumulate(competitiveScore);
-        assertEquals(competitiveScore, accumulator.get());
+        floors.publish(competitiveScore);
+        assertEquals(competitiveScore, floors.floor());
         strategy.nextVectorsBlock();
         assertEquals(competitiveScore, collector.getMinCompetitiveDocScore());
-        assertEquals(competitiveScore, accumulator.get());
+        assertEquals(competitiveScore, floors.floor());
     }
 
     /**
      * A diversifying collector whose heap is not full must not export its heap top as a competitive floor: an
      * under-filled heap's top is just the worst parent seen so far, not a bound on the k-th best. Before the
-     * {@code heap.size() >= k()} guards, the early publish below poisoned the accumulator and, once folded back,
+     * {@code heap.size() >= k()} guards, the early publish below poisoned the shared floor and, once folded back,
      * permanently inflated the collector's own pruning floor.
      */
     public void testDiversifiedMaxScorePropagationRequiresFullHeap() {
-        LongAccumulator accumulator = new LongAccumulator(Long::max, AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE);
-        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(0.5f, 100, 10, accumulator);
+        ScoreFloors floors = new ScoreFloors(null, false);
+        IVFKnnSearchStrategy strategy = new IVFKnnSearchStrategy(0.5f, 100, 10, floors);
         FixedBitSet parentBitSet = new FixedBitSet(100);
         parentBitSet.set(10);
         parentBitSet.set(21);
@@ -64,14 +62,14 @@ public class IVFKnnSearchStrategyTests extends ESTestCase {
         // one parent collected at a high score: the heap is not full, so nothing may be published or folded back
         collector.collect(9, 0.9f);
         strategy.nextVectorsBlock();
-        assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, accumulator.get());
+        assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, floors.floor());
         assertEquals(AbstractMaxScoreKnnCollector.LEAST_COMPETITIVE, collector.getMinCompetitiveDocScore());
         assertEquals(Float.NEGATIVE_INFINITY, collector.minCompetitiveSimilarity(), 0.0f);
 
         // a second, distinct parent at a lower score fills the heap: its top is now a valid floor
         collector.collect(20, 0.2f);
         strategy.nextVectorsBlock();
-        assertEquals(NeighborQueue.encodeRaw(20, 0.2f), accumulator.get());
+        assertEquals(NeighborQueue.encodeRaw(20, 0.2f), floors.floor());
         // the earlier 0.9 collection must not have poisoned the pruning floor
         assertEquals(0.2f, collector.minCompetitiveSimilarity(), 0.0f);
     }
