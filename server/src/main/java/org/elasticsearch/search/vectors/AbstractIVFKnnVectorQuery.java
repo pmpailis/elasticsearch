@@ -92,11 +92,14 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
      * Cross-segment best-first scheduling: instead of scanning each segment independently under its own visit
      * budget, eligible segments register their ranked postings with a query-level scheduler whose workers claim the
      * globally most promising chunk next, spending the summed budget where the centroid scores say it matters.
-     * Requires {@link #INTRA_SEGMENT_PARALLELISM_ENABLED}. On by default; the sysprop is a runtime kill switch.
+     * Requires {@link #INTRA_SEGMENT_PARALLELISM_ENABLED}. Off by default: on uniformly distributed corpora the
+     * per-leaf task parallelism of the baseline already saturates the pool with zero coordination, and the
+     * scheduler's phase barriers and per-(worker, leaf) scoring state measured 5-25% slower at equal recall.
+     * Opt in for segment layouts with real cross-segment query affinity (e.g. time-based or routed indices).
      */
     static final boolean CROSS_SEGMENT_SCHEDULING_ENABLED = Booleans.parseBoolean(
         System.getProperty("es.vectors.ivf_cross_segment_scheduling"),
-        true
+        false
     );
 
     protected final String field;
