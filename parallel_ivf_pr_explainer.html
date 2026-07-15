@@ -120,12 +120,15 @@
   <div class="sub">
     This PR lets <b>multiple worker threads scan one segment's IVF posting lists in parallel</b> — for
     <b>every</b> IVF query variant (plain, sliced, diversified, diversified+sliced) and for merge-sliced segments —
-    while guaranteeing recall is <i>at least</i> what the serial scan produces. It also fixes a pre-existing
-    recall bug in the diversified collector's score-floor publishing.
+    while guaranteeing recall is <i>at least</i> what the serial scan produces. On top of that it adds a
+    <b>cross-segment layer</b>: worker budgets granted proportionally to segment size, a shared min-competitive
+    score floor across segments, and an opt-in cross-segment best-first scheduler. It also fixes two pre-existing
+    recall bugs (the diversified collector's floor publishing and the mixed-precondition query mutation).
+    Benchmarked on msmarco-10M: <b>2.0–3.1× lower latency</b> on force-merged segments at identical recall.
   </div>
   <div class="chips">
     <span class="chip">branch <b>parallel-ivf-scoring-poc</b></span>
-    <span class="chip"><b>on by default</b> — sysprops are runtime kill switches</span>
+    <span class="chip"><b>workers + floor sharing on by default</b> · cross-segment scheduler opt-in</span>
     <span class="chip">no format change · no API change</span>
   </div>
 </header>
@@ -137,6 +140,8 @@
   <button data-tab="anim">The claim loop ▶</button>
   <button data-tab="deepdive">Low-level deep dive</button>
   <button data-tab="variants">Query variants</button>
+  <button data-tab="crosssegment">Beyond one segment</button>
+  <button data-tab="bench">Benchmarks</button>
   <button data-tab="correctness">Correctness &amp; tests</button>
 </div></nav>
 
@@ -207,14 +212,36 @@
           <td>Exposes <code>getMaximumNumberOfSlices()</code> so worker counts respect the request-level concurrency budget.</td>
         </tr>
         <tr>
+          <td class="mono small">ScoreFloors <span class="pill new">NEW</span></td>
+          <td>Leaf-local + query-global min-competitive floors: segments prune against each other's results under a
+              SOAR-safe publish gate. <b>On by default.</b></td>
+        </tr>
+        <tr>
+          <td class="mono small">CrossSegmentPostingScheduler<br>LeafScanRegistration · IVFCrossSegmentRegistrar <span class="pill new">NEW</span></td>
+          <td>Opt-in cross-segment best-first scheduler ("the global queue"): eligible segments register their ranked
+              postings; query-level workers claim the globally best chunk next. <b>Off by default</b> per benchmarks.</td>
+        </tr>
+        <tr>
+          <td class="mono small">IVFKnnFloatVectorQuery <span class="pill fix">BUGFIX</span></td>
+          <td>Mixed-precondition fix: the query vector is never mutated; each leaf searches the view matching its own
+              space (rotated for preconditioned segments, original otherwise). Also fixes the rotated-query
+              auto-rescore path — raw float vectors are stored unrotated.</td>
+        </tr>
+        <tr>
+          <td class="mono small">computeWorkerGrants <span class="pill mod">MOD</span></td>
+          <td>Worker budgets granted <b>proportionally to segment size</b> (largest-remainder), replacing the uniform
+              pool ÷ leaves split that starved the dominant segment. Full budget always handed out.</td>
+        </tr>
+        <tr>
           <td class="mono small">IVFIntraSegmentParallelScanTests <span class="pill test">TESTS</span></td>
-          <td>11 scenarios: parity/dominance for plain, filtered, deletes, diversified, sliced, combined; cancellation; guard-fix regression.</td>
+          <td>Plus IVFMixedPreconditionTests, IVFCrossLeafFloorSharingTests, IVFCrossSegmentSchedulerTests: parity/dominance
+              for every variant and mode, mixed-codec shards, cancellation probes, guard-fix and grant-math regressions.</td>
         </tr>
       </table>
     </div>
 
     <div class="card">
-      <h2>Runtime switches (all ON by default)</h2>
+      <h2>Runtime switches</h2>
       <table>
         <tr><th>System property</th><th>Meaning</th></tr>
         <tr><td class="mono small">es.vectors.ivf_intra_segment_parallelism</td>
@@ -227,7 +254,9 @@
         <tr><td class="mono small">es.vectors.ivf_cross_segment_scheduling</td>
             <td>Cross-segment best-first scheduling: eligible segments register their ranked postings with a
                 query-level scheduler that spends the summed visit budget on the globally most promising chunks.
-                Requires the master switch. <b>Default <code>true</code></b>.</td></tr>
+                Requires the master switch. <b>Default <code>false</code></b> — benchmarks showed it 5–25% slower
+                than plain leaf-task parallelism on uniformly distributed segments; opt in for skewed layouts
+                (time-based / routed indices). See the Benchmarks tab.</td></tr>
         <tr><td class="mono small">es.vectors.ivf_max_intra_segment_workers</td>
             <td>Worker cap per segment (default 8). Effective count also divides the pool's slice budget by the
                 number of leaves, so multi-segment indices naturally degrade toward one worker per leaf.</td></tr>
@@ -243,7 +272,7 @@
       <div class="flowrow small">
         <div class="flowbox"><b>sysprop on</b><span class="small">master switch</span></div>
         <div class="flowarrow">→</div>
-        <div class="flowbox"><b>≥ 2 workers resolved</b><span class="small">pool budget ÷ leaves</span></div>
+        <div class="flowbox"><b>leaf grant ≥ 2</b><span class="small">pool budget split ∝ segment size</span></div>
         <div class="flowarrow">→</div>
         <div class="flowbox"><b>codec supports it</b><span class="small">ESNext, numSlices ≠ 0</span></div>
         <div class="flowarrow">→</div>
@@ -296,6 +325,14 @@
             pruning floor and silently drops valid parents. Fixed with the same
             <code>heap.size() &gt;= k()</code> guard the plain collector always had. Details + regression tests in
             <a href="#" data-goto="correctness">Correctness</a>.</td>
+      </tr>
+      <tr>
+        <td style="width:30%"><span class="pill fix">BUGFIX</span> <b>Mixed-precondition query rotation</b></td>
+        <td>Preconditioned segments store their IVF structures over rotated vectors, but the raw float vectors stay
+            unrotated. The query used to rotate its shared vector once — first preconditioning leaf wins — after which
+            non-preconditioning leaves (and the raw-vector auto-rescore) silently searched a rotated query against
+            unrotated data. Fixed with per-leaf query views; the shared vector is never mutated. Regression:
+            <code>IVFMixedPreconditionTests</code> (verified to fail on pre-fix behavior).</td>
       </tr>
       <tr>
         <td><span class="pill mod">HARDENING</span> <b>SOAR dedup → max-wins</b></td>
@@ -511,7 +548,7 @@
         <rect x="430" y="164" width="300" height="66" rx="8" fill="#11151d" stroke="#b07cf7" stroke-dasharray="5 4"/>
         <text x="444" y="186" font-size="13" font-weight="700" fill="#d6dce6">IVFParallelScanContext</text>
         <text x="444" y="204" font-size="11" fill="#8b96a8">taskExecutor · maxWorkers · checkCancelled</text>
-        <text x="444" y="220" font-size="11" fill="#8b96a8">workerAccumulator (shared score floor)</text>
+        <text x="444" y="220" font-size="11" fill="#8b96a8">ScoreFloors (leaf-local + gated query-global)</text>
 
         <rect x="430" y="272" width="300" height="64" rx="8" fill="#11151d" stroke="#b07cf7"/>
         <text x="444" y="294" font-size="13" font-weight="700" fill="#d6dce6">AbstractMaxScoreKnnCollector</text>
@@ -595,6 +632,10 @@
       <text x="742" y="262" font-size="10.5" fill="#46c28e">merge worker results → leaf collector</text>
     </svg>
     <div class="callout" style="margin-top:6px">
+      <b>Not shown above:</b> the cross-segment layer (<code>ScoreFloors</code>,
+      <code>CrossSegmentPostingScheduler</code>, <code>LeafScanRegistration</code>) sits between the query and codec
+      columns — see the <a href="#" data-goto="crosssegment">Beyond one segment</a> tab.
+      <br><br>
       <b>The factory pattern is the key extensibility move of this PR.</b> Before, the scanner hardcoded a plain
       top-k collector for every worker — which is <i>wrong</i> for diversified queries (workers would keep k children
       of one parent and starve other parents, and publish inflated score floors). Now
@@ -676,14 +717,18 @@
 
     <div class="step q"><div class="rail"><div class="dot">1</div><div class="line"></div></div><div class="body">
       <div class="who">AbstractIVFKnnVectorQuery · once per query</div>
-      <h3>Resolve the worker budget</h3>
+      <h3>Resolve per-leaf worker grants — proportional to segment size</h3>
       <p class="small"><code>resolveIntraSegmentParallelism()</code> runs in <code>rewrite()</code>:
-      master sysprop on → count leaves that contain the field → if the searcher is a
-      <code>ContextIndexSearcher</code> with an executor, <code>maxWorkers = min(8, max(1, maxSlices / leavesWithField))</code>
-      — dividing the request-level concurrency budget across leaves so leaf tasks plus intra-segment workers never
-      oversubscribe the search pool. Needs ≥ 2 to proceed. Plain <code>IndexSearcher</code> harnesses (checkVec) use the
-      force property instead. Result: an <code>IVFParallelismConfig(taskExecutor, maxWorkers, checkCancelled)</code>,
-      where <code>checkCancelled</code> is the searcher's timeout/cancellation hook.</p>
+      master sysprop on → weigh each leaf by its doc count → if the searcher is a
+      <code>ContextIndexSearcher</code> with an executor, split the pool's slice budget across leaves with
+      <b>largest-remainder apportionment</b> (<code>computeWorkerGrants</code>): each leaf's grant ∝ its share of the
+      expected work, capped at 8, and the whole budget is handed out — 3 equal leaves on a 10-slot pool get 4/3/3,
+      and the typical post-merge shape (one 10M segment + four 200k flushes, pool of 8) gives the dominant segment
+      all 8 instead of the <code>budget/leaves = 1</code> that the old uniform split granted (the straggler problem).
+      A leaf whose grant is &lt; 2 scans serially inside its own leaf task. Over-granting is safe: grants are
+      task-queue targets, not thread reservations, and the scanner's work-volume gate (step 4) still vetoes forking
+      scans too small to amortize a worker. Plain <code>IndexSearcher</code> harnesses (checkVec) use the force
+      property instead, which stays uniform.</p>
     </div></div>
 
     <div class="step q"><div class="rail"><div class="dot">2</div><div class="line"></div></div><div class="body">
@@ -692,8 +737,9 @@
       <p class="small"><code>getLeafResults()</code> wraps live docs / the filter scorer into an
       <code>ESAcceptDocs</code>. <code>approximateSearch()</code> then builds the
       <code>IVFKnnSearchStrategy(visitRatio, numCands, k, accumulator, <b>newParallelScanContext(manager)</b>)</code>.
-      The context's <code>workerAccumulator</code> is the collector manager's accumulator when one exists, else a fresh
-      one — so workers always prune against each other. The manager creates the leaf collector
+      The context carries the manager's <code>ScoreFloors</code> when one exists (coupling workers with the leaf
+      collector and, under cross-leaf sharing, with the other segments), else a leaf-local instance — so workers
+      always prune against each other. The manager creates the leaf collector
       (<code>MaxScoreTopKnnCollector</code>, or <code>DiversifyingNearestChildrenKnnCollector</code> with the parent
       bitset fetched <b>here, on the leaf thread</b>) and <code>strategy.setCollector()</code> registers it — the
       strategy is now the bridge that carries everything into the codec.</p>
@@ -740,7 +786,7 @@
       <p class="small">Each worker first calls the <code>WorkerStateFactory</code> — <b>on its own thread</b> — creating
       a fresh postings <code>IndexInput</code> slice and a fresh <code>PostingVisitor</code> (its own query quantizer,
       scorer, scratch buffers). Then <code>strategy.newParallelWorkerCollector(k, visitLimit)</code>: builds a worker
-      strategy sharing the context's <code>workerAccumulator</code>, and asks the <b>leaf collector</b> to mint a
+      strategy sharing the leaf's <code>ScoreFloors</code>, and asks the <b>leaf collector</b> to mint a
       private twin of its own shape (<code>AbstractMaxScoreKnnCollector.newParallelWorkerCollector</code> — the new
       polymorphic factory). Nothing mutable is shared on the scoring path; the JMH benchmark in this PR verified the
       slice-per-worker pattern has zero arena contention.</p>
@@ -765,12 +811,15 @@ while (current != null) {
 
     <div class="step s"><div class="rail"><div class="dot">8</div><div class="line"></div></div><div class="body">
       <div class="who">IVFKnnSearchStrategy.nextVectorsBlock · once per posting list</div>
-      <h3>Score-floor gossip</h3>
+      <h3>Score-floor gossip — leaf-local and query-global</h3>
       <p class="small">Each collector's guarded floor (<b>only full heaps publish</b> — the bug fix) goes into the
-      shared <code>LongAccumulator</code> via atomic max; the encoding is score-major with a doc-id tiebreak, so
-      <code>Long::max</code> orders correctly. The worker then pulls the accumulator back and raises its own floor if
-      someone else's is higher. The codec's bulk kernels prune whole blocks against
-      <code>minCompetitiveSimilarity()</code> — this is how one worker's good results speed up the others.</p>
+      shared <code>ScoreFloors</code>: always into the <b>leaf-local</b> accumulator (coupling this leaf's workers),
+      and — when the leaf passes the SOAR-safe publish gate — into the <b>query-global</b> one too, so other
+      segments prune against it (see the "Beyond one segment" tab). The encoding is score-major with a doc-id
+      tiebreak, so <code>Long::max</code> orders correctly. The worker then pulls the best visible floor back and
+      raises its own if someone else's is higher. The codec's bulk kernels prune whole blocks against
+      <code>minCompetitiveSimilarity()</code> — this is how one worker's (or segment's) good results speed up the
+      others.</p>
     </div></div>
 
     <div class="step c"><div class="rail"><div class="dot">9</div><div class="line"></div></div><div class="body">
@@ -947,6 +996,194 @@ while (current != null) {
   </div>
 </section>
 
+<!-- ============================ CROSS-SEGMENT ============================ -->
+<section class="tab" id="tab-crosssegment">
+  <div class="card">
+    <h2>Beyond one segment — the three levers, and where they landed</h2>
+    <table>
+      <tr><th style="width:24%">Lever</th><th>What it does</th><th style="width:14%">Status</th></tr>
+      <tr>
+        <td><b>Proportional worker grants</b><br><span class="mono small muted">computeWorkerGrants</span></td>
+        <td>The pool's slice budget is split across leaves <b>in proportion to segment size</b> (largest-remainder,
+            so the whole budget is used). The dominant post-merge segment gets nearly all workers instead of
+            <code>budget/leaves</code>; small leaves scan serially inside their own leaf task.</td>
+        <td style="color:var(--ok)">✔ always on</td>
+      </tr>
+      <tr>
+        <td><b>Cross-leaf floor sharing</b><br><span class="mono small muted">ScoreFloors</span></td>
+        <td>All segments publish/consume one query-level min-competitive floor: a segment holding no globally
+            competitive docs gets its blocks pruned as soon as other segments produce better results. Lossless by
+            construction. Works for serial scans too.</td>
+        <td style="color:var(--ok)">✔ default on</td>
+      </tr>
+      <tr>
+        <td><b>Cross-segment scheduler</b><br><span class="mono small muted">CrossSegmentPostingScheduler</span></td>
+        <td>The "global queue": segments register their ranked postings; query-level workers claim the globally
+            best chunk next, spending the <i>summed</i> visit budget best-first, with per-leaf recall floors
+            preserved by per-leaf continuations of the original serial loops.</td>
+        <td style="color:var(--warn)">✎ opt-in</td>
+      </tr>
+    </table>
+    <div class="callout">
+      <b>Why this shape?</b> Decisions move up to the query layer (budgets, grants, floors, scheduling policy);
+      mechanics stay in the codec (visitors, inputs, scanning) behind thin context objects on the strategy. Posting
+      lists never leak above the codec SPI.
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Proportional grants — the numbers</h2>
+      <table class="small">
+        <tr><th>Segments (pool)</th><th>Old uniform</th><th>New proportional</th></tr>
+        <tr><td>3 × 1M <span class="muted">(10 slices)</span></td>
+            <td class="mono">3 / 3 / 3 <span class="muted">— 1 stranded</span></td>
+            <td class="mono" style="color:var(--ok)">4 / 3 / 3</td></tr>
+        <tr><td>1 × 10M + 4 × 200k <span class="muted">(8)</span></td>
+            <td class="mono" style="color:var(--bad)">1 each — big segment serial!</td>
+            <td class="mono" style="color:var(--ok)">8 / 0 / 0 / 0 / 0</td></tr>
+        <tr><td>5 × 200k <span class="muted">(8)</span></td>
+            <td class="mono">1 each</td>
+            <td class="mono">2 / 2 / 2 / 1 / 1 <span class="muted">(scanner still vetoes tiny scans)</span></td></tr>
+      </table>
+      <p class="small muted">The second row is the one that matters in production: after a force-merge plus fresh
+      flushes, the big segment dominates query latency, and the old <code>pool ÷ leaves</code> split gave it one
+      worker while the pool idled after the small leaves finished — a classic straggler. Over-granting is safe
+      because grants are <b>task-queue targets, not thread reservations</b> (Lucene's executor queues excess and
+      degrades to caller-runs) and the scanner's work-volume gate (≥ 4 postings per worker) refuses to fork scans
+      too small to pay for a worker's setup.</p>
+      <p class="small muted">Grants are static per query — workers don't migrate when their segment finishes early.
+      Dynamic cross-segment stealing is exactly the scheduler below, and it measured slower on uniform data; the
+      static proportional split captures the predictable part of the win (size skew) at zero coordination cost.</p>
+    </div>
+
+    <div class="card">
+      <h2>ScoreFloors — shared pruning without shared state</h2>
+      <p class="small">Two accumulator levels, both atomic-max over the score-major encoding:</p>
+      <ul class="small">
+        <li><b>local</b> — couples one leaf's collectors (the serial collector and its workers). Always written.</li>
+        <li><b>global</b> — couples all leaves. <b>Publishing is gated per leaf</b>; consuming never is
+            (a valid floor is valid everywhere), and <code>floor()</code> returns the max of both.</li>
+      </ul>
+      <h4>The SOAR-safe publish gate</h4>
+      <p class="small">A plain top-k heap holds <i>entries</i>, and SOAR stores a vector in up to two posting lists —
+      duplicates are only removed after collection. So a floor at heap rank <code>k_leaf</code> certifies only
+      <code>⌈k_leaf/2⌉</code> <b>distinct</b> docs above it. A floor is globally valid iff it certifies at least
+      <code>mergeK</code> (the shard's final cut) distinct docs:</p>
+      <pre><code>plain collectors:        publish iff k_leaf ≥ 2 · mergeK   // ≤ 2 entries per doc
+diversifying collectors: publish iff k_leaf ≥ mergeK       // heap entries are distinct parents</code></pre>
+      <p class="small">Under today's uniform oversamples the plain gate holds with equality, so every leaf publishes.
+      A doc pruned below a valid global floor provably cannot make the merged top-<code>mergeK</code> — which is why
+      sharing is <b>lossless</b>: the floor-sharing tests assert result <i>equality</i> against sharing-off, not mere
+      dominance. New collectors are seeded with the current floor at creation, so late-forked workers start
+      pre-pruned.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>The cross-segment scheduler (opt-in): register → scan → continue</h2>
+    <div class="flowrow small">
+      <div class="flowbox" style="border-color: rgba(79,156,249,.5)">
+        <b>1 · REGISTER <span class="muted">(leaf tasks)</span></b>
+        <span class="small">Each eligible leaf does its setup on its own thread — centroid ranking, filter bits,
+        budget, drain — then registers a <code>LeafScanRegistration</code> and returns with an empty collector.
+        Ineligible leaves (ES920, flush-sliced, sliced queries) complete normally: hybrid mode is automatic.</span>
+      </div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(70,194,142,.55)">
+        <b>2 · SCAN <span class="muted">(query-level workers)</span></b>
+        <span class="small">A priority heap holds each leaf's <i>next</i> chunk (per-leaf claims stay a prefix).
+        Workers claim the globally best chunk, with per-leaf worker-affinity caps bounding scoring state, and stop
+        claiming when the <b>summed</b> budget is covered.</span>
+      </div>
+      <div class="flowarrow">→</div>
+      <div class="flowbox" style="border-color: rgba(242,160,82,.5)">
+        <b>3 · CONTINUE <span class="muted">(per-leaf tasks)</span></b>
+        <span class="small">Worker results merge into each leaf collector, then the reader's <i>original</i> serial
+        loops resume on the unclaimed remainder — budget clause against the global remainder, per-leaf recall floors
+        (collect-until-full, filtered adaptive) unchanged. No leaf can be starved below today's guarantees.</span>
+      </div>
+    </div>
+    <div class="callout warn" style="margin-top:12px">
+      <b>Why it's off by default.</b> On uniformly distributed segments (the benchmark corpus, and most
+      randomly-routed indices), all segments look statistically identical — best-first ordering across them has
+      nothing to exploit, while the phase barriers, claim lock and per-(worker, leaf) scoring state cost a measured
+      5–25% latency. The mechanism demonstrably works (+0.01–0.02 recall at tiny budgets from smarter budget
+      spending), so it stays available via <code>-Des.vectors.ivf_cross_segment_scheduling=true</code> for layouts
+      with real cross-segment query affinity: time-based indices, routed/multi-tenant shards, heterogeneous merges.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ BENCHMARKS ============================ -->
+<section class="tab" id="tab-bench">
+  <div class="card">
+    <h2>Benchmark results — msmarco-v2 cohere 10M, GCP</h2>
+    <p class="small muted">qa/vector checkVec harness; 27 configs per cell: visit% {0.1, 1, 5} × search_threads
+    {1, 4, 8} × filter selectivity {1.0, 0.5, 0.1}; two geometries (force-merged single segment; natural 19-segment
+    multi) × three scoring tiers (native SIMD / Panama / scalar). <b>base</b> = all features killed (pre-PR
+    behavior); <b>candidate</b> = full stack with 8 forced workers.</p>
+
+    <h3>Single segment — the headline (geo-mean latency speedup, base ÷ candidate)</h3>
+    <table class="small">
+      <tr><th>filter</th><th>1 thread</th><th>4 threads</th><th>8 threads</th><th>best cell</th></tr>
+      <tr><td>unfiltered</td><td>1.00×</td><td><b>1.98×</b></td><td><b>2.04×</b></td>
+          <td><b>3.11×</b> (panama, visit 5%)</td></tr>
+      <tr><td>selectivity 0.5</td><td>1.00×</td><td>1.37×</td><td>1.41×</td><td>2.29× (scalar, 5%)</td></tr>
+      <tr><td>selectivity 0.1</td><td>1.01×</td><td>1.23×</td><td>1.24×</td><td>1.47× (panama, 5%)</td></tr>
+    </table>
+    <ul class="small">
+      <li><b>Recall never worse</b> in any of the 162 cells (min delta −0.01 in one scheduler cell, max +0.02).</li>
+      <li>Speedup grows with scan volume: ~1.4× at visit 0.1% (only ~50 postings to split) → 2.6–3.1× at 5%.</li>
+      <li>Filtered cells cap lower because filter/bitset evaluation happens on the leaf thread — the Amdahl term.
+          Parallelizing <code>bits()</code> is the next lever there, not more workers.</li>
+      <li>Tier ordering (panama 3.11× &gt; scalar 2.71× &gt; native 2.60× at 5%/8thr): the slower the per-thread
+          kernels, the more compute-bound the scan and the more parallelism substitutes for SIMD — native sits
+          closest to the memory-bandwidth ceiling.</li>
+      <li>4 → 8 workers is marginal (2.47× → 2.60× native) at ~2× the CPU: the 8-worker cap is justified, and
+          <code>ivf_max_intra_segment_workers=4</code> is the CPU-efficient setting.</li>
+    </ul>
+
+    <h3>Multi segment (19) — why the scheduler defaulted off</h3>
+    <table class="small">
+      <tr><th>filter</th><th>1 thread</th><th>4 threads</th><th>8 threads</th></tr>
+      <tr><td>unfiltered</td><td>0.99×</td><td style="color:var(--bad)">0.84×</td><td style="color:var(--bad)">0.82×</td></tr>
+      <tr><td>selectivity 0.5</td><td>0.99×</td><td>0.94×</td><td>0.95×</td></tr>
+      <tr><td>selectivity 0.1</td><td>0.97×</td><td style="color:var(--bad)">0.90×</td><td style="color:var(--bad)">0.87×</td></tr>
+    </table>
+    <p class="small">The baseline's 19 independent leaf tasks already saturate the pool with zero coordination; the
+    scheduler's barriers, claim lock and per-(worker, leaf) state cost 5–25% against that, and on uniformly sharded
+    data best-first ordering has nothing to exploit (cross-segment centroid-score differences are pure quantization
+    noise). Its recall gains (+0.01–0.02 at visit 0.1%) prove the mechanism works — the corpus just has no skew to
+    reward it. Hence: <b>opt-in</b>, revisit for skewed layouts.</p>
+  </div>
+
+  <div class="card">
+    <h2>Reproducing (current defaults: workers + floors on, scheduler off)</h2>
+    <pre><code># one-time build (rerun only if a previous run force-merged the index)
+./gradlew ":qa:vector:checkVec" --args="$PWD/config_parallel_ivf_build.json"
+
+# multi-segment legs first — the merged config force-merges the shared index dir in place!
+CFG="$PWD/config_parallel_ivf_multi.json"
+for V in native panama scalar; do
+  ./gradlew ":qa:vector:checkVec" --args="$CFG" -Dbench.vectorization=$V \
+      -Des.vectors.ivf_intra_segment_parallelism=false \
+      -Des.vectors.ivf_cross_leaf_floor_sharing=false \
+      2>&1 | tee "res_multi_segment_${V}_baseline.log"          # base: pre-PR behavior
+  ./gradlew ":qa:vector:checkVec" --args="$CFG" -Dbench.vectorization=$V \
+      -Des.vectors.ivf_force_intra_segment_workers=8 \
+      2>&1 | tee "res_multi_segment_${V}_candidate.log"         # candidate: current defaults
+  # add -Des.vectors.ivf_cross_segment_scheduling=true for a scheduler leg
+done
+# ... then the same pair over config_parallel_ivf_merged.json (res_single_segment_*.log)</code></pre>
+    <p class="small muted"><code>-Dbench.vectorization=native|panama|scalar</code> selects the scoring backend
+    (native SIMD library / Java Vector API / scalar fallbacks — the scalar leg omits the incubator module entirely).
+    checkVec's plain <code>IndexSearcher</code> has no slice budget, so
+    <code>ivf_force_intra_segment_workers</code> is required for any parallel leg, and forced counts are uniform —
+    proportional grants only engage on the production <code>ContextIndexSearcher</code> path.</p>
+  </div>
+</section>
+
 <!-- ============================ CORRECTNESS ============================ -->
 <section class="tab" id="tab-correctness">
   <div class="card">
@@ -967,8 +1204,12 @@ while (current != null) {
       <tr><td><b>Partial budget: parallel k-th score ≥ serial k-th score</b></td>
           <td>Direct consequence of superset visiting + identical per-doc scores.</td></tr>
       <tr><td><b>Floors never over-prune</b></td>
-          <td>Only <i>full</i> heaps publish (see bug fix below); a full heap's floor certifies k collected results ≥ s,
-              which is a valid lower bound wherever it travels. Atomic max keeps the accumulator monotone.</td></tr>
+          <td>Only <i>full</i> heaps publish (see bug fix below), and cross-segment publishing is additionally gated
+              at <code>k_leaf ≥ 2·mergeK</code> (plain) / <code>≥ mergeK</code> (diversified) so a floor always
+              certifies ≥ mergeK <i>distinct</i> docs despite SOAR duplicates. Atomic max keeps it monotone.</td></tr>
+      <tr><td><b>Each leaf searches its own space</b></td>
+          <td>The query vector is never mutated; preconditioned segments get the rotated view, everything else (and
+              the raw-vector rescore) the original — mixed-precondition shards are exact per leaf.</td></tr>
       <tr><td><b>Order independence of merges</b></td>
           <td>Every merge op is max-wins: SOAR dedup keeps the best copy, the diversified heap keeps the best child per
               parent, top-k heaps keep the best k. No first-wins step survives in the pipeline.</td></tr>
@@ -1029,26 +1270,14 @@ while (current != null) {
       <tr><td class="mono">testDiversifiedMultiSegmentDoesNotOverPrune</td><td>Serial + parallel multi-segment diversified results == accumulator-free per-leaf ground truth (guard-fix net, full query-level wiring check).</td></tr>
       <tr><td class="mono">testCancellationIsObserved</td><td>A cancelling context aborts the scan from a worker chunk.</td></tr>
       <tr><td class="mono">IVFKnnSearchStrategyTests.testDiversifiedMaxScorePropagationRequiresFullHeap</td><td>The deterministic guard-fix regression: non-full heap publishes nothing; the early high score must not poison the floor. <b>Fails on pre-fix code.</b></td></tr>
+      <tr><td class="mono">IVFMixedPreconditionTests</td><td>Mixed-codec shard (preconditioned ESNext + ES920 segments): each leaf must match its own single-leaf baseline over the <i>same physical segment</i>, and the shared query vector must be unmutated after the search. <b>Fails on pre-fix behavior.</b></td></tr>
+      <tr><td class="mono">IVFCrossLeafFloorSharingTests</td><td>Floor sharing is lossless: result <b>equality</b> (not just dominance) sharing on vs off, at full and partial budgets, plain and diversified, with and without intra-segment workers; publish-gate unit tests.</td></tr>
+      <tr><td class="mono">IVFCrossSegmentSchedulerTests</td><td>Scheduler round-trip: multi-segment parity vs scheduler-off, filtered+deletes, diversified distinct-parents, mixed eligibility (ES920 leaf runs serially in-phase), single-eligible-leaf, and a cancellation probe proving workers actually claim.</td></tr>
+      <tr><td class="mono">testProportionalWorkerGrants</td><td>Grant math: 3 equal leaves on 10 slots → 4/3/3 (whole budget used); dominant 10M + small tail → 8/0/0/0/0; caps, zero-weight leaves.</td></tr>
     </table>
-    <h3>Benchmarking it (defaults are ON, so baselines use the kill switches)</h3>
-    <pre><code># one-time index build; then run ALL multi-segment legs BEFORE the merged config (the merge is in-place!)
-./gradlew ":qa:vector:checkVec" --args="$PWD/config_parallel_ivf_build.json"
-
-# multi-segment geometry — the ladder isolates each feature:
-CV='./gradlew :qa:vector:checkVec --args='$PWD'/config_parallel_ivf_multi.json'
-$CV -Des.vectors.ivf_intra_segment_parallelism=false -Des.vectors.ivf_cross_leaf_floor_sharing=false  # 1. serial baseline
-$CV -Des.vectors.ivf_intra_segment_parallelism=false                                                  # 2. + floor sharing (needs no workers)
-$CV -Des.vectors.ivf_force_intra_segment_workers=8 -Des.vectors.ivf_cross_segment_scheduling=false    # 3. + per-leaf workers
-$CV -Des.vectors.ivf_force_intra_segment_workers=8                                                    # 4. full stack (prod-default equivalent)
-
-# merged (single-segment) geometry — floors/scheduler are inert with one leaf:
-CVM='./gradlew :qa:vector:checkVec --args='$PWD'/config_parallel_ivf_merged.json'
-$CVM -Des.vectors.ivf_intra_segment_parallelism=false     # 5. serial baseline (force-merges in place first)
-$CVM -Des.vectors.ivf_force_intra_segment_workers=8       # 6. intra-segment workers</code></pre>
-    <p class="small muted">checkVec's plain IndexSearcher cannot derive worker counts from a search pool, so
-    <code>ivf_force_intra_segment_workers</code> is still required for any parallel leg. Recall must be equal-or-better
-    in every cell except leg 4, where cross-segment budget reallocation may legitimately shift recall — that
-    comparison at equal total budget is the decisive measurement for the scheduler.</p>
+    <h3>Benchmarking it</h3>
+    <p class="small">Full commands, tier selection (<code>bench.vectorization</code>) and the measured results live in
+    the <a href="#" data-goto="bench">Benchmarks</a> tab.</p>
   </div>
 </section>
 </main>
