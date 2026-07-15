@@ -65,7 +65,7 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
         true
     );
 
-    /** Upper bound on parallel workers per segment; the effective count also divides by the number of leaves. */
+    /** Upper bound on parallel workers per segment; the pool budget is split across leaves proportionally to size. */
     static final int MAX_INTRA_SEGMENT_WORKERS = Integer.parseInt(System.getProperty("es.vectors.ivf_max_intra_segment_workers", "8"));
 
     /**
@@ -110,6 +110,12 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
     protected int vectorOpsCount;
     protected final IvfQueryConfigResolver ivfQueryConfigResolver;
     private IVFParallelismConfig intraSegmentParallelism;
+    /**
+     * Per-leaf worker grants (indexed by leaf ord), proportional to each leaf's share of the expected work, or
+     * {@code null} when the config was forced or test-injected (uniform {@code maxWorkers} applies to every leaf).
+     * Written during {@link #rewrite} before the leaf tasks are submitted; read by the tasks.
+     */
+    private int[] leafWorkerGrants;
     private CrossSegmentPostingScheduler crossSegmentScheduler;
 
     protected AbstractIVFKnnVectorQuery(
@@ -377,55 +383,105 @@ abstract class AbstractIVFKnnVectorQuery extends Query implements QueryProfilerP
      * coupling them with the leaf collector and, when cross-leaf sharing is enabled, with the other leaves —
      * otherwise a leaf-local instance, so workers always prune against each other's results.
      */
-    final IVFParallelScanContext newParallelScanContext(IVFCollectorManager knnCollectorManager) {
+    final IVFParallelScanContext newParallelScanContext(IVFCollectorManager knnCollectorManager, int leafOrd) {
         IVFParallelismConfig parallelismConfig = intraSegmentParallelism();
-        if (parallelismConfig == null || parallelismConfig.maxWorkers() < 2) {
-            // the config may exist solely for the cross-segment scheduler; per-leaf forking needs >= 2 workers
+        if (parallelismConfig == null) {
+            return null;
+        }
+        int workers = leafWorkerGrants != null ? leafWorkerGrants[leafOrd] : parallelismConfig.maxWorkers();
+        if (workers < 2) {
+            // this leaf's proportional share of the pool is too small to fork (or the config exists solely for the
+            // cross-segment scheduler); the leaf scans serially inside its own task
             return null;
         }
         ScoreFloors floors = knnCollectorManager.floors != null ? knnCollectorManager.floors : new ScoreFloors(null, false);
-        return new IVFParallelScanContext(
-            parallelismConfig.taskExecutor(),
-            parallelismConfig.maxWorkers(),
-            parallelismConfig.checkCancelled(),
-            floors
-        );
+        return new IVFParallelScanContext(parallelismConfig.taskExecutor(), workers, parallelismConfig.checkCancelled(), floors);
     }
 
     private IVFParallelismConfig resolveIntraSegmentParallelism(IndexSearcher searcher, List<LeafReaderContext> leaves) {
+        leafWorkerGrants = null;
         if (INTRA_SEGMENT_PARALLELISM_ENABLED == false) {
             return null;
         }
+        long[] weights = new long[leaves.size()];
+        long totalWeight = 0;
         int leavesWithField = 0;
-        for (LeafReaderContext leafContext : leaves) {
-            if (leafContext.reader().getFieldInfos().fieldInfo(field) != null) {
+        for (int i = 0; i < leaves.size(); i++) {
+            LeafReader leafReader = leaves.get(i).reader();
+            if (leafReader.getFieldInfos().fieldInfo(field) != null) {
                 leavesWithField++;
+                // doc count is a sufficient proxy for the leaf's scan work: the visit budget is proportional to it
+                weights[i] = Math.max(1, leafReader.maxDoc());
+                totalWeight += weights[i];
             }
         }
         if (leavesWithField == 0) {
             return null;
         }
         if (searcher instanceof ContextIndexSearcher contextIndexSearcher && contextIndexSearcher.hasExecutor()) {
-            // Divide the request-level concurrency budget across leaves so leaf tasks and intra-segment workers
-            // together do not oversubscribe the search pool; multi-segment indices naturally degrade to one worker.
-            // Cross-segment scheduler workers are NOT divided by leaf count (they replace leaf-level scanning).
+            // Cross-segment scheduler workers are NOT split by leaf (they replace leaf-level scanning entirely).
             int concurrency = Math.max(1, contextIndexSearcher.getMaximumNumberOfSlices());
-            int maxWorkers = Math.min(MAX_INTRA_SEGMENT_WORKERS, Math.max(1, concurrency / leavesWithField));
             int schedulerWorkers = Math.min(MAX_INTRA_SEGMENT_WORKERS, concurrency);
-            if (maxWorkers >= 2 || (schedulerWorkers >= 2 && crossSegmentScheduling())) {
+            int[] grants = computeWorkerGrants(weights, totalWeight, concurrency);
+            int maxGrant = 0;
+            for (int grant : grants) {
+                maxGrant = Math.max(maxGrant, grant);
+            }
+            if (maxGrant >= 2 || (schedulerWorkers >= 2 && crossSegmentScheduling())) {
+                leafWorkerGrants = grants;
                 return new IVFParallelismConfig(
                     searcher.getTaskExecutor(),
-                    maxWorkers,
+                    maxGrant,
                     schedulerWorkers,
                     contextIndexSearcher::checkCancelled
                 );
             }
         } else if (FORCE_INTRA_SEGMENT_WORKERS >= 2) {
             // Plain IndexSearcher (Lucene-level harnesses): no cancellation hook exists, and Lucene's TaskExecutor
-            // degrades to caller-runs when the searcher has no executor, so this stays correct either way.
+            // degrades to caller-runs when the searcher has no executor, so this stays correct either way. The
+            // forced count applies uniformly to every leaf (no proportional grants), preserving benchmark semantics.
             return new IVFParallelismConfig(searcher.getTaskExecutor(), FORCE_INTRA_SEGMENT_WORKERS, FORCE_INTRA_SEGMENT_WORKERS, () -> {});
         }
         return null;
+    }
+
+    /**
+     * Splits the request-level concurrency budget across leaves in proportion to each leaf's share of the expected
+     * work, using largest-remainder apportionment so the whole budget is handed out (3 leaves on a 10-slot pool get
+     * 4/3/3, not 3/3/3). With one dominant segment plus a tail of small ones — the typical shape after merging —
+     * the dominant segment receives nearly the whole budget, eliminating the straggler a uniform split creates.
+     * Generosity is safe on two counts: grants are task-queue targets, not thread reservations (Lucene's executor
+     * queues excess tasks and degrades to caller-runs), and the scanner's own work-volume gate
+     * ({@code drainedPostings / MIN_POSTINGS_PER_WORKER}) still refuses to fork any leaf whose actual scan is too
+     * small to amortize a worker — so an over-granted tiny leaf simply runs serially. Per-leaf grants are capped at
+     * {@link #MAX_INTRA_SEGMENT_WORKERS}.
+     */
+    static int[] computeWorkerGrants(long[] weights, long totalWeight, int concurrency) {
+        int[] grants = new int[weights.length];
+        double[] remainders = new double[weights.length];
+        int assigned = 0;
+        for (int i = 0; i < weights.length; i++) {
+            if (weights[i] > 0) {
+                double share = concurrency * (double) weights[i] / totalWeight;
+                grants[i] = Math.min(MAX_INTRA_SEGMENT_WORKERS, (int) share);
+                remainders[i] = share - (int) share;
+                assigned += grants[i];
+            }
+        }
+        for (int leftover = concurrency - assigned; leftover > 0; leftover--) {
+            int best = -1;
+            for (int i = 0; i < weights.length; i++) {
+                if (weights[i] > 0 && grants[i] < MAX_INTRA_SEGMENT_WORKERS && (best == -1 || remainders[i] > remainders[best])) {
+                    best = i;
+                }
+            }
+            if (best == -1) {
+                break; // every leaf is capped; the rest of the budget stays with leaf-level task parallelism
+            }
+            grants[best]++;
+            remainders[best] -= 1; // consumed; drops behind the other leaves for subsequent leftover rounds
+        }
+        return grants;
     }
 
     record IVFParallelismConfig(TaskExecutor taskExecutor, int maxWorkers, int schedulerWorkers, Runnable checkCancelled) {

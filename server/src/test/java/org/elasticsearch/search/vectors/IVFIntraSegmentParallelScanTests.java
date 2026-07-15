@@ -473,6 +473,49 @@ public class IVFIntraSegmentParallelScanTests extends LuceneTestCase {
         }
     }
 
+    /**
+     * The pool budget is split across leaves in proportion to size with largest-remainder apportionment, so the
+     * whole budget is handed out: a dominant segment gets nearly all of it (no straggler), equal segments split it
+     * evenly with the leftover spread one worker at a time, and weight-0 leaves (no field) get nothing. Over-granted
+     * tiny leaves are harmless — the scanner's own work-volume gate still refuses to fork scans that are too small.
+     */
+    public void testProportionalWorkerGrants() {
+        // three equal segments on a 10-slot pool: the whole budget is used, not floor(10/3) each
+        long[] three = { 1_000_000, 1_000_000, 1_000_000 };
+        assertArrayEquals(new int[] { 4, 3, 3 }, AbstractIVFKnnVectorQuery.computeWorkerGrants(three, sum(three), 10));
+
+        // one dominant 10M segment + four 200k segments, pool of 8: the dominant one takes the entire budget
+        long[] skewed = { 10_000_000, 200_000, 200_000, 200_000, 200_000 };
+        assertArrayEquals(new int[] { 8, 0, 0, 0, 0 }, AbstractIVFKnnVectorQuery.computeWorkerGrants(skewed, sum(skewed), 8));
+
+        // five equal segments, pool of 8: floors of 1 plus the 3 leftover slots spread across the first leaves
+        long[] uniform = { 200_000, 200_000, 200_000, 200_000, 200_000 };
+        assertArrayEquals(new int[] { 2, 2, 2, 1, 1 }, AbstractIVFKnnVectorQuery.computeWorkerGrants(uniform, sum(uniform), 8));
+
+        // two equal segments split the pool evenly, no leftover
+        long[] pair = { 1_000_000, 1_000_000 };
+        assertArrayEquals(new int[] { 4, 4 }, AbstractIVFKnnVectorQuery.computeWorkerGrants(pair, sum(pair), 8));
+
+        // a single segment takes the whole budget, capped at MAX_INTRA_SEGMENT_WORKERS; the surplus stays unassigned
+        long[] single = { 1_000_000 };
+        assertArrayEquals(
+            new int[] { AbstractIVFKnnVectorQuery.MAX_INTRA_SEGMENT_WORKERS },
+            AbstractIVFKnnVectorQuery.computeWorkerGrants(single, sum(single), 32)
+        );
+
+        // leaves without the field (weight 0) never receive workers
+        long[] sparse = { 0, 1_000_000 };
+        assertArrayEquals(new int[] { 0, 8 }, AbstractIVFKnnVectorQuery.computeWorkerGrants(sparse, sum(sparse), 8));
+    }
+
+    private static long sum(long[] values) {
+        long total = 0;
+        for (long value : values) {
+            total += value;
+        }
+        return total;
+    }
+
     private IVFParallelScanContext newParallelContext(Runnable checkCancelled) {
         return new IVFParallelScanContext(
             taskExecutor,

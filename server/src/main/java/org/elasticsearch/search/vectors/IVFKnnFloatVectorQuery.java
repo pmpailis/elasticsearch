@@ -198,7 +198,7 @@ public class IVFKnnFloatVectorQuery extends AbstractIVFKnnVectorQuery {
         // serial path inside their leaf task. The two modes never run concurrently for the same leaf.
         IVFKnnSearchStrategy strategy = crossSegmentScheduler != null
             ? new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.floors, null, crossSegmentScheduler, context.ord)
-            : new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.floors, newParallelScanContext(knnCollectorManager));
+            : new IVFKnnSearchStrategy(visitRatio, numCands, k, knnCollectorManager.floors, newParallelScanContext(knnCollectorManager, context.ord));
         AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(visitedLimit, strategy, context);
         if (knnCollector == null) {
             return NO_RESULTS;

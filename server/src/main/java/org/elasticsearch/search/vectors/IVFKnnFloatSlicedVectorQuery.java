@@ -97,7 +97,7 @@ public class IVFKnnFloatSlicedVectorQuery extends IVFKnnFloatVectorQuery {
             numCands,
             k,
             knnCollectorManager.floors,
-            newParallelScanContext(knnCollectorManager)
+            newParallelScanContext(knnCollectorManager, ctx.ord)
         );
         final AbstractMaxScoreKnnCollector knnCollector = knnCollectorManager.newCollector(Integer.MAX_VALUE, strategy, ctx);
         if (knnCollector == null) {
