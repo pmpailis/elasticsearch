@@ -19,7 +19,7 @@
     "vector_space": "maximum_inner_product",
     "dimensions": -1,
     "filter_selectivity": [1.0, 0.5, 0.1],
-    "filter_cache": false,
+    "filter_cache": true,
     "seed": 42
   }
 ]

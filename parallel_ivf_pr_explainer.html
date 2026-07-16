@@ -650,8 +650,9 @@
 <section class="tab" id="tab-anim">
   <div class="card">
     <h2>The claim loop, step by step</h2>
-    <p class="small muted">A scaled-down segment: 22 ranked posting lists (greener = higher centroid score), 3 workers,
-      and a visit budget that covers roughly the best 16 lists. Press <b>Step</b> to advance, or <b>Auto</b> to play.</p>
+    <p class="small muted">A large segment: 100 drained posting lists (greener = higher centroid score) — 1.25× the visit
+      budget, which itself covers roughly the best 80 — scanned by 3 workers. The number above each claimed chunk is its
+      size. Press <b>Step</b> to advance, or <b>Auto</b> to play.</p>
     <div style="display:flex; gap:10px; margin: 10px 0 14px; align-items:center">
       <button class="btn" id="animReset">⏮ Reset</button>
       <button class="btn primary" id="animStep">Step ▶</button>
@@ -666,6 +667,7 @@
       </defs>
       <text x="12" y="30" font-size="12.5" fill="#8b96a8">ranked posting lists (best → worst)</text>
       <g id="postings"></g>
+      <g id="chunkLabels"></g>
       <g id="cursorG" opacity="0">
         <path id="cursorPath" d="M0,0 l6,-12 l-12,0 z" fill="#d6dce6"/>
         <text id="cursorText" x="0" y="0" font-size="10" fill="#8b96a8" text-anchor="middle">cursor</text>
@@ -690,8 +692,9 @@
       <div class="card tight">
         <b>Chunk size formula</b><br>
         <code>min(8, budgetLeft/avgDocs, remaining/(4·W))</code><br>
-        <span class="muted">Chunks shrink as the array drains (stragglers bounded by one posting) and as the budget
-        nears (overshoot stays small).</span>
+        <span class="muted">Here (100 postings, W=3) the first claim hits the ceiling of 8, then the array-drain term
+        <code>remaining/12</code> takes over: 8,7,7,6,6,5,…&nbsp;down to 1. A smooth taper — <b>not</b> a fixed halving —
+        so stragglers are bounded by one posting and the near-budget overshoot stays small.</span>
       </div>
       <div class="card tight">
         <b>Double-buffered prefetch</b><br>
@@ -1120,42 +1123,50 @@ diversifying collectors: publish iff k_leaf ≥ mergeK       // heap entries are
   <div class="card">
     <h2>Benchmark results — msmarco-v2 cohere 10M, GCP</h2>
     <p class="small muted">qa/vector checkVec harness; 27 configs per cell: visit% {0.1, 1, 5} × search_threads
-    {1, 4, 8} × filter selectivity {1.0, 0.5, 0.1}; two geometries (force-merged single segment; natural 19-segment
-    multi) × three scoring tiers (native SIMD / Panama / scalar). <b>base</b> = all features killed (pre-PR
-    behavior); <b>candidate</b> = full stack with 8 forced workers.</p>
+    {1, 4, 8} × filter selectivity {1.0, 0.5, 0.1}; two geometries (force-merged single segment; natural 22-segment
+    multi) × three scoring tiers (native SIMD / Panama / scalar) = <b>162 cells</b>. <b>base</b> = all features killed
+    (pre-PR behavior); <b>candidate</b> = current defaults (intra-segment workers + floor sharing on, cross-segment
+    scheduler off) with 8 forced workers.</p>
 
-    <h3>Single segment — the headline (geo-mean latency speedup, base ÷ candidate)</h3>
+    <h3>Single segment — the headline (geo-mean latency speedup over the 3 tiers × 3 visit ratios, base ÷ candidate)</h3>
     <table class="small">
       <tr><th>filter</th><th>1 thread</th><th>4 threads</th><th>8 threads</th><th>best cell</th></tr>
-      <tr><td>unfiltered</td><td>1.00×</td><td><b>1.98×</b></td><td><b>2.04×</b></td>
-          <td><b>3.11×</b> (panama, visit 5%)</td></tr>
-      <tr><td>selectivity 0.5</td><td>1.00×</td><td>1.37×</td><td>1.41×</td><td>2.29× (scalar, 5%)</td></tr>
-      <tr><td>selectivity 0.1</td><td>1.01×</td><td>1.23×</td><td>1.24×</td><td>1.47× (panama, 5%)</td></tr>
+      <tr><td>unfiltered</td><td>1.00×</td><td><b>1.98×</b></td><td><b>2.01×</b></td>
+          <td><b>3.14×</b> (panama, visit 5%)</td></tr>
+      <tr><td>selectivity 0.5</td><td>1.00×</td><td>1.38×</td><td>1.41×</td><td>2.27× (scalar, 5%)</td></tr>
+      <tr><td>selectivity 0.1</td><td>0.99×</td><td>1.21×</td><td>1.22×</td><td>1.44× (scalar, 5%)</td></tr>
     </table>
     <ul class="small">
-      <li><b>Recall never worse</b> in any of the 162 cells (min delta −0.01 in one scheduler cell, max +0.02).</li>
-      <li>Speedup grows with scan volume: ~1.4× at visit 0.1% (only ~50 postings to split) → 2.6–3.1× at 5%.</li>
-      <li>Filtered cells cap lower because filter/bitset evaluation happens on the leaf thread — the Amdahl term.
-          Parallelizing <code>bits()</code> is the next lever there, not more workers.</li>
-      <li>Tier ordering (panama 3.11× &gt; scalar 2.71× &gt; native 2.60× at 5%/8thr): the slower the per-thread
+      <li><b>Recall never worse</b> in any of the 162 cells (delta +0.00 to +0.01).</li>
+      <li>Speedup grows with scan volume: ~1.3× at visit 0.1% (only ~50 postings to split) → 2.7–3.1× at 5%.</li>
+      <li>Filtered cells cap lower because the filter/bitset build runs serially on the leaf thread — the Amdahl term.
+          It is <b>common-mode</b> (bit-identical in base and candidate) and orthogonal to scoring, so it dilutes the
+          <i>relative</i> speedup without being a regression; deliberately left untouched by this PR.</li>
+      <li>Tier ordering (panama 3.14× &gt; scalar 2.72× &gt; native 2.39× at 5%/8thr): the slower the per-thread
           kernels, the more compute-bound the scan and the more parallelism substitutes for SIMD — native sits
           closest to the memory-bandwidth ceiling.</li>
-      <li>4 → 8 workers is marginal (2.47× → 2.60× native) at ~2× the CPU: the 8-worker cap is justified, and
-          <code>ivf_max_intra_segment_workers=4</code> is the CPU-efficient setting.</li>
+      <li>4 → 8 workers adds little (unfiltered visit 5%: geo-mean 2.66× → 2.73×; native even dips 2.55× → 2.39×)
+          at ~2× the CPU — 8 is a safety ceiling, and <code>ivf_max_intra_segment_workers=4</code> is the
+          CPU-efficient setting.</li>
     </ul>
 
-    <h3>Multi segment (19) — why the scheduler defaulted off</h3>
+    <h3>Multi segment (22) — the default is neutral, as expected</h3>
     <table class="small">
       <tr><th>filter</th><th>1 thread</th><th>4 threads</th><th>8 threads</th></tr>
-      <tr><td>unfiltered</td><td>0.99×</td><td style="color:var(--bad)">0.84×</td><td style="color:var(--bad)">0.82×</td></tr>
-      <tr><td>selectivity 0.5</td><td>0.99×</td><td>0.94×</td><td>0.95×</td></tr>
-      <tr><td>selectivity 0.1</td><td>0.97×</td><td style="color:var(--bad)">0.90×</td><td style="color:var(--bad)">0.87×</td></tr>
+      <tr><td>unfiltered</td><td>0.99×</td><td>1.03×</td><td>1.00×</td></tr>
+      <tr><td>selectivity 0.5</td><td>0.99×</td><td>1.01×</td><td>1.03×</td></tr>
+      <tr><td>selectivity 0.1</td><td>0.98×</td><td>0.98×</td><td>0.98×</td></tr>
     </table>
-    <p class="small">The baseline's 19 independent leaf tasks already saturate the pool with zero coordination; the
-    scheduler's barriers, claim lock and per-(worker, leaf) state cost 5–25% against that, and on uniformly sharded
-    data best-first ordering has nothing to exploit (cross-segment centroid-score differences are pure quantization
-    noise). Its recall gains (+0.01–0.02 at visit 0.1%) prove the mechanism works — the corpus just has no skew to
-    reward it. Hence: <b>opt-in</b>, revisit for skewed layouts.</p>
+    <p class="small">With the default stack (intra-segment workers + floor sharing, scheduler off), multi-segment is
+    <b>flat</b> — the aggregated cells above sit at 0.98–1.03× (individual raw cells spread ~±10%, i.e. run-to-run
+    noise). That's the expected outcome: the baseline's 22 independent leaf tasks already saturate the search pool, so
+    there is little idle capacity for intra-segment workers to claim, and floor sharing is lossless. No regression, no
+    big win — the win lives in the force-merged single-segment geometry above.</p>
+    <p class="small muted">The <b>opt-in</b> cross-segment scheduler is a separate lever, not exercised in this run's
+    candidate. Earlier A/Bs measured it 5–25% slower than plain leaf-task parallelism on this uniform corpus —
+    best-first ordering has nothing to exploit when cross-segment centroid-score differences are pure quantization
+    noise — while showing small recall gains (+0.01–0.02 at tiny budgets) that prove the mechanism works. Hence it
+    stays off by default; revisit for skewed layouts (time-based, routed / multi-tenant).</p>
   </div>
 
   <div class="card">
@@ -1295,7 +1306,7 @@ document.querySelectorAll('[data-goto]').forEach(a =>
   a.addEventListener('click', e => { e.preventDefault(); activate(a.dataset.goto); }));
 
 /* ---------- claim-loop animation ---------- */
-const NP = 22, CELL_W = 44, CELL_GAP = 5, CELL_X = 12, CELL_Y = 42, CELL_H = 34;
+const NP = 100, CELL_W = 9, CELL_GAP = 1.65, CELL_X = 12, CELL_Y = 42, CELL_H = 30;
 const WCOL = { 1: 'var(--w1)', 2: 'var(--w2)', 3: 'var(--w3)' };
 const WHEX = { 1: '#46c28e', 2: '#e5c558', 3: '#ef7fb1' };
 const svgNS = 'http://www.w3.org/2000/svg';
@@ -1312,12 +1323,11 @@ function cellX(i) { return CELL_X + i * (CELL_W + CELL_GAP); }
 
 function renderBase() {
   const posts = $('postings'); posts.innerHTML = '';
+  $('chunkLabels').innerHTML = '';
   for (let i = 0; i < NP; i++) {
-    const sat = Math.max(12, 58 - i * 2.6), lig = Math.max(19, 33 - i * 0.55);
-    el('rect', { id: 'c' + i, x: cellX(i), y: CELL_Y, width: CELL_W, height: CELL_H, rx: 5,
-                 fill: `hsl(152 ${sat}% ${lig}%)`, stroke: '#232b3b', 'stroke-width': 1.5 }, posts);
-    el('text', { id: 'ct' + i, x: cellX(i) + CELL_W / 2, y: CELL_Y + 21, 'text-anchor': 'middle',
-                 'font-size': 10, fill: '#c8d2e0' }, posts, 'P' + i);
+    const sat = Math.max(12, 58 - i * 0.46), lig = Math.max(19, 33 - i * 0.14);
+    el('rect', { id: 'c' + i, x: cellX(i), y: CELL_Y, width: CELL_W, height: CELL_H, rx: 2,
+                 fill: `hsl(152 ${sat}% ${lig}%)`, stroke: '#232b3b', 'stroke-width': 1 }, posts);
   }
   const ws = $('workers'); ws.innerHTML = '';
   const rows = [126, 186, 246];
@@ -1345,15 +1355,24 @@ function claim(w, a, b, dashed) {
   for (let i = a; i <= b; i++) {
     const c = $('c' + i);
     c.setAttribute('stroke', WHEX[w]);
-    c.setAttribute('stroke-width', 2.6);
-    c.setAttribute('stroke-dasharray', dashed ? '5 4' : 'none');
+    c.setAttribute('stroke-width', 2);
+    c.setAttribute('stroke-dasharray', dashed ? '3 2' : 'none');
   }
+}
+// One claim: colour cells [from, to) for worker w and print the chunk size beneath the run.
+function chunkLabel(from, to, w) {
+  const midX = (cellX(from) + cellX(to - 1) + CELL_W) / 2;
+  el('text', { x: midX, y: CELL_Y + CELL_H + 13, 'text-anchor': 'middle', 'font-size': 10.5,
+               'font-weight': 700, fill: WHEX[w] }, $('chunkLabels'), to - from);
+}
+// A wave of claims: each entry is [fromInclusive, toExclusive, worker].
+function wave(chunks, dashed) {
+  chunks.forEach(([a, b, w]) => { claim(w, a, b - 1, dashed); chunkLabel(a, b, w); });
 }
 function scored(a, b) {
   for (let i = a; i <= b; i++) {
-    $('c' + i).setAttribute('opacity', 0.5);
+    $('c' + i).setAttribute('opacity', 0.4);
     $('c' + i).setAttribute('stroke-dasharray', 'none');
-    $('ct' + i).textContent = '✓';
   }
 }
 function remainder(a, b) {
@@ -1383,32 +1402,28 @@ function floorv(v) { $('floorVal').textContent = v; }
 function say(html) { $('narration').innerHTML = html; }
 
 const steps = [
-  () => { say('<b>Setup.</b> The leaf thread <b>drained</b> the 22 best-ranked postings into a plain array (1.25× the visit budget) and prefetched the head. Three workers fork via <code style="background:none;border:none">invokeAll</code>. Everything a worker touches — visitor, quantizer, collector, IndexInput slice — is created on its own thread.'); },
-  () => { claim(1, 0, 3); cursor(4); st(1, 'claimed P0–P3 · one cursor.getAndAdd(4) · prefetch issued');
-          say('<b>W1 claims a chunk.</b> One atomic <b>getAndAdd</b> on the shared cursor reserves P0–P3, then W1 asks the OS to prefetch exactly those byte ranges. The cursor is the only coordination word.'); },
-  () => { claim(2, 4, 7); claim(3, 8, 11); cursor(12);
-          st(2, 'claimed P4–P7 · prefetching'); st(3, 'claimed P8–P11 · prefetching');
-          say('<b>W2 and W3 claim theirs.</b> No locks, no queue: whoever advances the cursor owns that range. Ranked order is preserved — the best postings are always consumed first.'); },
-  () => { claim(1, 12, 13, true); cursor(14); scored(0, 3); budget(28); heap(1, 'private top-k: FULL'); floorv('0.64  (published by W1)');
-          st(1, 'scored P0–P3 ✓ · next chunk (P12–P13) already prefetching');
-          say('<b>Double buffering.</b> W1 claimed its <i>next</i> chunk (dashed) before scoring the current one, so read-ahead overlaps compute. Its heap is now full → it may publish its floor (0.64) to the shared accumulator. <b>Under-filled heaps never publish</b> — that guard is the bug fix.'); },
-  () => { scored(4, 7); claim(2, 14, 15, true); cursor(16); budget(52); heap(2, 'private top-k: FULL'); floorv('0.68  (atomic max)');
-          st(2, 'scored P4–P7 ✓ · next chunk (P14–P15) prefetching');
-          say('<b>Floors travel.</b> W2 publishes 0.68; the accumulator keeps the max. Each worker pulls it back once per posting list and prunes whole blocks below it — one worker’s good results speed everyone up.'); },
-  () => { scored(8, 11); claim(3, 16, 17, true); cursor(18); budget(74); heap(3, 'private top-k: FULL'); floorv('0.71');
-          st(3, 'scored P8–P11 ✓ · next chunk (P16–P17) prefetching');
-          say('<b>Chunks shrink.</b> The claim size is min(8, budgetLeft/avgDocs, remaining/(4·W)) — as the array drains and the budget nears, chunks get smaller so stragglers are bounded by a single posting list.'); },
-  () => { scored(12, 13); claim(1, 18, 18, true); cursor(19); budget(85);
-          st(1, 'scored P12–P13 ✓ · claimed P18 (chunk size now 1)');
-          say('W1 finishes its second chunk and claims just <b>one</b> posting — the budget is nearly covered, so overshoot is kept tiny.'); },
-  () => { scored(14, 15); budget(96); floorv('0.74'); st(2, 'scored P14–P15 ✓ · claimAndPrefetch → null');
-          say('W2 asks for more work, but the expected-docs total says the budget is about to be covered → <code style="background:none;border:none">claimAndPrefetch</code> starts returning null. Workers drain out naturally.'); },
-  () => { scored(16, 17); budget(101); st(3, 'scored P16–P17 ✓ · no more claims');
-          say('<b>Budget covered.</b> The shared expected-docs counter crossed maxVectorsVisited. No new claims are handed out — but anything already claimed will still be finished.'); },
-  () => { scored(18, 18); budget(104); st(1, 'scored P18 ✓ (in-flight chunk always completes)');
-          say('<b>Bounded overshoot.</b> W1’s in-flight P18 is scanned to completion anyway — visiting <i>more</i> than serial can only add candidates, never lose them. This is why recall ≥ serial needs no fine print.'); },
-  () => { remainder(19, 21); cursor(null);
-          say('<b>Hand-back.</b> P19–P21 were drained but never claimed (orange). They’re concatenated with the live iterator and returned to the <b>original serial loops</b> on the leaf thread, seeded with the workers’ counts. Here the budget is covered, so the serial loop exits immediately — the common case.'); },
+  () => { say('<b>Setup.</b> The leaf thread <b>drained</b> the 100 best-ranked postings into a plain array (1.25× the visit budget, which covers ~80) and prefetched the head. Three workers fork via <code style="background:none;border:none">invokeAll</code>. Everything a worker touches — visitor, quantizer, collector, IndexInput slice — is created on its own thread.'); },
+  () => { wave([[0, 8, 1], [8, 15, 2], [15, 22, 3]]); cursor(22);
+          st(1, 'claimed [0,8) — one cursor.getAndAdd(8)'); st(2, 'claimed [8,15)'); st(3, 'claimed [15,22)');
+          say('<b>First claims.</b> With 100 postings and 3 workers, <code style="background:none;border:none">remaining/(4·3)=8</code>, so the first claim hits the ceiling: <b>8</b>, then <b>7, 7</b> as the array drains. One atomic <b>getAndAdd</b> reserves each run; the cursor is the only coordination word.'); },
+  () => { scored(0, 21); wave([[22, 28, 1], [28, 34, 2], [34, 39, 3], [39, 44, 1]], true); cursor(44); budget(28);
+          heap(1, 'private top-k: FULL'); floorv('0.64  (published by W1)');
+          st(1, 'scored [0,8) ✓ · next chunks prefetching'); st(2, 'scored [8,15) ✓'); st(3, 'scored [15,22) ✓');
+          say('<b>Double buffering + taper.</b> Each worker claimed its <i>next</i> run (dashed) before scoring the current one, so read-ahead overlaps compute. Sizes keep sliding: <b>6, 6, 5, 5</b> — tracking <code style="background:none;border:none">remaining/12</code>, nothing like a fixed halving. Full heaps may now publish their floor (0.64); <b>under-filled heaps never publish</b> — that guard is the bug fix.'); },
+  () => { scored(22, 43); wave([[44, 48, 2], [48, 52, 3], [52, 56, 1], [56, 59, 2], [59, 62, 3]], true); cursor(62); budget(55);
+          heap(2, 'private top-k: FULL'); heap(3, 'private top-k: FULL'); floorv('0.71  (atomic max)');
+          st(2, 'scored ✓ · claiming'); st(3, 'scored ✓ · claiming');
+          say('<b>Floors travel.</b> Workers publish to the shared accumulator, which keeps the max (0.71). Each pulls it back once per posting list and prunes whole blocks below it — one worker’s good results speed everyone up. Chunks are now <b>4, 4, 4, 3, 3</b>.'); },
+  () => { scored(44, 61); wave([[62, 65, 1], [65, 67, 2], [67, 69, 3], [69, 71, 1], [71, 73, 2], [73, 75, 3], [75, 77, 1], [77, 78, 2], [78, 79, 3], [79, 80, 1]], true);
+          cursor(80); budget(78); floorv('0.74');
+          st(1, 'chunk size now 1'); st(2, 'chunk size now 1'); st(3, 'chunk size now 1');
+          say('<b>Tail bottoms out.</b> As the array drains <i>and</i> the budget nears, both <code style="background:none;border:none">remaining/12</code> and <code style="background:none;border:none">budgetLeft/avgDocs</code> clamp the size down through <b>3, 2, …, 1</b>. Small claims near the finish line keep the overshoot tiny.'); },
+  () => { scored(62, 79); budget(100); st(1, 'claimAndPrefetch → null'); st(2, 'claimAndPrefetch → null'); st(3, 'claimAndPrefetch → null');
+          say('<b>Budget covered.</b> The shared expected-docs counter crossed maxVectorsVisited (~80). <code style="background:none;border:none">claimAndPrefetch</code> starts returning null — no new claims are handed out, but anything already claimed will still be finished.'); },
+  () => { budget(103); st(1, 'in-flight chunk always completes');
+          say('<b>Bounded overshoot.</b> Chunks that were already in flight when the budget was hit are scanned to completion anyway — visiting <i>more</i> than serial can only add candidates, never lose them. This is why recall ≥ serial needs no fine print.'); },
+  () => { remainder(80, 99); cursor(null);
+          say('<b>Hand-back.</b> The 20 postings past the budget (orange) were drained but never claimed — exactly the 0.25 overshoot. They’re concatenated with the live iterator and returned to the <b>original serial loops</b> on the leaf thread, seeded with the workers’ counts. Here the budget is covered, so the serial loop exits immediately — the common case.'); },
   () => { for (let w = 1; w <= 3; w++) { $('mArr' + w).setAttribute('opacity', 0.85); st(w, 'private top-k drained into leaf collector'); }
           $('leafBox').setAttribute('stroke', '#46c28e'); $('leafTxt').textContent = 'merged: 3 worker top-k sets';
           $('leafTxt2').textContent = 'bulk insert · max-wins per doc/parent';
