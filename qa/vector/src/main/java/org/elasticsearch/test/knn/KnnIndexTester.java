@@ -897,7 +897,8 @@ public class KnnIndexTester {
                 "early_termination",
                 "post_filter",
                 "exact",
-                "exact_quantized"
+                "exact_quantized",
+                "filter_type"
             );
             if (hasPartitionRecall) {
                 searchHeaderList.add("partition_recall_min");
@@ -945,7 +946,8 @@ public class KnnIndexTester {
                     Boolean.toString(queryResult.earlyTermination),
                     Boolean.toString(queryResult.postFilter),
                     Boolean.toString(queryResult.exact),
-                    Boolean.toString(queryResult.exactQuantized)
+                    Boolean.toString(queryResult.exactQuantized),
+                    queryResult.filterType
                 );
                 if (hasPartitionRecall) {
                     String partitionMin = "";
@@ -1047,6 +1049,7 @@ public class KnnIndexTester {
         boolean postFilter;
         boolean exact;
         boolean exactQuantized;
+        String filterType;
         int numCandidates;
         int topK;
         Map<String, Float> perPartitionRecall;
@@ -1191,6 +1194,7 @@ public class KnnIndexTester {
         "post_filter",
         "exact",
         "exact_quantized",
+        "filter_type",
         "filter_selectivity",
         "filter_cached",
         "search_threads",
@@ -1306,6 +1310,7 @@ public class KnnIndexTester {
                             Boolean.toString(sp.postFilter()),
                             Boolean.toString(sp.exact()),
                             Boolean.toString(sp.exactQuantized()),
+                            sp.filterType(),
                             String.format(Locale.ROOT, "%.4f", sp.filterSelectivity()),
                             Boolean.toString(sp.filterCached()),
                             Integer.toString(sp.searchThreads()),

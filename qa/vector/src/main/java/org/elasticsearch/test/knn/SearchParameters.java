@@ -30,7 +30,8 @@ public record SearchParameters(
     boolean postFilter,
     long seed,
     boolean exact,
-    boolean exactQuantized
+    boolean exactQuantized,
+    String filterType
 ) {
 
     static final ObjectParser<SearchParameters.Builder, Void> PARSER = new ObjectParser<>(
@@ -53,6 +54,7 @@ public record SearchParameters(
         PARSER.declareLong(Builder::setSeed, TestConfiguration.SEED_FIELD);
         PARSER.declareBoolean(Builder::setExact, TestConfiguration.EXACT_FIELD);
         PARSER.declareBoolean(Builder::setExactQuantized, TestConfiguration.EXACT_QUANTIZED_FIELD);
+        PARSER.declareString(Builder::setFilterType, TestConfiguration.FILTER_TYPE_FIELD);
     }
 
     static SearchParameters.Builder fromXContent(XContentParser parser) {
@@ -77,6 +79,7 @@ public record SearchParameters(
         private Long seed;
         private Boolean exact;
         private Boolean exactQuantized;
+        private String filterType;
 
         public Builder setNumCandidates(int numCandidates) {
             this.numCandidates = numCandidates;
@@ -143,6 +146,11 @@ public record SearchParameters(
             return this;
         }
 
+        public Builder setFilterType(String filterType) {
+            this.filterType = filterType;
+            return this;
+        }
+
         private Builder setNullValues(SearchParameters params) {
             // Only set the null members, don't overwrite the set values
             this.numCandidates = Optional.ofNullable(numCandidates).orElse(params.numCandidates());
@@ -158,6 +166,7 @@ public record SearchParameters(
             this.seed = Optional.ofNullable(seed).orElse(params.seed());
             this.exact = Optional.ofNullable(exact).orElse(params.exact());
             this.exactQuantized = Optional.ofNullable(exactQuantized).orElse(params.exactQuantized());
+            this.filterType = Optional.ofNullable(filterType).orElse(params.filterType());
             return this;
         }
 
@@ -188,7 +197,8 @@ public record SearchParameters(
                 postFilter,
                 seed,
                 exact,
-                exactQuantized
+                exactQuantized,
+                filterType
             );
         }
 
@@ -233,6 +243,9 @@ public record SearchParameters(
             }
             if (exactQuantized != null) {
                 builder.field(TestConfiguration.EXACT_QUANTIZED_FIELD.getPreferredName(), exactQuantized);
+            }
+            if (filterType != null) {
+                builder.field(TestConfiguration.FILTER_TYPE_FIELD.getPreferredName(), filterType);
             }
             return builder.endObject();
         }

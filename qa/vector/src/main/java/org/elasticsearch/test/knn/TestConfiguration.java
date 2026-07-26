@@ -132,6 +132,7 @@ public record TestConfiguration(
     static final ParseField DELETE_SEED_FIELD = new ParseField("delete_seed");
     static final ParseField EXACT_FIELD = new ParseField("exact");
     static final ParseField EXACT_QUANTIZED_FIELD = new ParseField("exact_quantized");
+    static final ParseField FILTER_TYPE_FIELD = new ParseField("filter_type");
 
     /** By default, in ES the default writer buffer size is 10% of the heap space
      * (see {@code IndexingMemoryController.INDEX_BUFFER_SIZE_SETTING}).
@@ -214,6 +215,7 @@ public record TestConfiguration(
             EXACT_QUANTIZED_FIELD,
             ObjectParser.ValueType.VALUE_ARRAY
         );
+        PARSER.declareStringArray(Builder::setFilterType, FILTER_TYPE_FIELD);
     }
 
     public int numberOfSearchRuns() {
@@ -307,6 +309,12 @@ public record TestConfiguration(
                 "exact_quantized",
                 "array[boolean]",
                 "Search: when exact is true, score against the codec's quantized representation " + "instead of raw full-precision vectors."
+            ),
+            new ParameterHelp(
+                "filter_type",
+                "array[string]",
+                "Search: filter query type used to enforce filter_selectivity: "
+                    + "random, range, term, range_term, term_random, or phrase."
             ),
             new ParameterHelp(
                 "search_params",
@@ -469,6 +477,7 @@ public record TestConfiguration(
         private long deleteSeed = 1751900822751L;
         private List<Boolean> exact = List.of(Boolean.FALSE);
         private List<Boolean> exactQuantized = List.of(Boolean.FALSE);
+        private List<String> filterType = List.of("random");
 
         /**
          * Elasticsearch does not set this explicitly, and in Lucene this setting is
@@ -716,6 +725,11 @@ public record TestConfiguration(
 
         public Builder setExactQuantized(List<Boolean> exactQuantized) {
             this.exactQuantized = exactQuantized;
+            return this;
+        }
+
+        public Builder setFilterType(List<String> filterType) {
+            this.filterType = filterType;
             return this;
         }
 
@@ -974,7 +988,8 @@ public record TestConfiguration(
                     postFilter.getFirst(),
                     seed.getFirst(),
                     exact.getFirst(),
-                    exactQuantized.getFirst()
+                    exactQuantized.getFirst(),
+                    filterType.getFirst()
                 );
 
                 for (var so : searchParams) {
@@ -1087,6 +1102,7 @@ public record TestConfiguration(
             }
             builder.field(EXACT_FIELD.getPreferredName(), exact);
             builder.field(EXACT_QUANTIZED_FIELD.getPreferredName(), exactQuantized);
+            builder.field(FILTER_TYPE_FIELD.getPreferredName(), filterType);
             return builder.endObject();
         }
 
@@ -1104,7 +1120,8 @@ public record TestConfiguration(
                 postFilter.size(),
                 seed.size(),
                 exact.size(),
-                exactQuantized.size()
+                exactQuantized.size(),
+                filterType.size()
             );
             return lengths.stream().max(Integer::compareTo).get();
         }
@@ -1124,7 +1141,8 @@ public record TestConfiguration(
                     postFilter,
                     seed,
                     exact,
-                    exactQuantized
+                    exactQuantized,
+                    filterType
                 )
             ).stream()
                 .map(
@@ -1141,7 +1159,8 @@ public record TestConfiguration(
                         (Boolean) params.get(9),
                         (Long) params.get(10),
                         (Boolean) params.get(11),
-                        (Boolean) params.get(12)
+                        (Boolean) params.get(12),
+                        (String) params.get(13)
                     )
                 )
                 .filter(sp -> sp.exact() || sp.exactQuantized() == false)

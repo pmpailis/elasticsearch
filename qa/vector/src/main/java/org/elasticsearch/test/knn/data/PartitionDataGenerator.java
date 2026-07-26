@@ -68,9 +68,11 @@ public final class PartitionDataGenerator extends DataGenerator {
     public KnnIndexTester.IndexingSetup createIndexingSetup() throws IOException {
         int totalDocs = partitionConfiguration.assignmentInfo().docOrdinals().length;
         logger.info("IndexingSetup: generated data with {} partitions", getNumPartitions());
-        KnnIndexer.DocumentFactory documentFactory = new KnnIndexer.PartitionDocumentFactory(
-            partitionConfiguration.assignmentInfo().docPartitionIds(),
-            partitionConfiguration.assignmentInfo().docOrdinals()
+        KnnIndexer.DocumentFactory documentFactory = new KnnIndexer.FilterFieldDocumentFactory(
+            new KnnIndexer.PartitionDocumentFactory(
+                partitionConfiguration.assignmentInfo().docPartitionIds(),
+                partitionConfiguration.assignmentInfo().docOrdinals()
+            )
         );
         return new KnnIndexTester.IndexingSetup(docs(), documentFactory, totalDocs);
     }
@@ -93,15 +95,14 @@ public final class PartitionDataGenerator extends DataGenerator {
             }
         }
 
-        Query selectivityFilter = searchParameters.filterSelectivity() < 1f
-            ? KnnSearcher.generateRandomQuery(
-                new Random(searchParameters.seed()),
-                searcher.indexPath(),
-                searcher.numDocs(),
-                searchParameters.filterSelectivity(),
-                searchParameters.filterCached()
-            )
-            : null;
+        Query selectivityFilter = KnnSearcher.generateFilterQuery(
+            searchParameters.filterType(),
+            searcher.numDocs(),
+            searchParameters.filterSelectivity(),
+            searchParameters.seed(),
+            searcher.indexPath(),
+            searchParameters.filterCached()
+        );
 
         List<String> sampledPartitions = new ArrayList<>(getPartitionAssignments().keySet());
         Random queryRandom = new Random(searchParameters.seed());
