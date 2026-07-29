@@ -26,6 +26,7 @@ public class ChildMemoryCircuitBreakerTests extends ESTestCase {
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_WILDCARD, ChildMemoryCircuitBreaker.categoryFor("wildcard"));
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_REGEXP, ChildMemoryCircuitBreaker.categoryFor("regexp"));
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_RANGE, ChildMemoryCircuitBreaker.categoryFor("range"));
+        assertEquals(ChildMemoryCircuitBreaker.CATEGORY_SUGGEST, ChildMemoryCircuitBreaker.categoryFor("suggest"));
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_PREALLOCATE, ChildMemoryCircuitBreaker.categoryFor("preallocate"));
     }
 
@@ -37,6 +38,8 @@ public class ChildMemoryCircuitBreakerTests extends ESTestCase {
     public void testCategoryForCompositeLabelsColon() {
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_RANGE, ChildMemoryCircuitBreaker.categoryFor("range:my_field"));
         assertEquals(ChildMemoryCircuitBreaker.CATEGORY_RANGE, ChildMemoryCircuitBreaker.categoryFor("range:field.keyword"));
+        assertEquals(ChildMemoryCircuitBreaker.CATEGORY_SUGGEST, ChildMemoryCircuitBreaker.categoryFor("suggest:my_field"));
+        assertEquals(ChildMemoryCircuitBreaker.CATEGORY_SUGGEST, ChildMemoryCircuitBreaker.categoryFor("suggest:body.ngram"));
     }
 
     public void testCategoryForUnknownLabel() {

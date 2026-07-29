@@ -18,7 +18,7 @@ import org.apache.lucene.search.spell.DirectSpellChecker;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.CharsRefBuilder;
-import org.apache.lucene.util.RamUsageEstimator;
+import org.elasticsearch.common.breaker.ChildMemoryCircuitBreaker;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.index.query.AbstractQueryBuilder;
 import org.elasticsearch.index.query.ParsedQuery;
@@ -43,7 +43,6 @@ import java.util.Map;
 
 public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
 
-    private static final String COLLECTOR_MEMORY_LABEL = "phrase-suggest-collector";
     private final BytesRef SEPARATOR = new BytesRef(" ");
     private static final String SUGGESTION_TEMPLATE_VAR_NAME = "suggestion";
 
@@ -76,117 +75,123 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
         // CandidateScorer builds a Lucene PriorityQueue sized to shard_size and each DirectCandidateGenerator builds
         // a Lucene SuggestWordQueue sized to its generator size. Both pre-allocate a heap array of length size + 1,
         // which is the dominant cost, so we reserve them on the request circuit breaker around the correction lookup.
+        final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "phrase";
         long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize());
         for (PhraseSuggestionContext.DirectCandidateGenerator generator : generators) {
             collectorBytes += priorityQueueRamBytesUsed(generator.size());
         }
-        searchExecutionContext.addCircuitBreakerMemory(collectorBytes, COLLECTOR_MEMORY_LABEL);
+        searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
 
-        final List<CandidateGenerator> gens = new ArrayList<>(generators.size());
-        for (int i = 0; i < numGenerators; i++) {
-            PhraseSuggestionContext.DirectCandidateGenerator generator = generators.get(i);
-            DirectSpellChecker directSpellChecker = generator.createDirectSpellChecker();
-            Terms terms = MultiTerms.getTerms(indexReader, generator.field());
-            if (terms != null) {
-                gens.add(
-                    new DirectCandidateGenerator(
-                        directSpellChecker,
-                        generator.field(),
-                        generator.suggestMode(),
-                        indexReader,
-                        realWordErrorLikelihood,
-                        generator.size(),
-                        generator.preFilter(),
-                        generator.postFilter(),
-                        terms
-                    )
-                );
+        // The collector reservation must be released on every exit path. It is released early - right after the
+        // correction lookup and before the collate loop - because the collate loop performs its own per-iteration
+        // circuit-breaker accounting via the no-arg releaseQueryConstructionMemory(). Releasing the collector bytes
+        // before entering that loop keeps the two accounting flows from interfering (a double release). The outer
+        // finally is the safety net for the else branch and for any exception thrown before the lookup runs.
+        boolean released = false;
+        try {
+            final List<CandidateGenerator> gens = new ArrayList<>(generators.size());
+            for (int i = 0; i < numGenerators; i++) {
+                PhraseSuggestionContext.DirectCandidateGenerator generator = generators.get(i);
+                DirectSpellChecker directSpellChecker = generator.createDirectSpellChecker();
+                Terms terms = MultiTerms.getTerms(indexReader, generator.field());
+                if (terms != null) {
+                    gens.add(
+                        new DirectCandidateGenerator(
+                            directSpellChecker,
+                            generator.field(),
+                            generator.suggestMode(),
+                            indexReader,
+                            realWordErrorLikelihood,
+                            generator.size(),
+                            generator.preFilter(),
+                            generator.postFilter(),
+                            terms
+                        )
+                    );
+                }
             }
-        }
-        final String suggestField = suggestion.getField();
-        final Terms suggestTerms = MultiTerms.getTerms(indexReader, suggestField);
-        if (gens.size() > 0 && suggestTerms != null) {
-            final NoisyChannelSpellChecker checker = new NoisyChannelSpellChecker(
-                realWordErrorLikelihood,
-                suggestion.getRequireUnigram(),
-                suggestion.getTokenLimit()
-            );
-            final BytesRef separator = suggestion.separator();
-            WordScorer wordScorer = suggestion.model()
-                .newScorer(indexReader, suggestTerms, suggestField, realWordErrorLikelihood, separator);
-            Result checkerResult;
-            try (TokenStream stream = tokenStream(suggestion.getAnalyzer(), suggestion.getText(), spare, suggestion.getField())) {
-                checkerResult = checker.getCorrections(
-                    stream,
-                    new MultiCandidateGeneratorWrapper(suggestion.getShardSize(), gens.toArray(new CandidateGenerator[gens.size()])),
-                    suggestion.maxErrors(),
-                    suggestion.getShardSize(),
-                    wordScorer,
-                    suggestion.confidence(),
-                    suggestion.gramSize()
+            final String suggestField = suggestion.getField();
+            final Terms suggestTerms = MultiTerms.getTerms(indexReader, suggestField);
+            if (gens.size() > 0 && suggestTerms != null) {
+                final NoisyChannelSpellChecker checker = new NoisyChannelSpellChecker(
+                    realWordErrorLikelihood,
+                    suggestion.getRequireUnigram(),
+                    suggestion.getTokenLimit()
                 );
-            } finally {
-                searchExecutionContext.releaseQueryConstructionMemory(collectorBytes, COLLECTOR_MEMORY_LABEL);
-            }
+                final BytesRef separator = suggestion.separator();
+                WordScorer wordScorer = suggestion.model()
+                    .newScorer(indexReader, suggestTerms, suggestField, realWordErrorLikelihood, separator);
+                Result checkerResult;
+                try (TokenStream stream = tokenStream(suggestion.getAnalyzer(), suggestion.getText(), spare, suggestion.getField())) {
+                    checkerResult = checker.getCorrections(
+                        stream,
+                        new MultiCandidateGeneratorWrapper(suggestion.getShardSize(), gens.toArray(new CandidateGenerator[gens.size()])),
+                        suggestion.maxErrors(),
+                        suggestion.getShardSize(),
+                        wordScorer,
+                        suggestion.confidence(),
+                        suggestion.gramSize()
+                    );
+                } finally {
+                    searchExecutionContext.releaseQueryConstructionMemory(collectorBytes, collectorLabel);
+                    released = true;
+                }
 
-            PhraseSuggestion.Entry resultEntry = buildResultEntry(suggestion, spare, checkerResult.cutoffScore);
-            response.addTerm(resultEntry);
+                PhraseSuggestion.Entry resultEntry = buildResultEntry(suggestion, spare, checkerResult.cutoffScore);
+                response.addTerm(resultEntry);
 
-            final BytesRefBuilder byteSpare = new BytesRefBuilder();
-            final TemplateScript.Factory scriptFactory = suggestion.getCollateQueryScript();
-            final boolean collatePrune = (scriptFactory != null) && suggestion.collatePrune();
-            for (int i = 0; i < checkerResult.corrections.length; i++) {
-                Correction correction = checkerResult.corrections[i];
-                spare.copyUTF8Bytes(correction.join(SEPARATOR, byteSpare, null, null));
-                boolean collateMatch = true;
-                if (scriptFactory != null) {
-                    // Checks if the template query collateScript yields any documents
-                    // from the index for a correction, collateMatch is updated
-                    final Map<String, Object> vars = suggestion.getCollateScriptParams();
-                    vars.put(SUGGESTION_TEMPLATE_VAR_NAME, spare.toString());
-                    final String querySource = scriptFactory.newInstance(vars).execute();
-                    try (
-                        XContentParser parser = XContentFactory.xContent(querySource)
-                            .createParser(searchExecutionContext.getParserConfig(), querySource)
-                    ) {
-                        QueryBuilder innerQueryBuilder = AbstractQueryBuilder.parseTopLevelQuery(parser);
-                        try {
-                            final ParsedQuery parsedQuery = searchExecutionContext.toQuery(innerQueryBuilder);
-                            collateMatch = Lucene.exists(searcher, parsedQuery.query());
-                        } finally {
-                            searchExecutionContext.releaseQueryConstructionMemory();
+                final BytesRefBuilder byteSpare = new BytesRefBuilder();
+                final TemplateScript.Factory scriptFactory = suggestion.getCollateQueryScript();
+                final boolean collatePrune = (scriptFactory != null) && suggestion.collatePrune();
+                for (int i = 0; i < checkerResult.corrections.length; i++) {
+                    Correction correction = checkerResult.corrections[i];
+                    spare.copyUTF8Bytes(correction.join(SEPARATOR, byteSpare, null, null));
+                    boolean collateMatch = true;
+                    if (scriptFactory != null) {
+                        // Checks if the template query collateScript yields any documents
+                        // from the index for a correction, collateMatch is updated
+                        final Map<String, Object> vars = suggestion.getCollateScriptParams();
+                        vars.put(SUGGESTION_TEMPLATE_VAR_NAME, spare.toString());
+                        final String querySource = scriptFactory.newInstance(vars).execute();
+                        try (
+                            XContentParser parser = XContentFactory.xContent(querySource)
+                                .createParser(searchExecutionContext.getParserConfig(), querySource)
+                        ) {
+                            QueryBuilder innerQueryBuilder = AbstractQueryBuilder.parseTopLevelQuery(parser);
+                            try {
+                                final ParsedQuery parsedQuery = searchExecutionContext.toQuery(innerQueryBuilder);
+                                collateMatch = Lucene.exists(searcher, parsedQuery.query());
+                            } finally {
+                                searchExecutionContext.releaseQueryConstructionMemory();
+                            }
                         }
                     }
+                    if (collateMatch == false && collatePrune == false) {
+                        continue;
+                    }
+                    Text phrase = new Text(spare.toString());
+                    Text highlighted = null;
+                    if (suggestion.getPreTag() != null) {
+                        spare.copyUTF8Bytes(correction.join(SEPARATOR, byteSpare, suggestion.getPreTag(), suggestion.getPostTag()));
+                        highlighted = new Text(spare.toString());
+                    }
+                    if (collatePrune) {
+                        resultEntry.addOption(
+                            new PhraseSuggestion.Entry.Option(phrase, highlighted, (float) (correction.score), collateMatch)
+                        );
+                    } else {
+                        resultEntry.addOption(new PhraseSuggestion.Entry.Option(phrase, highlighted, (float) (correction.score)));
+                    }
                 }
-                if (collateMatch == false && collatePrune == false) {
-                    continue;
-                }
-                Text phrase = new Text(spare.toString());
-                Text highlighted = null;
-                if (suggestion.getPreTag() != null) {
-                    spare.copyUTF8Bytes(correction.join(SEPARATOR, byteSpare, suggestion.getPreTag(), suggestion.getPostTag()));
-                    highlighted = new Text(spare.toString());
-                }
-                if (collatePrune) {
-                    resultEntry.addOption(new PhraseSuggestion.Entry.Option(phrase, highlighted, (float) (correction.score), collateMatch));
-                } else {
-                    resultEntry.addOption(new PhraseSuggestion.Entry.Option(phrase, highlighted, (float) (correction.score)));
-                }
+            } else {
+                response.addTerm(buildResultEntry(suggestion, spare, Double.MIN_VALUE));
             }
-        } else {
-            response.addTerm(buildResultEntry(suggestion, spare, Double.MIN_VALUE));
+            return response;
+        } finally {
+            if (released == false) {
+                searchExecutionContext.releaseQueryConstructionMemory(collectorBytes, collectorLabel);
+            }
         }
-        return response;
-    }
-
-    /**
-     * Estimates the heap used by a Lucene {@link org.apache.lucene.util.PriorityQueue} (or {@code SuggestWordQueue})
-     * of the given size, which pre-allocates an {@code Object[size + 1]} backing array.
-     */
-    private static long priorityQueueRamBytesUsed(int size) {
-        return RamUsageEstimator.alignObjectSize(
-            (long) RamUsageEstimator.NUM_BYTES_ARRAY_HEADER + (size + 1L) * RamUsageEstimator.NUM_BYTES_OBJECT_REF
-        );
     }
 
     private static TokenStream tokenStream(Analyzer analyzer, BytesRef query, CharsRefBuilder spare, String field) {

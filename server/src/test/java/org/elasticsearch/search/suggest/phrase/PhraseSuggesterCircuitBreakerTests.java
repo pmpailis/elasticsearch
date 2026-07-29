@@ -248,4 +248,83 @@ public class PhraseSuggesterCircuitBreakerTests extends ESTestCase {
             assertThat("No CB bytes should be used when there is no collate script", cb.getUsed(), equalTo(0L));
         }
     }
+
+    /**
+     * Exercises the non-tripping {@code else} branch of {@link PhraseSuggester#innerExecute}: the suggest field has no indexed
+     * terms (so {@code MultiTerms.getTerms} returns {@code null}) and therefore no correction lookup runs. The collector
+     * reservation charged up-front must still be released on this exit path, so both the request-scoped accounting and the raw
+     * breaker usage must be zero once {@code innerExecute} returns.
+     */
+    public void testCBReleasedWhenSuggestFieldHasNoTerms() throws IOException {
+        Directory dir = new ByteBuffersDirectory();
+        try (IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(new WhitespaceAnalyzer()))) {
+            // Index a document that does not contain the suggest field, so the index is non-empty but "body" has no terms.
+            Document doc = new Document();
+            doc.add(new Field("other", "hello world", TextField.TYPE_NOT_STORED));
+            writer.addDocument(doc);
+        }
+
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            IndexSearcher searcher = new IndexSearcher(reader);
+            CircuitBreaker cb = newLimitedBreaker(ByteSizeValue.ofMb(100));
+
+            IndexVersion indexVersion = IndexVersion.current();
+            Settings indexSettingsSettings = indexSettings(indexVersion, 1, 1).build();
+            IndexSettings indexSettings = new IndexSettings(
+                IndexMetadata.builder("test").settings(indexSettingsSettings).build(),
+                Settings.EMPTY
+            );
+            SearchExecutionContext baseCtx = new SearchExecutionContext(
+                0,
+                0,
+                indexSettings,
+                null,
+                null,
+                null,
+                MappingLookup.EMPTY,
+                null,
+                null,
+                parserConfig(),
+                writableRegistry(),
+                null,
+                searcher,
+                System::currentTimeMillis,
+                null,
+                null,
+                () -> true,
+                null,
+                Collections.emptyMap(),
+                null,
+                MapperMetrics.NOOP,
+                SHARD_SEARCH_STATS
+            );
+            SearchExecutionContext ctx = new SearchExecutionContext(baseCtx, cb);
+
+            PhraseSuggestionContext suggestion = new PhraseSuggestionContext(ctx);
+            suggestion.setField("body");
+            suggestion.setAnalyzer(new WhitespaceAnalyzer());
+            suggestion.setSize(5);
+            suggestion.setShardSize(5);
+            suggestion.setGramSize(1);
+            suggestion.setConfidence(0.0f);
+            suggestion.setText(new BytesRef("hello"));
+
+            PhraseSuggestionContext.DirectCandidateGenerator generator = new PhraseSuggestionContext.DirectCandidateGenerator();
+            generator.setField("body");
+            generator.suggestMode(SuggestMode.SUGGEST_MORE_POPULAR);
+            generator.size(10);
+            suggestion.addGenerator(generator);
+
+            assertEquals("CB must be zero before innerExecute", 0L, cb.getUsed());
+
+            PhraseSuggester.INSTANCE.innerExecute("test", suggestion, searcher, new CharsRefBuilder());
+
+            assertThat(
+                "CB tracked bytes must be fully released on the non-tripping else branch",
+                ctx.getQueryConstructionMemoryUsed(),
+                equalTo(0L)
+            );
+            assertThat("Raw CB usage must be zero after innerExecute", cb.getUsed(), equalTo(0L));
+        }
+    }
 }

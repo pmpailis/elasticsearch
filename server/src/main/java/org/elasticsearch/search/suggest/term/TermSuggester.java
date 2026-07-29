@@ -16,7 +16,7 @@ import org.apache.lucene.search.spell.SuggestWord;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.CharsRefBuilder;
-import org.apache.lucene.util.RamUsageEstimator;
+import org.elasticsearch.common.breaker.ChildMemoryCircuitBreaker;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.search.suggest.Suggester;
 import org.elasticsearch.search.suggest.SuggestionSearchContext.SuggestionContext;
@@ -29,8 +29,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class TermSuggester extends Suggester<TermSuggestionContext> {
-
-    private static final String COLLECTOR_MEMORY_LABEL = "term-suggest-collector";
 
     public static final TermSuggester INSTANCE = new TermSuggester();
 
@@ -47,8 +45,9 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
         // DirectSpellChecker#suggestSimilar builds a Lucene SuggestWordQueue (a PriorityQueue) sized to shard_size,
         // pre-allocating an Object[shard_size + 1] backing array per token. This is the dominant cost, so we reserve it
         // on the request circuit breaker first.
+        final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "term";
         final long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize());
-        searchExecutionContext.addCircuitBreakerMemory(collectorBytes, COLLECTOR_MEMORY_LABEL);
+        searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
         try {
             for (Token token : tokens) {
                 // TODO: Extend DirectSpellChecker in 4.1, to get the raw suggested words as BytesRef
@@ -70,18 +69,8 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
             }
             return response;
         } finally {
-            searchExecutionContext.releaseQueryConstructionMemory(collectorBytes, COLLECTOR_MEMORY_LABEL);
+            searchExecutionContext.releaseQueryConstructionMemory(collectorBytes, collectorLabel);
         }
-    }
-
-    /**
-     * Estimates the heap used by a Lucene {@code SuggestWordQueue} of the given size, which pre-allocates
-     * an {@code Object[size + 1]} backing array.
-     */
-    private static long priorityQueueRamBytesUsed(int size) {
-        return RamUsageEstimator.alignObjectSize(
-            (long) RamUsageEstimator.NUM_BYTES_ARRAY_HEADER + (size + 1L) * RamUsageEstimator.NUM_BYTES_OBJECT_REF
-        );
     }
 
     private static List<Token> queryTerms(SuggestionContext suggestion, CharsRefBuilder spare) throws IOException {
