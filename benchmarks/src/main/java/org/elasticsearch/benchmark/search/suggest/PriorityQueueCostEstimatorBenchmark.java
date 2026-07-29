@@ -12,12 +12,14 @@ package org.elasticsearch.benchmark.search.suggest;
 import org.apache.lucene.codecs.TermStats;
 import org.apache.lucene.search.spell.SuggestWord;
 import org.apache.lucene.search.spell.SuggestWordQueue;
+import org.apache.lucene.search.suggest.document.TopSuggestDocs.SuggestScoreDoc;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.PriorityQueue;
-import org.elasticsearch.search.suggest.Suggester;
+import org.elasticsearch.search.suggest.completion.CompletionSuggester;
 import org.elasticsearch.search.suggest.phrase.Correction;
 import org.elasticsearch.search.suggest.phrase.DirectCandidateGenerator.Candidate;
 import org.elasticsearch.search.suggest.phrase.PhraseSuggester;
+import org.elasticsearch.search.suggest.term.TermSuggester;
 import org.openjdk.jmh.annotations.AuxCounters;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -32,26 +34,30 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Checks the per-entry reservation the term, phrase and completion suggesters charge on the request circuit breaker in
- * {@code innerExecute} - {@link Suggester#priorityQueueRamBytesUsed(int, long)} with a {@code SuggestWord}- or
- * {@code Correction}-shaped {@code ramBytesPerEntry} - against the <em>real</em> heap a populated queue occupies.
+ * Checks the circuit-breaker reservation each suggester makes in {@code innerExecute} - {@code collectorReservationBytes(...)} on
+ * {@link TermSuggester}, {@link PhraseSuggester} and {@link CompletionSuggester} - against the <em>real</em> heap the collector
+ * queues it builds occupy.
  * <p>
- * The estimate is a cheap arithmetic formula, so comparing it to another {@code RamUsageEstimator}-based formula would be circular.
- * The independent baseline is the JVM's own allocation counter: run {@link #build} with {@code -prof gc} and read
- * {@code gc.alloc.rate.norm} - the bytes actually allocated constructing and filling a real {@link SuggestWordQueue} (or a real
- * {@code PriorityQueue<Correction>} with {@code Candidate[]}/{@code BytesRef}/{@code TermStats} graphs). The {@code estimatedBytes}
- * aux counter is the production charge, printed alongside so the two are directly comparable; the charge should stay at or above
- * {@code gc.alloc.rate.norm} (the strict over-budget goal). For {@link #estimate}, {@code gc.alloc.rate.norm} is ~0, confirming the
- * estimate itself allocates nothing.
+ * The reservation is a cheap arithmetic formula, so comparing it to another {@code RamUsageEstimator}-based formula would be
+ * circular. The independent baseline is the JVM's own allocation counter: run {@link #build} with {@code -prof gc} and read
+ * {@code gc.alloc.rate.norm} - the bytes actually allocated constructing and filling the real collectors (a {@link SuggestWordQueue}
+ * for term; a {@code PriorityQueue<Correction>} plus one {@link SuggestWordQueue} per generator for phrase; a
+ * {@code PriorityQueue<SuggestScoreDoc>} for completion). The {@code estimatedBytes} aux counter is the production reservation,
+ * printed alongside; it should stay at or above {@code gc.alloc.rate.norm} (the strict over-budget goal).
  * <pre>{@code
  * ../gradlew run --args "org.elasticsearch.benchmark.search.suggest.PriorityQueueCostEstimatorBenchmark.build -prof gc"
  * }</pre>
- * The {@link Scenario} params cover the {@code SuggestWord} queues (term / generators / completion, {@code candidatesPerEntry == 0})
- * and the heavier phrase {@code Correction} queue ({@code candidatesPerEntry > 0}, one {@code Candidate} per phrase token).
+ * The {@link Scenario} params include deliberately weird sizes - {@code shard_size}/generator size of {@code 0}, {@code 1} and
+ * {@link Integer#MAX_VALUE} (and {@code MAX_VALUE - 17}, the value from the incident), and generator counts up to 16. Queues that
+ * large cannot be allocated (Lucene rejects {@code maxSize >= MAX_ARRAY_LENGTH} and an {@code Object[MAX_VALUE]} is ~8-16 GB), so
+ * those scenarios are {@code buildable == false}: {@link #build} skips them and only {@link #estimate} runs, confirming the
+ * reservation is a huge positive value (it never overflows to a negative that would bypass the breaker).
  */
 @Fork(1)
 @Warmup(iterations = 1)
@@ -62,27 +68,59 @@ import java.util.concurrent.TimeUnit;
 @SuppressWarnings("unused") // invoked by JMH
 public class PriorityQueueCostEstimatorBenchmark {
 
+    private enum Kind {
+        TERM,
+        PHRASE,
+        COMPLETION
+    }
+
     /**
-     * Representative queue sizes ({@code shard_size} / {@code direct_generator} size), suggested word length, and candidates per
-     * entry ({@code 0} = {@code SuggestWordQueue}, {@code > 0} = phrase {@code Correction} queue with that many candidates).
+     * A representative (or deliberately weird) {@code innerExecute} request: which suggester, the collector {@code shardSize}, the
+     * phrase {@code direct_generator} count/size and token limit, and the suggested word length. {@code buildable} is false for
+     * sizes too large to allocate a real queue (estimate-only).
      */
     public enum Scenario {
-        WORD_TINY(1, 8, 0),
-        WORD_TYPICAL(256, 8, 0),
-        WORD_LARGE(4096, 8, 0),
-        WORD_LONG(4096, 64, 0),
-        CORRECTION_1_TOKEN(256, 8, 1),
-        CORRECTION_3_TOKEN(256, 8, 3),
-        CORRECTION_5_TOKEN(4096, 8, 5);
+        // Realistic, buildable - validate reservation >= real heap via -prof gc.
+        TERM_TYPICAL(Kind.TERM, 256, 0, 0, 0, 8, true),
+        TERM_LARGE(Kind.TERM, 65536, 0, 0, 0, 8, true),
+        PHRASE_TYPICAL(Kind.PHRASE, 256, 1, 64, 3, 8, true),
+        PHRASE_MANY_GENERATORS(Kind.PHRASE, 256, 5, 64, 5, 8, true),
+        PHRASE_SIXTEEN_GENERATORS(Kind.PHRASE, 1024, 16, 64, 5, 24, true),
+        COMPLETION_TYPICAL(Kind.COMPLETION, 256, 0, 0, 0, 8, true),
+        COMPLETION_LARGE(Kind.COMPLETION, 65536, 0, 0, 0, 8, true),
+        // Edge sizes, buildable.
+        SIZE_ZERO(Kind.TERM, 0, 0, 0, 0, 8, true),
+        SIZE_ONE(Kind.TERM, 1, 0, 0, 0, 8, true),
+        // Weird / huge - estimate-only (cannot allocate MAX_VALUE-sized queues).
+        TERM_MAX(Kind.TERM, Integer.MAX_VALUE, 0, 0, 0, 8, false),
+        TERM_MAX_MINUS_17(Kind.TERM, Integer.MAX_VALUE - 17, 0, 0, 0, 8, false),
+        COMPLETION_MAX(Kind.COMPLETION, Integer.MAX_VALUE, 0, 0, 0, 8, false),
+        PHRASE_MAX_SHARD(Kind.PHRASE, Integer.MAX_VALUE, 1, 64, 3, 8, false),
+        PHRASE_MAX_GENERATORS(Kind.PHRASE, 256, 3, Integer.MAX_VALUE, 3, 8, false),
+        PHRASE_MAX_EVERYTHING(Kind.PHRASE, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 10, 64, false);
 
-        private final int size;
+        private final Kind kind;
+        private final int shardSize;
+        private final int numGenerators;
+        private final int generatorSize;
+        private final int tokenLimit;
         private final int wordLength;
-        private final int candidatesPerEntry;
+        private final boolean buildable;
 
-        Scenario(int size, int wordLength, int candidatesPerEntry) {
-            this.size = size;
+        Scenario(Kind kind, int shardSize, int numGenerators, int generatorSize, int tokenLimit, int wordLength, boolean buildable) {
+            this.kind = kind;
+            this.shardSize = shardSize;
+            this.numGenerators = numGenerators;
+            this.generatorSize = generatorSize;
+            this.tokenLimit = tokenLimit;
             this.wordLength = wordLength;
-            this.candidatesPerEntry = candidatesPerEntry;
+            this.buildable = buildable;
+        }
+
+        private int[] generatorSizes() {
+            int[] sizes = new int[numGenerators];
+            Arrays.fill(sizes, generatorSize);
+            return sizes;
         }
     }
 
@@ -106,11 +144,13 @@ public class PriorityQueueCostEstimatorBenchmark {
         Arrays.fill(wordBytes, (byte) 'a');
     }
 
-    /** The production per-entry reservation for the scenario's queue type. */
+    /** The production circuit-breaker reservation for the scenario's suggester. */
     private long estimatedBytes() {
-        return scenario.candidatesPerEntry == 0
-            ? Suggester.priorityQueueRamBytesUsed(scenario.size, Suggester.SUGGEST_WORD_ENTRY_RAM_BYTES)
-            : Suggester.priorityQueueRamBytesUsed(scenario.size, PhraseSuggester.correctionEntryRamBytes(scenario.candidatesPerEntry));
+        return switch (scenario.kind) {
+            case TERM -> TermSuggester.collectorReservationBytes(scenario.shardSize);
+            case COMPLETION -> CompletionSuggester.collectorReservationBytes(scenario.shardSize);
+            case PHRASE -> PhraseSuggester.collectorReservationBytes(scenario.shardSize, scenario.tokenLimit, scenario.generatorSizes());
+        };
     }
 
     @Benchmark
@@ -122,13 +162,29 @@ public class PriorityQueueCostEstimatorBenchmark {
     @Benchmark
     public Object build(Metrics metrics) {
         metrics.estimatedBytes = estimatedBytes();
-        // Build and fill a real queue so -prof gc's gc.alloc.rate.norm is the real heap the estimate is validated against.
-        return scenario.candidatesPerEntry == 0 ? buildSuggestWordQueue() : buildCorrectionQueue();
+        if (scenario.buildable == false) {
+            return null; // huge sizes cannot be allocated; those scenarios are estimate-only
+        }
+        // Build and fill the real collectors so -prof gc's gc.alloc.rate.norm is the real heap the reservation is validated against.
+        return switch (scenario.kind) {
+            case TERM -> buildSuggestWordQueue(scenario.shardSize);
+            case COMPLETION -> buildCompletionQueue(scenario.shardSize);
+            case PHRASE -> buildPhraseCollectors();
+        };
     }
 
-    private SuggestWordQueue buildSuggestWordQueue() {
-        SuggestWordQueue queue = new SuggestWordQueue(scenario.size);
-        for (int i = 0; i < scenario.size; i++) {
+    private List<Object> buildPhraseCollectors() {
+        List<Object> collectors = new ArrayList<>(scenario.numGenerators + 1);
+        collectors.add(buildCorrectionQueue(scenario.shardSize, scenario.tokenLimit));
+        for (int g = 0; g < scenario.numGenerators; g++) {
+            collectors.add(buildSuggestWordQueue(scenario.generatorSize));
+        }
+        return collectors;
+    }
+
+    private SuggestWordQueue buildSuggestWordQueue(int size) {
+        SuggestWordQueue queue = new SuggestWordQueue(size);
+        for (int i = 0; i < size; i++) {
             SuggestWord suggestWord = new SuggestWord();
             suggestWord.string = new String(word); // fresh String + compact byte[] per element
             suggestWord.freq = i;
@@ -138,20 +194,33 @@ public class PriorityQueueCostEstimatorBenchmark {
         return queue;
     }
 
-    private PriorityQueue<Correction> buildCorrectionQueue() {
-        PriorityQueue<Correction> queue = new PriorityQueue<>(scenario.size) {
+    private PriorityQueue<Correction> buildCorrectionQueue(int size, int candidatesPerEntry) {
+        PriorityQueue<Correction> queue = new PriorityQueue<>(size) {
             @Override
             protected boolean lessThan(Correction a, Correction b) {
                 return a.compareTo(b) < 0;
             }
         };
-        for (int i = 0; i < scenario.size; i++) {
-            Candidate[] candidates = new Candidate[scenario.candidatesPerEntry];
+        for (int i = 0; i < size; i++) {
+            Candidate[] candidates = new Candidate[candidatesPerEntry];
             for (int c = 0; c < candidates.length; c++) {
                 // Copy the pre-built bytes so each BytesRef retains its own array without allocating a transient String.
                 candidates[c] = new Candidate(new BytesRef(Arrays.copyOf(wordBytes, wordBytes.length)), new TermStats(1, 1L), i, i, false);
             }
             queue.insertWithOverflow(new Correction(i, candidates));
+        }
+        return queue;
+    }
+
+    private PriorityQueue<SuggestScoreDoc> buildCompletionQueue(int size) {
+        PriorityQueue<SuggestScoreDoc> queue = new PriorityQueue<>(size) {
+            @Override
+            protected boolean lessThan(SuggestScoreDoc a, SuggestScoreDoc b) {
+                return a.score < b.score;
+            }
+        };
+        for (int i = 0; i < size; i++) {
+            queue.insertWithOverflow(new SuggestScoreDoc(i, new String(word), null, i));
         }
         return queue;
     }
