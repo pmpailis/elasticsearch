@@ -34,6 +34,15 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
 
     private TermSuggester() {}
 
+    /**
+     * Bytes the term suggester reserves on the request circuit breaker in {@link #innerExecute}: one Lucene {@code SuggestWordQueue}
+     * of {@code shardSize} (the {@code DirectSpellChecker} collector), charged with a {@link #SUGGEST_WORD_ENTRY_RAM_BYTES}-sized
+     * per-entry cost. Also used by the microbenchmark so it validates the exact production reservation.
+     */
+    public static long collectorReservationBytes(int shardSize) {
+        return priorityQueueRamBytesUsed(shardSize, SUGGEST_WORD_ENTRY_RAM_BYTES);
+    }
+
     @Override
     public TermSuggestion innerExecute(String name, TermSuggestionContext suggestion, IndexSearcher searcher, CharsRefBuilder spare)
         throws IOException {
@@ -46,7 +55,7 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
         // pre-allocating an Object[shard_size + 1] backing array per token. This is the dominant cost, so we reserve it
         // on the request circuit breaker first.
         final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "term";
-        final long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize(), SUGGEST_WORD_ENTRY_RAM_BYTES);
+        final long collectorBytes = collectorReservationBytes(suggestion.getShardSize());
         searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
         try {
             for (Token token : tokens) {

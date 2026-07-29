@@ -35,11 +35,6 @@ import java.util.Set;
 
 public class CompletionSuggester extends Suggester<CompletionSuggestionContext> {
 
-    /**
-     * Conservative retained size of one populated slot of the completion collector's {@code SuggestScoreDocPriorityQueue}: a
-     * {@link TopSuggestDocs.SuggestScoreDoc}, the {@code String} key it references and a
-     * {@link Suggester#SUGGEST_ENTRY_TEXT_BYTES}-byte backing array for that key.
-     */
     private static final long SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(
         TopSuggestDocs.SuggestScoreDoc.class
     ) + RamUsageEstimator.shallowSizeOfInstance(String.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
@@ -47,6 +42,15 @@ public class CompletionSuggester extends Suggester<CompletionSuggestionContext> 
     public static final CompletionSuggester INSTANCE = new CompletionSuggester();
 
     private CompletionSuggester() {}
+
+    /**
+     * Bytes the completion suggester reserves on the request circuit breaker in {@link #innerExecute}: the Lucene
+     * {@code SuggestScoreDocPriorityQueue} of {@code shardSize}, charged with a {@link #SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES}-sized
+     * per-entry cost. Also used by the microbenchmark so it validates the exact production reservation.
+     */
+    public static long collectorReservationBytes(int shardSize) {
+        return priorityQueueRamBytesUsed(shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
+    }
 
     @Override
     protected Suggest.Suggestion<? extends Suggest.Suggestion.Entry<? extends Suggest.Suggestion.Entry.Option>> innerExecute(
@@ -64,7 +68,7 @@ public class CompletionSuggester extends Suggester<CompletionSuggestionContext> 
             // which extends PriorityQueue and allocates a heap array of length shardSize + 1. This is the
             // dominant cost so we make sure here we have enough heap to allocate it
             final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "completion";
-            long collectorBytes = priorityQueueRamBytesUsed(shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
+            long collectorBytes = collectorReservationBytes(shardSize);
             searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
             try {
                 TopSuggestGroupDocsCollector collector = new TopSuggestGroupDocsCollector(shardSize, suggestionContext.isSkipDuplicates());

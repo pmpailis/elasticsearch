@@ -62,11 +62,34 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
     private PhraseSuggester() {}
 
     /**
+     * Bytes the phrase suggester reserves on the request circuit breaker in {@link #innerExecute}: the {@code CandidateScorer}'s
+     * {@code PriorityQueue<Correction>} of {@code shardSize} plus one {@code SuggestWordQueue} per {@code direct_generator}. The
+     * shard queue is charged with a {@link #correctionEntryRamBytes(int)} per-entry cost (bounded by {@code tokenLimit}) and each
+     * generator queue with a {@link #SUGGEST_WORD_ENTRY_RAM_BYTES} per-entry cost. The terms are summed with saturation so a
+     * pathological {@code shard_size}/generator count cannot overflow to a negative value that would silently bypass the breaker.
+     * Also used by the microbenchmark so it validates the exact production reservation.
+     */
+    public static long collectorReservationBytes(int shardSize, int tokenLimit, int[] generatorSizes) {
+        long total = priorityQueueRamBytesUsed(shardSize, correctionEntryRamBytes(tokenLimit));
+        for (int generatorSize : generatorSizes) {
+            total = saturatingAdd(total, priorityQueueRamBytesUsed(generatorSize, SUGGEST_WORD_ENTRY_RAM_BYTES));
+        }
+        return total;
+    }
+
+    /** Adds two non-negative longs, saturating to {@link Long#MAX_VALUE} on overflow. */
+    private static long saturatingAdd(long a, long b) {
+        long sum = a + b;
+        // Both inputs are non-negative, so a negative sum means the addition overflowed.
+        return sum < 0 ? Long.MAX_VALUE : sum;
+    }
+
+    /**
      * Conservative retained size of one populated slot of the phrase {@code CandidateScorer}'s {@code PriorityQueue<Correction>}: a
      * {@link Correction} plus its {@code Candidate[]} (one candidate per phrase token, bounded by the token limit). Used as the
      * per-entry cost when reserving the shard-size correction queue on the circuit breaker.
      */
-    public static long correctionEntryRamBytes(int tokenLimit) {
+    private static long correctionEntryRamBytes(int tokenLimit) {
         int candidates = Math.max(tokenLimit, 1);
         long candidateArray = RamUsageEstimator.alignObjectSize(
             (long) RamUsageEstimator.NUM_BYTES_ARRAY_HEADER + (long) candidates * RamUsageEstimator.NUM_BYTES_OBJECT_REF
@@ -102,10 +125,11 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
         // lookup. Correction entries are heavier than SuggestWord ones (each holds a Candidate per phrase token), so the shard
         // queue is charged with a Correction-shaped per-entry cost bounded by the token limit.
         final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "phrase";
-        long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize(), correctionEntryRamBytes(suggestion.getTokenLimit()));
-        for (PhraseSuggestionContext.DirectCandidateGenerator generator : generators) {
-            collectorBytes += priorityQueueRamBytesUsed(generator.size(), SUGGEST_WORD_ENTRY_RAM_BYTES);
+        final int[] generatorSizes = new int[numGenerators];
+        for (int i = 0; i < numGenerators; i++) {
+            generatorSizes[i] = generators.get(i).size();
         }
+        final long collectorBytes = collectorReservationBytes(suggestion.getShardSize(), suggestion.getTokenLimit(), generatorSizes);
         searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
 
         // The collector reservation must be released on every exit path. It is released early - right after the
