@@ -19,6 +19,7 @@ import org.apache.lucene.search.suggest.document.CompletionQuery;
 import org.apache.lucene.search.suggest.document.TopSuggestDocs;
 import org.apache.lucene.search.suggest.document.TopSuggestDocsCollector;
 import org.apache.lucene.util.CharsRefBuilder;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.breaker.ChildMemoryCircuitBreaker;
 import org.elasticsearch.index.mapper.CompletionFieldMapper;
 import org.elasticsearch.index.query.SearchExecutionContext;
@@ -33,6 +34,15 @@ import java.util.Map;
 import java.util.Set;
 
 public class CompletionSuggester extends Suggester<CompletionSuggestionContext> {
+
+    /**
+     * Conservative retained size of one populated slot of the completion collector's {@code SuggestScoreDocPriorityQueue}: a
+     * {@link TopSuggestDocs.SuggestScoreDoc}, the {@code String} key it references and a
+     * {@link Suggester#SUGGEST_ENTRY_TEXT_BYTES}-byte backing array for that key.
+     */
+    private static final long SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(
+        TopSuggestDocs.SuggestScoreDoc.class
+    ) + RamUsageEstimator.shallowSizeOfInstance(String.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
 
     public static final CompletionSuggester INSTANCE = new CompletionSuggester();
 
@@ -53,8 +63,8 @@ public class CompletionSuggester extends Suggester<CompletionSuggestionContext> 
             // TopSuggestGroupDocsCollector uses a Lucene's SuggestScoreDocPriorityQueue
             // which extends PriorityQueue and allocates a heap array of length shardSize + 1. This is the
             // dominant cost so we make sure here we have enough heap to allocate it
-            final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + suggestionContext.getField();
-            long collectorBytes = priorityQueueRamBytesUsed(shardSize);
+            final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "completion";
+            long collectorBytes = priorityQueueRamBytesUsed(shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
             searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
             try {
                 TopSuggestGroupDocsCollector collector = new TopSuggestGroupDocsCollector(shardSize, suggestionContext.isSkipDuplicates());

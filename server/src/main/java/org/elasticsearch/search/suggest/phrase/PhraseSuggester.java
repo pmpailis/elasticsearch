@@ -10,6 +10,7 @@ package org.elasticsearch.search.suggest.phrase;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.codecs.TermStats;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.MultiTerms;
 import org.apache.lucene.index.Terms;
@@ -18,6 +19,7 @@ import org.apache.lucene.search.spell.DirectSpellChecker;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.CharsRefBuilder;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.breaker.ChildMemoryCircuitBreaker;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.index.query.AbstractQueryBuilder;
@@ -46,9 +48,31 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
     private final BytesRef SEPARATOR = new BytesRef(" ");
     private static final String SUGGESTION_TEMPLATE_VAR_NAME = "suggestion";
 
+    /**
+     * Conservative retained size of a single {@link DirectCandidateGenerator.Candidate} held by a {@link Correction}: the candidate
+     * object, its {@link BytesRef} term (plus a {@link Suggester#SUGGEST_ENTRY_TEXT_BYTES}-byte backing array) and its
+     * {@link TermStats}.
+     */
+    private static final long CANDIDATE_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(DirectCandidateGenerator.Candidate.class)
+        + RamUsageEstimator.shallowSizeOfInstance(BytesRef.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES])
+        + RamUsageEstimator.shallowSizeOfInstance(TermStats.class);
+
     public static final PhraseSuggester INSTANCE = new PhraseSuggester();
 
     private PhraseSuggester() {}
+
+    /**
+     * Conservative retained size of one populated slot of the phrase {@code CandidateScorer}'s {@code PriorityQueue<Correction>}: a
+     * {@link Correction} plus its {@code Candidate[]} (one candidate per phrase token, bounded by the token limit). Used as the
+     * per-entry cost when reserving the shard-size correction queue on the circuit breaker.
+     */
+    public static long correctionEntryRamBytes(int tokenLimit) {
+        int candidates = Math.max(tokenLimit, 1);
+        long candidateArray = RamUsageEstimator.alignObjectSize(
+            (long) RamUsageEstimator.NUM_BYTES_ARRAY_HEADER + (long) candidates * RamUsageEstimator.NUM_BYTES_OBJECT_REF
+        );
+        return RamUsageEstimator.shallowSizeOfInstance(Correction.class) + candidateArray + (long) candidates * CANDIDATE_RAM_BYTES;
+    }
 
     /*
      * More Ideas:
@@ -72,13 +96,15 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
         final int numGenerators = generators.size();
 
         final SearchExecutionContext searchExecutionContext = suggestion.getSearchExecutionContext();
-        // CandidateScorer builds a Lucene PriorityQueue sized to shard_size and each DirectCandidateGenerator builds
-        // a Lucene SuggestWordQueue sized to its generator size. Both pre-allocate a heap array of length size + 1,
-        // which is the dominant cost, so we reserve them on the request circuit breaker around the correction lookup.
+        // CandidateScorer builds a Lucene PriorityQueue<Correction> sized to shard_size and each DirectCandidateGenerator builds
+        // a Lucene SuggestWordQueue<SuggestWord> sized to its generator size. Both pre-allocate a heap array of length size + 1;
+        // we reserve the backing array plus the entries each queue holds on the request circuit breaker around the correction
+        // lookup. Correction entries are heavier than SuggestWord ones (each holds a Candidate per phrase token), so the shard
+        // queue is charged with a Correction-shaped per-entry cost bounded by the token limit.
         final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "phrase";
-        long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize());
+        long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize(), correctionEntryRamBytes(suggestion.getTokenLimit()));
         for (PhraseSuggestionContext.DirectCandidateGenerator generator : generators) {
-            collectorBytes += priorityQueueRamBytesUsed(generator.size());
+            collectorBytes += priorityQueueRamBytesUsed(generator.size(), SUGGEST_WORD_ENTRY_RAM_BYTES);
         }
         searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
 

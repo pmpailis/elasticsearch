@@ -19,36 +19,56 @@ import java.io.IOException;
 public abstract class Suggester<T extends SuggestionSearchContext.SuggestionContext> {
 
     /**
-     * Conservative retained size of a single populated queue slot: the entry object plus the {@code String} wrapper it references.
-     * Modelled on {@link SuggestWord} - the entry of the term/phrase generator {@code SuggestWordQueue} - as a representative for
-     * the other small suggestion entries (the phrase {@code Correction} queue and the completion {@code SuggestScoreDoc} queue).
-     * Only the fixed per-entry objects are counted; the {@code String}'s variable-length backing bytes are a bounded residual left
-     * uncharged, which is acceptable because it can only be reached once the queue is actually populated with that many entries.
+     * Conservative allowance, in bytes, for the text a suggestion entry references (the compact {@code byte[]} backing a suggested
+     * word or term). Sized to comfortably cover a typical/long suggestion so the reservation stays at or above the real heap rather
+     * than under-charging; only pathologically long (&gt; this many bytes) terms fall below it.
      */
-    private static final long PRIORITY_QUEUE_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(SuggestWord.class)
-        + RamUsageEstimator.shallowSizeOfInstance(String.class);
+    public static final int SUGGEST_ENTRY_TEXT_BYTES = 64;
 
     /**
-     * Estimates the peak heap of a Lucene {@link org.apache.lucene.util.PriorityQueue} of the given size. Shared by the term,
-     * phrase and completion suggesters, which build such queues (the {@code SuggestWordQueue} of {@code DirectSpellChecker} and the
-     * {@code SuggestScoreDocPriorityQueue} of the completion collector) sized to {@code shard_size} or a generator size.
+     * Conservative retained size of one populated {@code SuggestWordQueue} slot: a {@link SuggestWord}, its {@code String} wrapper
+     * and a {@link #SUGGEST_ENTRY_TEXT_BYTES}-byte backing array for the word. Charged per entry by the term suggester and the
+     * phrase {@code DirectCandidateGenerator} queues.
+     */
+    public static final long SUGGEST_WORD_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(SuggestWord.class) + RamUsageEstimator
+        .shallowSizeOfInstance(String.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
+
+    /**
+     * Conservative allowance for the {@code PriorityQueue} instance itself (its {@code size}/{@code maxSize}/{@code heap} fields plus
+     * a subclass's comparator), charged once per queue on top of the backing array and the entries so the reservation stays at or
+     * above the real footprint even when the per-entry charge exactly matches reality (e.g. a word at the text-allowance limit).
+     */
+    private static final long PRIORITY_QUEUE_SHELL_RAM_BYTES = 64;
+
+    /**
+     * Estimates the peak heap of a Lucene {@link org.apache.lucene.util.PriorityQueue} of the given size whose populated slots each
+     * retain {@code ramBytesPerEntry} bytes. Shared by the term, phrase and completion suggesters, which build such queues (the
+     * {@code SuggestWordQueue} of {@code DirectSpellChecker}, the phrase {@code CandidateScorer}'s {@code PriorityQueue<Correction>}
+     * and the {@code SuggestScoreDocPriorityQueue} of the completion collector) sized to {@code shard_size} or a generator size.
      * <p>
      * The queue pre-allocates an {@code Object[size + 1]} backing array up-front and, once populated, holds up to {@code size}
-     * entries. The reservation covers <em>both</em>: the backing array plus {@code size} entries of
-     * {@link #PRIORITY_QUEUE_ENTRY_RAM_BYTES} each, so it no longer under-charges the breaker by ignoring the elements the queue
-     * holds. The multiplication is saturated to {@link Long#MAX_VALUE} on overflow, which trips any real breaker.
+     * entries. The reservation covers the queue shell, the backing array (which dominates and, for the pathological
+     * {@code shard_size}/generator sizes this guards against, is what OOMs the node) and {@code size × ramBytesPerEntry} for the
+     * entries. Each caller passes the retained size of its own entry type (e.g. {@link #SUGGEST_WORD_ENTRY_RAM_BYTES}), sized
+     * conservatively so the reservation stays at or above the real peak rather than under-charging - the safe direction, since
+     * over-charging at worst trips a recoverable {@code CircuitBreakingException} whereas under-charging risks an OOM. The
+     * multiplication is saturated to {@link Long#MAX_VALUE} on overflow, which trips any real breaker.
+     * <p>
+     * Validated once against the JVM's own allocation counter (JMH {@code -prof gc}, {@code gc.alloc.rate.norm}): a real populated
+     * {@code SuggestWordQueue} allocates ~72 B/entry for 8-char words (~128 B for 64-char), and a phrase {@code Correction} queue
+     * ~140-500 B/entry for 1-5 candidates - all at or below the corresponding {@code ramBytesPerEntry} charged here.
      */
-    public static long priorityQueueRamBytesUsed(int size) {
+    public static long priorityQueueRamBytesUsed(int size, long ramBytesPerEntry) {
         long backingArray = RamUsageEstimator.alignObjectSize(
             (long) RamUsageEstimator.NUM_BYTES_ARRAY_HEADER + (size + 1L) * RamUsageEstimator.NUM_BYTES_OBJECT_REF
         );
         long entries;
         try {
-            entries = Math.multiplyExact(size, PRIORITY_QUEUE_ENTRY_RAM_BYTES);
-        } catch (ArithmeticException ex) {
+            entries = Math.multiplyExact((long) size, ramBytesPerEntry);
+        } catch (ArithmeticException overflow) {
             return Long.MAX_VALUE;
         }
-        long total = backingArray + entries;
+        long total = PRIORITY_QUEUE_SHELL_RAM_BYTES + backingArray + entries;
         return total < 0 ? Long.MAX_VALUE : total;
     }
 

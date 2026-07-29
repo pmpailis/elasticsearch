@@ -46,7 +46,7 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
         // pre-allocating an Object[shard_size + 1] backing array per token. This is the dominant cost, so we reserve it
         // on the request circuit breaker first.
         final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "term";
-        final long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize());
+        final long collectorBytes = priorityQueueRamBytesUsed(suggestion.getShardSize(), SUGGEST_WORD_ENTRY_RAM_BYTES);
         searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
         try {
             for (Token token : tokens) {
