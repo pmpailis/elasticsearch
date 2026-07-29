@@ -80,8 +80,8 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
     public static final String CATEGORY_RANGE = "range";
 
     /**
-     * Query-construction reservation for the Lucene {@code PriorityQueue}/{@code SuggestWordQueue} collectors built by the term and
-     * phrase suggesters (label is {@code suggest:<field>}; the field suffix is stripped for the metric).
+     * Query-construction reservation for the Lucene priority-queue collectors built by the term, phrase and completion suggesters
+     * (label is {@code suggest:<kind>}; the kind suffix is stripped for the metric).
      */
     public static final String CATEGORY_SUGGEST = "suggest";
 

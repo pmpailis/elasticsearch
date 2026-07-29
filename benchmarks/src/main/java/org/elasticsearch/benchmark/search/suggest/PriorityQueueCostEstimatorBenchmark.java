@@ -48,8 +48,9 @@ import java.util.concurrent.TimeUnit;
  * circular. The independent baseline is the JVM's own allocation counter: run {@link #build} with {@code -prof gc} and read
  * {@code gc.alloc.rate.norm} - the bytes actually allocated constructing and filling the real collectors (a {@link SuggestWordQueue}
  * for term; a {@code PriorityQueue<Correction>} plus one {@link SuggestWordQueue} per generator for phrase; a
- * {@code PriorityQueue<SuggestScoreDoc>} for completion). The {@code estimatedBytes} aux counter is the production reservation,
- * printed alongside; it should stay at or above {@code gc.alloc.rate.norm} (the strict over-budget goal).
+ * {@code PriorityQueue<SuggestScoreDoc>} with key <em>and</em> context text for completion). The {@code estimatedBytes} aux
+ * counter is the production reservation, printed alongside; it should stay at or above {@code gc.alloc.rate.norm} (the strict
+ * over-budget goal).
  * <pre>{@code
  * ../gradlew run --args "org.elasticsearch.benchmark.search.suggest.PriorityQueueCostEstimatorBenchmark.build -prof gc"
  * }</pre>
@@ -81,23 +82,25 @@ public class PriorityQueueCostEstimatorBenchmark {
      */
     public enum Scenario {
         // Realistic, buildable - validate reservation >= real heap via -prof gc.
-        TERM_TYPICAL(Kind.TERM, 256, 0, 0, 0, 8, true),
-        TERM_LARGE(Kind.TERM, 65536, 0, 0, 0, 8, true),
-        PHRASE_TYPICAL(Kind.PHRASE, 256, 1, 64, 3, 8, true),
-        PHRASE_MANY_GENERATORS(Kind.PHRASE, 256, 5, 64, 5, 8, true),
-        PHRASE_SIXTEEN_GENERATORS(Kind.PHRASE, 1024, 16, 64, 5, 24, true),
-        COMPLETION_TYPICAL(Kind.COMPLETION, 256, 0, 0, 0, 8, true),
-        COMPLETION_LARGE(Kind.COMPLETION, 65536, 0, 0, 0, 8, true),
+        TERM_TYPICAL(Kind.TERM, 256, 0, 0, 0, 8, false, true),
+        TERM_LARGE(Kind.TERM, 65536, 0, 0, 0, 8, false, true),
+        PHRASE_TYPICAL(Kind.PHRASE, 256, 1, 64, 3, 8, false, true),
+        PHRASE_MANY_GENERATORS(Kind.PHRASE, 256, 5, 64, 5, 8, false, true),
+        PHRASE_SIXTEEN_GENERATORS(Kind.PHRASE, 1024, 16, 64, 5, 24, false, true),
+        COMPLETION_TYPICAL(Kind.COMPLETION, 256, 0, 0, 0, 8, false, true),
+        COMPLETION_WITH_CONTEXT(Kind.COMPLETION, 256, 0, 0, 0, 24, false, true),
+        COMPLETION_SKIP_DUPLICATES(Kind.COMPLETION, 256, 0, 0, 0, 8, true, true),
+        COMPLETION_LARGE(Kind.COMPLETION, 65536, 0, 0, 0, 8, false, true),
         // Edge sizes, buildable.
-        SIZE_ZERO(Kind.TERM, 0, 0, 0, 0, 8, true),
-        SIZE_ONE(Kind.TERM, 1, 0, 0, 0, 8, true),
+        SIZE_ZERO(Kind.TERM, 0, 0, 0, 0, 8, false, true),
+        SIZE_ONE(Kind.TERM, 1, 0, 0, 0, 8, false, true),
         // Weird / huge - estimate-only (cannot allocate MAX_VALUE-sized queues).
-        TERM_MAX(Kind.TERM, Integer.MAX_VALUE, 0, 0, 0, 8, false),
-        TERM_MAX_MINUS_17(Kind.TERM, Integer.MAX_VALUE - 17, 0, 0, 0, 8, false),
-        COMPLETION_MAX(Kind.COMPLETION, Integer.MAX_VALUE, 0, 0, 0, 8, false),
-        PHRASE_MAX_SHARD(Kind.PHRASE, Integer.MAX_VALUE, 1, 64, 3, 8, false),
-        PHRASE_MAX_GENERATORS(Kind.PHRASE, 256, 3, Integer.MAX_VALUE, 3, 8, false),
-        PHRASE_MAX_EVERYTHING(Kind.PHRASE, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 10, 64, false);
+        TERM_MAX(Kind.TERM, Integer.MAX_VALUE, 0, 0, 0, 8, false, false),
+        TERM_MAX_MINUS_17(Kind.TERM, Integer.MAX_VALUE - 17, 0, 0, 0, 8, false, false),
+        COMPLETION_MAX(Kind.COMPLETION, Integer.MAX_VALUE, 0, 0, 0, 8, false, false),
+        PHRASE_MAX_SHARD(Kind.PHRASE, Integer.MAX_VALUE, 1, 64, 3, 8, false, false),
+        PHRASE_MAX_GENERATORS(Kind.PHRASE, 256, 3, Integer.MAX_VALUE, 3, 8, false, false),
+        PHRASE_MAX_EVERYTHING(Kind.PHRASE, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 10, 64, false, false);
 
         private final Kind kind;
         private final int shardSize;
@@ -105,15 +108,26 @@ public class PriorityQueueCostEstimatorBenchmark {
         private final int generatorSize;
         private final int tokenLimit;
         private final int wordLength;
+        private final boolean skipDuplicates;
         private final boolean buildable;
 
-        Scenario(Kind kind, int shardSize, int numGenerators, int generatorSize, int tokenLimit, int wordLength, boolean buildable) {
+        Scenario(
+            Kind kind,
+            int shardSize,
+            int numGenerators,
+            int generatorSize,
+            int tokenLimit,
+            int wordLength,
+            boolean skipDuplicates,
+            boolean buildable
+        ) {
             this.kind = kind;
             this.shardSize = shardSize;
             this.numGenerators = numGenerators;
             this.generatorSize = generatorSize;
             this.tokenLimit = tokenLimit;
             this.wordLength = wordLength;
+            this.skipDuplicates = skipDuplicates;
             this.buildable = buildable;
         }
 
@@ -148,7 +162,7 @@ public class PriorityQueueCostEstimatorBenchmark {
     private long estimatedBytes() {
         return switch (scenario.kind) {
             case TERM -> TermSuggester.collectorReservationBytes(scenario.shardSize);
-            case COMPLETION -> CompletionSuggester.collectorReservationBytes(scenario.shardSize);
+            case COMPLETION -> CompletionSuggester.collectorReservationBytes(scenario.shardSize, scenario.skipDuplicates);
             case PHRASE -> PhraseSuggester.collectorReservationBytes(scenario.shardSize, scenario.tokenLimit, scenario.generatorSizes());
         };
     }
@@ -220,7 +234,8 @@ public class PriorityQueueCostEstimatorBenchmark {
             }
         };
         for (int i = 0; i < size; i++) {
-            queue.insertWithOverflow(new SuggestScoreDoc(i, new String(word), null, i));
+            // Populate both key and context so gc.alloc.rate.norm covers the two CharSequences the reservation charges.
+            queue.insertWithOverflow(new SuggestScoreDoc(i, new String(word), new String(word), i));
         }
         return queue;
     }

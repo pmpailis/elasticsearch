@@ -50,12 +50,10 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
 
     /**
      * Conservative retained size of a single {@link DirectCandidateGenerator.Candidate} held by a {@link Correction}: the candidate
-     * object, its {@link BytesRef} term (plus a {@link Suggester#SUGGEST_ENTRY_TEXT_BYTES}-byte backing array) and its
-     * {@link TermStats}.
+     * object, its {@link #SUGGEST_ENTRY_BYTES_REF_RAM_BYTES} term and its {@link TermStats}.
      */
     private static final long CANDIDATE_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(DirectCandidateGenerator.Candidate.class)
-        + RamUsageEstimator.shallowSizeOfInstance(BytesRef.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES])
-        + RamUsageEstimator.shallowSizeOfInstance(TermStats.class);
+        + SUGGEST_ENTRY_BYTES_REF_RAM_BYTES + RamUsageEstimator.shallowSizeOfInstance(TermStats.class);
 
     public static final PhraseSuggester INSTANCE = new PhraseSuggester();
 
@@ -75,13 +73,6 @@ public final class PhraseSuggester extends Suggester<PhraseSuggestionContext> {
             total = saturatingAdd(total, priorityQueueRamBytesUsed(generatorSize, SUGGEST_WORD_ENTRY_RAM_BYTES));
         }
         return total;
-    }
-
-    /** Adds two non-negative longs, saturating to {@link Long#MAX_VALUE} on overflow. */
-    private static long saturatingAdd(long a, long b) {
-        long sum = a + b;
-        // Both inputs are non-negative, so a negative sum means the addition overflowed.
-        return sum < 0 ? Long.MAX_VALUE : sum;
     }
 
     /**

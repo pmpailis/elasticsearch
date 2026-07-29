@@ -11,6 +11,7 @@ package org.elasticsearch.search.suggest;
 
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.spell.SuggestWord;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CharsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
 
@@ -20,18 +21,34 @@ public abstract class Suggester<T extends SuggestionSearchContext.SuggestionCont
 
     /**
      * Conservative allowance, in bytes, for the text a suggestion entry references (the compact {@code byte[]} backing a suggested
-     * word or term). Sized to comfortably cover a typical/long suggestion so the reservation stays at or above the real heap rather
-     * than under-charging; only pathologically long (&gt; this many bytes) terms fall below it.
+     * word, completion key/context or phrase candidate term). Sized to comfortably cover a typical/long suggestion so the
+     * reservation stays at or above the real heap rather than under-charging; only pathologically long (&gt; this many bytes) terms
+     * fall below it.
      */
     public static final int SUGGEST_ENTRY_TEXT_BYTES = 64;
 
     /**
-     * Conservative retained size of one populated {@code SuggestWordQueue} slot: a {@link SuggestWord}, its {@code String} wrapper
-     * and a {@link #SUGGEST_ENTRY_TEXT_BYTES}-byte backing array for the word. Charged per entry by the term suggester and the
-     * phrase {@code DirectCandidateGenerator} queues.
+     * Retained size of one {@link String}/{@link CharSequence}-shaped text reference: the object shell plus a
+     * {@link #SUGGEST_ENTRY_TEXT_BYTES}-byte backing array. Used for {@link SuggestWord#string} and for each of a completion
+     * {@code SuggestScoreDoc}'s {@code key} and {@code context}.
      */
-    public static final long SUGGEST_WORD_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(SuggestWord.class) + RamUsageEstimator
-        .shallowSizeOfInstance(String.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
+    public static final long SUGGEST_ENTRY_TEXT_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(String.class) + RamUsageEstimator
+        .sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
+
+    /**
+     * Retained size of one {@link BytesRef}-shaped term reference: the {@code BytesRef} shell plus a
+     * {@link #SUGGEST_ENTRY_TEXT_BYTES}-byte backing array. Used for phrase {@code Candidate} terms.
+     */
+    public static final long SUGGEST_ENTRY_BYTES_REF_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(BytesRef.class) + RamUsageEstimator
+        .sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
+
+    /**
+     * Conservative retained size of one populated {@code SuggestWordQueue} slot: a {@link SuggestWord} plus its
+     * {@link #SUGGEST_ENTRY_TEXT_RAM_BYTES} text. Charged per entry by the term suggester and the phrase
+     * {@code DirectCandidateGenerator} queues.
+     */
+    public static final long SUGGEST_WORD_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(SuggestWord.class)
+        + SUGGEST_ENTRY_TEXT_RAM_BYTES;
 
     /**
      * Conservative allowance for the {@code PriorityQueue} instance itself (its {@code size}/{@code maxSize}/{@code heap} fields plus
@@ -39,6 +56,13 @@ public abstract class Suggester<T extends SuggestionSearchContext.SuggestionCont
      * above the real footprint even when the per-entry charge exactly matches reality (e.g. a word at the text-allowance limit).
      */
     private static final long PRIORITY_QUEUE_SHELL_RAM_BYTES = 64;
+
+    /** Adds two non-negative longs, saturating to {@link Long#MAX_VALUE} on overflow. */
+    public static long saturatingAdd(long a, long b) {
+        long sum = a + b;
+        // Both inputs are non-negative, so a negative sum means the addition overflowed.
+        return sum < 0 ? Long.MAX_VALUE : sum;
+    }
 
     /**
      * Estimates the peak heap of a Lucene {@link org.apache.lucene.util.PriorityQueue} of the given size whose populated slots each
@@ -54,9 +78,9 @@ public abstract class Suggester<T extends SuggestionSearchContext.SuggestionCont
      * over-charging at worst trips a recoverable {@code CircuitBreakingException} whereas under-charging risks an OOM. The
      * multiplication is saturated to {@link Long#MAX_VALUE} on overflow, which trips any real breaker.
      * <p>
-     * Validated once against the JVM's own allocation counter (JMH {@code -prof gc}, {@code gc.alloc.rate.norm}): a real populated
-     * {@code SuggestWordQueue} allocates ~72 B/entry for 8-char words (~128 B for 64-char), and a phrase {@code Correction} queue
-     * ~140-500 B/entry for 1-5 candidates - all at or below the corresponding {@code ramBytesPerEntry} charged here.
+     * Validated against the JVM's own allocation counter (JMH {@code -prof gc}, {@code gc.alloc.rate.norm}) via
+     * {@code PriorityQueueCostEstimatorBenchmark}: populated term/phrase/completion collectors should stay at or below the
+     * corresponding {@code collectorReservationBytes} charge.
      */
     public static long priorityQueueRamBytesUsed(int size, long ramBytesPerEntry) {
         long backingArray = RamUsageEstimator.alignObjectSize(

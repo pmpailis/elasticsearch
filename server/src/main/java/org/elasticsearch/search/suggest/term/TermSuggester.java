@@ -37,7 +37,8 @@ public final class TermSuggester extends Suggester<TermSuggestionContext> {
     /**
      * Bytes the term suggester reserves on the request circuit breaker in {@link #innerExecute}: one Lucene {@code SuggestWordQueue}
      * of {@code shardSize} (the {@code DirectSpellChecker} collector), charged with a {@link #SUGGEST_WORD_ENTRY_RAM_BYTES}-sized
-     * per-entry cost. Also used by the microbenchmark so it validates the exact production reservation.
+     * per-entry cost ({@link SuggestWord} plus {@link #SUGGEST_ENTRY_TEXT_RAM_BYTES} for its string). Also used by the
+     * microbenchmark so it validates the exact production reservation.
      */
     public static long collectorReservationBytes(int shardSize) {
         return priorityQueueRamBytesUsed(shardSize, SUGGEST_WORD_ENTRY_RAM_BYTES);

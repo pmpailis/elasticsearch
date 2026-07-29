@@ -245,7 +245,11 @@ public class PhraseSuggesterCircuitBreakerTests extends ESTestCase {
             suggestion.setText(new BytesRef("hello"));
 
             PhraseSuggester.INSTANCE.innerExecute("test", suggestion, searcher, new CharsRefBuilder());
-            assertThat("No CB bytes should be used when there is no collate script", cb.getUsed(), equalTo(0L));
+            assertThat(
+                "Collector reservation must be fully released after innerExecute even without a collate script",
+                cb.getUsed(),
+                equalTo(0L)
+            );
         }
     }
 

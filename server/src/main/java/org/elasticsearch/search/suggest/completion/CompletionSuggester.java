@@ -35,9 +35,14 @@ import java.util.Set;
 
 public class CompletionSuggester extends Suggester<CompletionSuggestionContext> {
 
+    /**
+     * Conservative retained size of one populated {@code SuggestScoreDocPriorityQueue} slot: a {@link TopSuggestDocs.SuggestScoreDoc}
+     * plus {@link #SUGGEST_ENTRY_TEXT_RAM_BYTES} for each of its {@code key} and {@code context} {@link CharSequence}s. Context is
+     * charged even when null so context-mapped completions stay at or above real heap.
+     */
     private static final long SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(
         TopSuggestDocs.SuggestScoreDoc.class
-    ) + RamUsageEstimator.shallowSizeOfInstance(String.class) + RamUsageEstimator.sizeOf(new byte[SUGGEST_ENTRY_TEXT_BYTES]);
+    ) + 2L * SUGGEST_ENTRY_TEXT_RAM_BYTES;
 
     public static final CompletionSuggester INSTANCE = new CompletionSuggester();
 
@@ -46,10 +51,22 @@ public class CompletionSuggester extends Suggester<CompletionSuggestionContext> 
     /**
      * Bytes the completion suggester reserves on the request circuit breaker in {@link #innerExecute}: the Lucene
      * {@code SuggestScoreDocPriorityQueue} of {@code shardSize}, charged with a {@link #SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES}-sized
-     * per-entry cost. Also used by the microbenchmark so it validates the exact production reservation.
+     * per-entry cost (key + context text). When {@code skipDuplicates} is true, Lucene's collector also retains each segment's PQ
+     * dump in {@code pendingResults}; an extra fully-populated set of entries is charged for that. Also used by the
+     * microbenchmark so it validates the exact production reservation.
      */
-    public static long collectorReservationBytes(int shardSize) {
-        return priorityQueueRamBytesUsed(shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
+    public static long collectorReservationBytes(int shardSize, boolean skipDuplicates) {
+        long total = priorityQueueRamBytesUsed(shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
+        if (skipDuplicates) {
+            long pendingEntries;
+            try {
+                pendingEntries = Math.multiplyExact((long) shardSize, SUGGEST_SCORE_DOC_ENTRY_RAM_BYTES);
+            } catch (ArithmeticException overflow) {
+                return Long.MAX_VALUE;
+            }
+            total = saturatingAdd(total, pendingEntries);
+        }
+        return total;
     }
 
     @Override
@@ -68,7 +85,7 @@ public class CompletionSuggester extends Suggester<CompletionSuggestionContext> 
             // which extends PriorityQueue and allocates a heap array of length shardSize + 1. This is the
             // dominant cost so we make sure here we have enough heap to allocate it
             final String collectorLabel = ChildMemoryCircuitBreaker.CATEGORY_SUGGEST + ":" + "completion";
-            long collectorBytes = collectorReservationBytes(shardSize);
+            long collectorBytes = collectorReservationBytes(shardSize, suggestionContext.isSkipDuplicates());
             searchExecutionContext.addCircuitBreakerMemory(collectorBytes, collectorLabel);
             try {
                 TopSuggestGroupDocsCollector collector = new TopSuggestGroupDocsCollector(shardSize, suggestionContext.isSkipDuplicates());
