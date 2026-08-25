@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql;
 
+import com.carrotsearch.randomizedtesting.SeedUtils;
 import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 import com.carrotsearch.randomizedtesting.annotations.TimeoutSuite;
 
@@ -14,7 +15,6 @@ import org.apache.lucene.tests.util.TimeUnits;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
-import org.elasticsearch.action.fieldcaps.FieldCapabilitiesRequest;
 import org.elasticsearch.action.support.ActionFilter;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.WriteRequest;
@@ -70,6 +70,7 @@ import org.elasticsearch.xpack.esql.action.EsqlQueryAction;
 import org.elasticsearch.xpack.esql.action.EsqlQueryRequest;
 import org.elasticsearch.xpack.esql.action.EsqlQueryResponse;
 import org.elasticsearch.xpack.esql.action.EsqlResolveFieldsAction;
+import org.elasticsearch.xpack.esql.action.EsqlResolveFieldsRequest;
 import org.elasticsearch.xpack.esql.datasources.datasource.TestEncryptionServicePlugin;
 import org.elasticsearch.xpack.esql.enrich.EnrichPolicyResolver;
 import org.elasticsearch.xpack.esql.planner.PlannerSettings;
@@ -99,10 +100,14 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -136,8 +141,9 @@ public class CsvIT extends ESTestCase {
     private static final Logger logger = LogManager.getLogger(CsvIT.class);
     private static final EsqlCapabilities ENABLED_CAPS = EsqlCapabilities.capabilities(TEST_FUNCTION_REGISTRY, false);
     private static final EsqlCapabilities ALL_CAPS = EsqlCapabilities.capabilities(TEST_FUNCTION_REGISTRY, true);
-    private static final QueryPragmas ALL_PRAGMAS = new QueryPragmas(Settings.EMPTY);
     private static final int BULK_INDEX_BATCH_SIZE = 10_000;
+
+    private static final Set<String> GROUPS_WITH_VIEWS = Set.of("views", "approximation", "unmapped-load");
 
     private static InternalTestCluster cluster;
     private static String currentGroupName = null;
@@ -189,6 +195,20 @@ public class CsvIT extends ESTestCase {
          * against the actual query output.
          */
         ExpectedResults transformExpectedResults(String testId, CsvSpecReader.CsvTestCase testCase, ExpectedResults expected);
+
+        /**
+         * Normalizes a single warning string before warnings are compared. The <em>same</em>
+         * function is applied to both the expected warnings declared in the csv-spec entry (via
+         * {@link CsvSpecReader.CsvTestCase#adjustExpectedWarnings(java.util.function.Function)}) and
+         * to each actual warning returned by the cluster, so a variant that mechanically rewrites
+         * the query can reconcile warnings whose expression text or source position differs purely
+         * as a side effect of the rewrite &mdash; without weakening the assertion for the parts of
+         * the warning that still carry meaning. The default is identity, so the unmodified corpus
+         * keeps asserting warnings verbatim.
+         */
+        default String normalizeWarning(String warning) {
+            return warning;
+        }
 
         /**
          * Called once after the index for {@code dataset} has been fully populated.
@@ -256,11 +276,17 @@ public class CsvIT extends ESTestCase {
         this.instructions = instructions;
     }
 
-    @ParametersFactory(argumentFormatting = "csv-spec:%2$s.%3$s")
+    @ParametersFactory(argumentFormatting = "csv-spec:%2$s.%3$s", shuffle = false)
     public static List<Object[]> readScriptSpec() throws Exception {
         List<URL> urls = classpathResources("/*.csv-spec");
         assertThat("Not enough specs found " + urls, urls, hasSize(greaterThan(0)));
-        return SpecReader.readScriptSpec(urls, CsvSpecReader::specParser);
+
+        var specs = SpecReader.readScriptSpec(urls, CsvSpecReader::specParser);
+        var seed = Optional.ofNullable(System.getProperty("tests.seed")).map(SeedUtils::parseSeed).orElseGet(System::nanoTime);
+        // forbidden aip require to pass random explicitly, however LuceneTestCase#random() is not yet initialized.
+        Collections.shuffle(specs, new Random(seed));
+        Collections.sort(specs, Comparator.comparing(spec -> GROUPS_WITH_VIEWS.contains((String) spec[1])));
+        return specs;
     }
 
     @BeforeClass
@@ -409,7 +435,12 @@ public class CsvIT extends ESTestCase {
             var warnings = listener.warnings.stream()
                 .map(w -> HeaderWarning.extractWarningValueFromWarningHeader(w, false))
                 .filter(w -> w.startsWith("No limit defined, adding default limit of") == false)
+                .map(indexLoadStrategy::normalizeWarning)
                 .toList();
+            // Apply the same normalization to the expected warnings so a variant that rewrites the
+            // query can reconcile warnings whose expression text or source position shifted purely
+            // as a side effect of the rewrite. For the identity strategy this is a no-op.
+            testCase.adjustExpectedWarnings(indexLoadStrategy::normalizeWarning);
             testCase.assertWarnings(false).assertWarnings(warnings, null);
             CsvAssert.assertDocumentsFound(testCase.expectedDocumentsFound, response.documentsFound());
         } catch (Throwable t) {
@@ -454,7 +485,7 @@ public class CsvIT extends ESTestCase {
                             loadViews();
                             loadAliases();
                         }
-                        case EsqlResolveFieldsAction.NAME -> loadIndices((FieldCapabilitiesRequest) request);
+                        case EsqlResolveFieldsAction.NAME -> loadIndices((EsqlResolveFieldsRequest) request);
                         case GetInferenceModelAction.NAME -> loadInference((GetInferenceModelAction.Request) request);
                     }
                     return true;
@@ -509,7 +540,7 @@ public class CsvIT extends ESTestCase {
 
     private static void loadViews() {
         // TODO We should instead load views once and never unload them
-        if ("views".equals(currentGroupName) || "approximation".equals(currentGroupName) || "unmapped-load".equals(currentGroupName)) {
+        if (GROUPS_WITH_VIEWS.contains(currentGroupName)) {
             CsvTestsDataLoader.VIEW_CONFIGS.forEach((name, view) -> {
                 if (view.requiredCapabilities().stream().allMatch(EsqlCapabilities.Cap::isEnabled)) {
                     views.maybeLoad(name, view);
@@ -532,7 +563,7 @@ public class CsvIT extends ESTestCase {
         }
     }
 
-    private static void loadIndices(FieldCapabilitiesRequest request) {
+    private static void loadIndices(EsqlResolveFieldsRequest request) {
         Stream.of(request.indices()).flatMap(pattern -> {
             assert pattern.contains("<") == false : "Date-math is not supported in test";
             if (pattern.contains("*")) {
